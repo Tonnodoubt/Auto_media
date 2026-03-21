@@ -1,7 +1,8 @@
 import asyncio
 import uuid
 from typing import AsyncGenerator
-from app.services.store import save_story, get_story
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.services import story_repository as repo
 
 MOCK_ANALYZE = {
     "analysis": "世界观有一定基础，但主角动机和核心冲突的视觉表现力不足，需要进一步明确。",
@@ -147,21 +148,26 @@ MOCK_SCENES = [
 ]
 
 
-async def mock_analyze_idea(idea: str, genre: str, tone: str) -> dict:
+async def mock_analyze_idea(idea: str, genre: str, tone: str, db: AsyncSession = None) -> dict:
     await asyncio.sleep(0.5)
     story_id = str(uuid.uuid4())
-    save_story(story_id, {"idea": idea, "genre": genre, "tone": tone})
+    if db:
+        await repo.save_story(db, story_id, {"idea": idea, "genre": genre, "tone": tone})
     return {"story_id": story_id, **MOCK_ANALYZE}
 
 
-async def mock_generate_outline(story_id: str, selected_setting: str) -> dict:
+async def mock_generate_outline(story_id: str, selected_setting: str, db: AsyncSession = None) -> dict:
     await asyncio.sleep(0.5)
-    save_story(story_id, {"selected_setting": selected_setting, "outline": MOCK_OUTLINE["outline"]})
+    if db:
+        await repo.save_story(db, story_id, {"selected_setting": selected_setting, "outline": MOCK_OUTLINE["outline"]})
     return {"story_id": story_id, **MOCK_OUTLINE}
 
 
-async def mock_chat(story_id: str, message: str) -> AsyncGenerator[str, None]:
-    story = get_story(story_id)
+async def mock_chat(story_id: str, message: str, db: AsyncSession = None) -> AsyncGenerator[str, None]:
+    if db:
+        story = await repo.get_story(db, story_id)
+    else:
+        story = {}
     genre = story.get("genre", "现代")
     tone = story.get("tone", "热血")
     reply = f"根据你的想法「{message}」，结合{genre}风格和{tone}基调，建议将故事设定为：{message}，并加入情感冲突与成长弧线，使故事更具张力。"
@@ -186,7 +192,7 @@ MOCK_WB_QUESTIONS = [
 ]
 
 
-async def mock_world_building_start(idea: str) -> dict:
+async def mock_world_building_start(idea: str, db: AsyncSession = None) -> dict:
     await asyncio.sleep(0.3)
     story_id = str(uuid.uuid4())
     q = MOCK_WB_QUESTIONS[0]
@@ -195,22 +201,28 @@ async def mock_world_building_start(idea: str) -> dict:
         {"role": "user", "content": f"种子想法：{idea}，请提出第一个世界观问题"},
         {"role": "assistant", "content": f'{{"status":"questioning","question":{{"type":"options","text":"{q["text"]}","options":{q["options"]},"dimension":"{q["dimension"]}"}},"world_summary":null}}'},
     ]
-    save_story(story_id, {"idea": idea, "wb_history": history, "wb_turn": 1})
+    if db:
+        await repo.save_story(db, story_id, {"idea": idea, "wb_history": history, "wb_turn": 1})
     return {"story_id": story_id, "status": "questioning", "turn": 1, "question": question, "world_summary": None, "usage": None}
 
 
-async def mock_world_building_turn(story_id: str, answer: str) -> dict:
+async def mock_world_building_turn(story_id: str, answer: str, db: AsyncSession = None) -> dict:
     await asyncio.sleep(0.3)
-    story = get_story(story_id)
+    if db:
+        story = await repo.get_story(db, story_id)
+    else:
+        story = {}
     turn = story.get("wb_turn", 1)
     new_turn = turn + 1
 
     if turn >= 6:
         world_summary = f"一个充满张力的短剧世界：{story.get('idea', '')}。世界观完整，人物鲜明，冲突激烈，情感基调深沉热血。"
-        save_story(story_id, {"wb_turn": new_turn, "selected_setting": world_summary})
+        if db:
+            await repo.save_story(db, story_id, {"wb_turn": new_turn, "selected_setting": world_summary})
         return {"story_id": story_id, "status": "complete", "turn": new_turn, "question": None, "world_summary": world_summary, "usage": None}
 
     q = MOCK_WB_QUESTIONS[turn]  # turn 从1开始，对应下一个问题
     question = {"type": "options", "text": q["text"], "options": q["options"], "dimension": q["dimension"]}
-    save_story(story_id, {"wb_turn": new_turn})
+    if db:
+        await repo.save_story(db, story_id, {"wb_turn": new_turn})
     return {"story_id": story_id, "status": "questioning", "turn": new_turn, "question": question, "world_summary": None, "usage": None}

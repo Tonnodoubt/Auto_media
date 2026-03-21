@@ -4,18 +4,21 @@
 import asyncio
 from pathlib import Path
 from typing import List, Optional
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas.storyboard import Shot
 from app.schemas.pipeline import GenerationStrategy, PipelineStatus
 from app.services import tts, image, video
 from app.services.storyboard import parse_script_to_storyboard
+from app.services import story_repository as repo
 
 
 class PipelineExecutor:
     """流水线执行器 - 处理完整的视频生成流程"""
 
-    def __init__(self, project_id: str, state: dict):
+    def __init__(self, project_id: str, pipeline_id: str, db: AsyncSession):
         self.project_id = project_id
-        self.state = state
+        self.pipeline_id = pipeline_id
+        self.db = db
         self.shots: List[Shot] = []
         self.results: List[dict] = []
 
@@ -33,7 +36,7 @@ class PipelineExecutor:
         """执行完整的生成流水线"""
         try:
             # Step 1: 分镜解析
-            self._update_state(
+            await self._update_state(
                 PipelineStatus.STORYBOARD,
                 5,
                 "解析分镜中",
@@ -44,7 +47,7 @@ class PipelineExecutor:
             if not self.shots:
                 raise ValueError("分镜解析失败：没有生成任何镜头")
 
-            self._update_state(
+            await self._update_state(
                 PipelineStatus.STORYBOARD,
                 15,
                 f"分镜解析完成，共 {len(self.shots)} 个镜头",
@@ -68,7 +71,7 @@ class PipelineExecutor:
                 await self._stitch_videos()
 
             # 完成
-            self._update_state(
+            await self._update_state(
                 PipelineStatus.COMPLETE,
                 100,
                 "视频生成完成",
@@ -76,7 +79,7 @@ class PipelineExecutor:
             )
 
         except Exception as e:
-            self._update_state(PipelineStatus.FAILED, 0, "生成失败", error=str(e))
+            await self._update_state(PipelineStatus.FAILED, 0, "生成失败", error=str(e))
             raise
 
     async def _run_separated_strategy(
@@ -94,7 +97,7 @@ class PipelineExecutor:
         total = len(self.shots)
 
         # Step 2: TTS 生成
-        self._update_state(
+        await self._update_state(
             PipelineStatus.GENERATING_ASSETS,
             20,
             "生成语音中",
@@ -107,7 +110,7 @@ class PipelineExecutor:
         )
         tts_map = {r["shot_id"]: r for r in tts_results}
 
-        self._update_state(
+        await self._update_state(
             PipelineStatus.GENERATING_ASSETS,
             40,
             f"语音生成完成 {len(tts_results)} 个",
@@ -117,7 +120,7 @@ class PipelineExecutor:
         await asyncio.sleep(0.3)
 
         # Step 3: 图片生成
-        self._update_state(
+        await self._update_state(
             PipelineStatus.GENERATING_ASSETS,
             45,
             "生成图片中",
@@ -130,7 +133,7 @@ class PipelineExecutor:
         )
         image_map = {r["shot_id"]: r for r in image_results}
 
-        self._update_state(
+        await self._update_state(
             PipelineStatus.GENERATING_ASSETS,
             65,
             f"图片生成完成 {len(image_results)} 个",
@@ -140,7 +143,7 @@ class PipelineExecutor:
         await asyncio.sleep(0.3)
 
         # Step 4: 图生视频
-        self._update_state(
+        await self._update_state(
             PipelineStatus.RENDERING_VIDEO,
             70,
             "生成视频中",
@@ -174,7 +177,7 @@ class PipelineExecutor:
             }
             self.results.append(result)
 
-        self._update_state(
+        await self._update_state(
             PipelineStatus.RENDERING_VIDEO,
             85,
             f"视频生成完成 {len(video_results)} 个",
@@ -195,7 +198,7 @@ class PipelineExecutor:
         total = len(self.shots)
 
         # Step 2: 图片生成
-        self._update_state(
+        await self._update_state(
             PipelineStatus.GENERATING_ASSETS,
             20,
             "生成图片中",
@@ -208,7 +211,7 @@ class PipelineExecutor:
         )
         image_map = {r["shot_id"]: r for r in image_results}
 
-        self._update_state(
+        await self._update_state(
             PipelineStatus.GENERATING_ASSETS,
             50,
             f"图片生成完成 {len(image_results)} 个",
@@ -218,7 +221,7 @@ class PipelineExecutor:
         await asyncio.sleep(0.3)
 
         # Step 3: 视频语音一体生成
-        self._update_state(
+        await self._update_state(
             PipelineStatus.RENDERING_VIDEO,
             55,
             "生成视频和语音中",
@@ -255,7 +258,7 @@ class PipelineExecutor:
             }
             self.results.append(result)
 
-        self._update_state(
+        await self._update_state(
             PipelineStatus.COMPLETE,
             100,
             f"视频生成完成 {len(video_results)} 个（含音频）",
@@ -264,7 +267,7 @@ class PipelineExecutor:
 
     async def _stitch_videos(self):
         """使用 FFmpeg 合成音视频（仅分离式策略需要）"""
-        self._update_state(
+        await self._update_state(
             PipelineStatus.STITCHING,
             90,
             "合成音视频中",
@@ -275,14 +278,14 @@ class PipelineExecutor:
         # 目前先跳过，直接返回分离的视频和音频文件
         await asyncio.sleep(1)
 
-        self._update_state(
+        await self._update_state(
             PipelineStatus.STITCHING,
             95,
             "音视频合成完成",
             {"step": "stitch", "current": len(self.results), "total": len(self.results), "message": "合成完成"},
         )
 
-    def _update_state(
+    async def _update_state(
         self,
         status: PipelineStatus,
         progress: int,
@@ -291,14 +294,12 @@ class PipelineExecutor:
         error: Optional[str] = None,
         generated_files: Optional[dict] = None,
     ):
-        """更新流水线状态"""
-        self.state.update(
-            status=status,
-            progress=progress,
-            current_step=current_step,
-            error=error,
-        )
-        if progress_detail:
-            self.state["progress_detail"] = progress_detail
-        if generated_files:
-            self.state["generated_files"] = generated_files
+        """更新流水线状态到数据库"""
+        await repo.save_pipeline(self.db, self.pipeline_id, self.project_id, {
+            "status": status,
+            "progress": progress,
+            "current_step": current_step,
+            "error": error,
+            "progress_detail": progress_detail,
+            "generated_files": generated_files,
+        })

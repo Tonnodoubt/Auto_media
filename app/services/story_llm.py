@@ -1,5 +1,6 @@
 from openai import AsyncOpenAI
-from app.services.store import save_story, get_story
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.services import story_repository as repo
 from app.services.story_mock import (
     mock_analyze_idea, mock_generate_outline, mock_generate_script, mock_chat,
     mock_world_building_start, mock_world_building_turn,
@@ -148,9 +149,9 @@ def _parse_json(content: str):
     return _json.loads(content.strip())
 
 
-async def refine(story_id: str, change_type: str, change_summary: str, api_key: str = "", base_url: str = "", provider: str = "") -> dict:
+async def refine(story_id: str, change_type: str, change_summary: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "") -> dict:
     import json as _json
-    story = get_story(story_id)
+    story = await repo.get_story(db, story_id)
     if not api_key:
         return {"relationships": None, "outline": None, "meta_theme": None}
 
@@ -177,9 +178,9 @@ async def refine(story_id: str, change_type: str, change_summary: str, api_key: 
     }
 
 
-async def analyze_idea(idea: str, genre: str, tone: str, api_key: str = "", base_url: str = "", provider: str = "") -> dict:
+async def analyze_idea(idea: str, genre: str, tone: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "") -> dict:
     if not api_key:
-        return await mock_analyze_idea(idea, genre, tone)
+        return await mock_analyze_idea(idea, genre, tone, db=db)
 
     import json as _json
     import uuid
@@ -191,7 +192,7 @@ async def analyze_idea(idea: str, genre: str, tone: str, api_key: str = "", base
     )
     data = _parse_json(resp.choices[0].message.content)
     story_id = str(uuid.uuid4())
-    save_story(story_id, {"idea": idea, "genre": genre, "tone": tone})
+    await repo.save_story(db, story_id, {"idea": idea, "genre": genre, "tone": tone})
     usage = resp.usage
     return {
         "story_id": story_id,
@@ -202,9 +203,9 @@ async def analyze_idea(idea: str, genre: str, tone: str, api_key: str = "", base
     }
 
 
-async def generate_outline(story_id: str, selected_setting: str, api_key: str = "", base_url: str = "", provider: str = "") -> dict:
+async def generate_outline(story_id: str, selected_setting: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "") -> dict:
     if not api_key:
-        return await mock_generate_outline(story_id, selected_setting)
+        return await mock_generate_outline(story_id, selected_setting, db=db)
 
     client = _make_client(api_key, base_url)
     prompt = OUTLINE_PROMPT.format(selected_setting=selected_setting)
@@ -213,7 +214,7 @@ async def generate_outline(story_id: str, selected_setting: str, api_key: str = 
         messages=[{"role": "user", "content": prompt}],
     )
     data = _parse_json(resp.choices[0].message.content)
-    save_story(story_id, {"selected_setting": selected_setting, "outline": data.get("outline", [])})
+    await repo.save_story(db, story_id, {"selected_setting": selected_setting, "outline": data.get("outline", [])})
     usage = resp.usage
     return {
         "story_id": story_id,
@@ -222,9 +223,9 @@ async def generate_outline(story_id: str, selected_setting: str, api_key: str = 
     }
 
 
-async def chat(story_id: str, message: str, api_key: str = "", base_url: str = "", provider: str = ""):
+async def chat(story_id: str, message: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = ""):
     if not api_key:
-        async for chunk in mock_chat(story_id, message):
+        async for chunk in mock_chat(story_id, message, db=db):
             yield chunk
         return
 
@@ -240,13 +241,13 @@ async def chat(story_id: str, message: str, api_key: str = "", base_url: str = "
             yield delta
 
 
-async def generate_script(story_id: str, api_key: str = "", base_url: str = "", provider: str = ""):
+async def generate_script(story_id: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = ""):
     if not api_key:
         async for scene in mock_generate_script(story_id):
             yield scene
         return
 
-    story = get_story(story_id)
+    story = await repo.get_story(db, story_id)
     outline = story.get("outline", [])
     if not outline:
         async for scene in mock_generate_script(story_id):
@@ -277,10 +278,10 @@ async def generate_script(story_id: str, api_key: str = "", base_url: str = "", 
     yield {"__usage__": {"prompt_tokens": total_prompt, "completion_tokens": total_completion}}
 
 
-async def world_building_start(idea: str, api_key: str = "", base_url: str = "", provider: str = "") -> dict:
+async def world_building_start(idea: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "") -> dict:
     import uuid
     if not api_key:
-        return await mock_world_building_start(idea)
+        return await mock_world_building_start(idea, db=db)
 
     story_id = str(uuid.uuid4())
     client = _make_client(api_key, base_url)
@@ -294,7 +295,7 @@ async def world_building_start(idea: str, api_key: str = "", base_url: str = "",
     )
     data = _parse_json(resp.choices[0].message.content)
     messages.append({"role": "assistant", "content": resp.choices[0].message.content})
-    save_story(story_id, {"idea": idea, "wb_history": messages, "wb_turn": 1})
+    await repo.save_story(db, story_id, {"idea": idea, "wb_history": messages, "wb_turn": 1})
     usage = resp.usage
     return {
         "story_id": story_id,
@@ -306,11 +307,11 @@ async def world_building_start(idea: str, api_key: str = "", base_url: str = "",
     }
 
 
-async def world_building_turn(story_id: str, answer: str, api_key: str = "", base_url: str = "", provider: str = "") -> dict:
+async def world_building_turn(story_id: str, answer: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "") -> dict:
     if not api_key:
-        return await mock_world_building_turn(story_id, answer)
+        return await mock_world_building_turn(story_id, answer, db=db)
 
-    story = get_story(story_id)
+    story = await repo.get_story(db, story_id)
     history = story.get("wb_history", [])
     turn = story.get("wb_turn", 1)
 
@@ -326,7 +327,7 @@ async def world_building_turn(story_id: str, answer: str, api_key: str = "", bas
     updates = {"wb_history": history, "wb_turn": new_turn}
     if data.get("status") == "complete":
         updates["selected_setting"] = data.get("world_summary", "")
-    save_story(story_id, updates)
+    await repo.save_story(db, story_id, updates)
     usage = resp.usage
     return {
         "story_id": story_id,
