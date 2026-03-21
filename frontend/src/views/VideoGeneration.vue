@@ -519,7 +519,7 @@ function isAuthError(msg) {
 
 // 解析分镜
 async function parseStoryboard() {
-  if (!settings.useMock && !settings.apiKey) {
+  if (!settings.useMock && !settings.effectiveLlmApiKey) {
     showKeyModal.value = true
     return
   }
@@ -669,9 +669,13 @@ function getMediaUrl(path) {
 
 function getHeaders() {
   const headers = {}
-  if (settings.apiKey) headers['X-LLM-API-Key'] = settings.apiKey
-  if (settings.llmBaseUrl) headers['X-LLM-Base-URL'] = settings.llmBaseUrl
-  if (settings.provider) headers['X-LLM-Provider'] = settings.provider
+  if (settings.effectiveLlmApiKey)   headers['X-LLM-API-Key']   = settings.effectiveLlmApiKey
+  if (settings.effectiveLlmBaseUrl)  headers['X-LLM-Base-URL']  = settings.effectiveLlmBaseUrl
+  if (settings.effectiveLlmProvider) headers['X-LLM-Provider']  = settings.effectiveLlmProvider
+  if (settings.effectiveImageApiKey)  headers['X-Image-API-Key']  = settings.effectiveImageApiKey
+  if (settings.effectiveImageBaseUrl) headers['X-Image-Base-URL'] = settings.effectiveImageBaseUrl
+  if (settings.effectiveVideoApiKey)  headers['X-Video-API-Key']  = settings.effectiveVideoApiKey
+  if (settings.effectiveVideoBaseUrl) headers['X-Video-Base-URL'] = settings.effectiveVideoBaseUrl
   return headers
 }
 
@@ -695,10 +699,7 @@ async function loadVoices() {
 }
 
 async function generateOneTTS(shotId) {
-  if (!settings.useMock && !settings.apiKey) {
-    showKeyModal.value = true
-    return
-  }
+  // Edge TTS 不需要 API Key，无需守卫
 
   const shot = shots.value.find(s => s.shot_id === shotId)
   if (!shot || !shot.dialogue) return
@@ -710,7 +711,10 @@ async function generateOneTTS(shotId) {
       headers: { 'Content-Type': 'application/json', ...getHeaders() },
       body: JSON.stringify({ shots: [shot], voice: selectedVoice.value })
     })
-    if (!res.ok) throw new Error('TTS 失败')
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null)
+      throw new Error(errData?.detail || `TTS 请求失败 (${res.status})`)
+    }
     const results = await res.json()
     const r = results[0]
     shot.audio_url = r.audio_url
@@ -736,7 +740,7 @@ async function generateAllTTS() {
 }
 
 async function generateOneImage(shotId) {
-  if (!settings.useMock && !settings.apiKey) {
+  if (!settings.useMock && !settings.effectiveImageApiKey) {
     showKeyModal.value = true
     return
   }
@@ -749,9 +753,15 @@ async function generateOneImage(shotId) {
     const res = await fetch(`${getBackendUrl()}/api/v1/image/${generateUniqueId()}/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...getHeaders() },
-      body: JSON.stringify({ shots: [shot] })
+      body: JSON.stringify({
+        shots: [shot],
+        ...(settings.effectiveImageModel ? { model: settings.effectiveImageModel } : {}),
+      })
     })
-    if (!res.ok) throw new Error('图片生成失败')
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null)
+      throw new Error(errData?.detail || `图片生成失败 (${res.status})`)
+    }
     const results = await res.json()
     const r = results[0]
     shot.image_url = r.image_url
@@ -775,7 +785,7 @@ async function generateAllImages() {
 }
 
 async function generateOneVideo(shotId) {
-  if (!settings.useMock && !settings.apiKey) {
+  if (!settings.useMock && !settings.effectiveVideoApiKey) {
     showKeyModal.value = true
     return
   }
@@ -788,9 +798,15 @@ async function generateOneVideo(shotId) {
     const res = await fetch(`${getBackendUrl()}/api/v1/video/${generateUniqueId()}/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...getHeaders() },
-      body: JSON.stringify({ shots: [shot] })
+      body: JSON.stringify({
+        shots: [shot],
+        ...(settings.effectiveVideoModel ? { model: settings.effectiveVideoModel } : {}),
+      })
     })
-    if (!res.ok) throw new Error('视频生成失败')
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null)
+      throw new Error(errData?.detail || `视频生成失败 (${res.status})`)
+    }
     const results = await res.json()
     const r = results[0]
     shot.video_url = r.video_url

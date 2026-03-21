@@ -1,11 +1,20 @@
 import { useSettingsStore } from '../stores/settings.js'
 
+/**
+ * 统一 Header 构建：
+ * - LLM 相关：优先使用文本生成专用 Key，回退到默认 LLM Key
+ * - 图片/视频：优先使用专用 Key，回退到默认 Key
+ */
 function getHeaders() {
   const settings = useSettingsStore()
   const headers = { 'Content-Type': 'application/json' }
-  if (settings.apiKey) headers['X-LLM-API-Key'] = settings.apiKey
-  if (settings.llmBaseUrl) headers['X-LLM-Base-URL'] = settings.llmBaseUrl
-  if (settings.provider) headers['X-LLM-Provider'] = settings.provider
+  if (settings.effectiveLlmApiKey)   headers['X-LLM-API-Key']    = settings.effectiveLlmApiKey
+  if (settings.effectiveLlmBaseUrl)  headers['X-LLM-Base-URL']   = settings.effectiveLlmBaseUrl
+  if (settings.effectiveLlmProvider) headers['X-LLM-Provider']   = settings.effectiveLlmProvider
+  if (settings.effectiveImageApiKey)  headers['X-Image-API-Key']  = settings.effectiveImageApiKey
+  if (settings.effectiveImageBaseUrl) headers['X-Image-Base-URL'] = settings.effectiveImageBaseUrl
+  if (settings.effectiveVideoApiKey)  headers['X-Video-API-Key']  = settings.effectiveVideoApiKey
+  if (settings.effectiveVideoBaseUrl) headers['X-Video-Base-URL'] = settings.effectiveVideoBaseUrl
   return headers
 }
 
@@ -28,8 +37,11 @@ export async function finalizeScript(storyId) {
 }
 
 export async function startStoryboard(storyId, script, provider) {
-  const url = getPipelineUrl(`/${storyId}/storyboard?script=${encodeURIComponent(script)}&provider=${provider}`)
-  const res = await fetch(url, { method: 'POST', headers: getHeaders() })
+  const res = await fetch(getPipelineUrl(`/${storyId}/storyboard`), {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ script, provider }),
+  })
   if (!res.ok) throw new Error(`请求失败 (${res.status})`)
   return res.json()
 }
@@ -170,4 +182,51 @@ export async function streamScript(storyId, onScene, onDone, onError) {
     onError?.(e.message); return
   }
   onDone()
+}
+
+// Character design image API
+function getCharacterUrl(path) {
+  const settings = useSettingsStore()
+  const base = settings.backendUrl ? settings.backendUrl.replace(/\/$/, '') : ''
+  return `${base}/api/v1/character${path}`
+}
+
+export async function generateCharacterImage(storyId, character) {
+  const res = await fetch(getCharacterUrl('/generate'), {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({
+      story_id: storyId,
+      character_name: character.name,
+      role: character.role || '',
+      description: character.description || '',
+    }),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => null)
+    throw new Error(data?.detail || `请求失败 (${res.status})`)
+  }
+  return res.json()
+}
+
+export async function generateAllCharacterImages(storyId, characters) {
+  const res = await fetch(getCharacterUrl('/generate-all'), {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({
+      story_id: storyId,
+      characters: characters,
+    }),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => null)
+    throw new Error(data?.detail || `请求失败 (${res.status})`)
+  }
+  return res.json()
+}
+
+export async function getCharacterImages(storyId) {
+  const res = await fetch(getCharacterUrl(`/${storyId}/images`), { headers: getHeaders() })
+  if (!res.ok) throw new Error(`请求失败 (${res.status})`)
+  return res.json()
 }

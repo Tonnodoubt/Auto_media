@@ -18,3 +18,10 @@ async def get_db() -> AsyncSession:
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Migrate existing DBs: add character_images column if missing
+        try:
+            await conn.execute(
+                __import__("sqlalchemy").text("ALTER TABLE stories ADD COLUMN character_images JSON")
+            )
+        except Exception:
+            pass  # Column already exists

@@ -59,6 +59,7 @@ async def get_story(db: AsyncSession, story_id: str) -> dict:
         "scenes": story.scenes or [],
         "wb_history": story.wb_history or [],
         "wb_turn": story.wb_turn or 0,
+        "character_images": story.character_images or {},
         "created_at": story.created_at,
         "updated_at": story.updated_at,
     }

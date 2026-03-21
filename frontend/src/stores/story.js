@@ -73,13 +73,17 @@ export const useStoryStore = defineStore('story', {
         this.usage.completion_tokens += usage.completion_tokens
       }
     },
-    setWorldBuildingStart({ story_id, turn, question }) {
+    setWorldBuildingStart({ story_id, turn, question, usage }) {
       this.storyId = story_id
       this.wbTurn = turn
       this.wbCurrentQuestion = question
       this.wbHistory = question ? [{ role: 'ai', text: question.text, type: question.type, options: question.options }] : []
+      if (usage) {
+        this.usage.prompt_tokens += usage.prompt_tokens
+        this.usage.completion_tokens += usage.completion_tokens
+      }
     },
-    appendWbTurn({ turn, question, status, world_summary, answer }) {
+    appendWbTurn({ turn, question, status, world_summary, answer, usage }) {
       this.wbTurn = turn
       const newHistory = [
         ...this.wbHistory,
@@ -90,6 +94,10 @@ export const useStoryStore = defineStore('story', {
       this.wbCurrentQuestion = question || null
       if (status === 'complete' && world_summary) {
         this.selectedSetting = world_summary
+      }
+      if (usage) {
+        this.usage.prompt_tokens += usage.prompt_tokens
+        this.usage.completion_tokens += usage.completion_tokens
       }
     },
   },

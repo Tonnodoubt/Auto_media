@@ -50,6 +50,12 @@ class AutoGenerateRequest(BaseModel):
     provider: str = "claude"
     model: Optional[str] = None
 
+    # API Keys (从前端传入)
+    llm_api_key: Optional[str] = ""
+    llm_base_url: Optional[str] = ""
+    image_api_key: Optional[str] = ""
+    video_api_key: Optional[str] = ""
+
     # TTS 配置
     voice: str = "zh-CN-XiaoxiaoNeural"
 

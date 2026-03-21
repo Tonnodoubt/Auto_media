@@ -1,6 +1,8 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Body, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db, AsyncSessionLocal
+from app.core.config import settings as _cfg
+from app.core.api_keys import extract_api_keys, resolve_image_key, resolve_video_key, image_config_dep, video_config_dep, llm_config_dep
 from app.schemas.pipeline import (
     PipelineStatusResponse,
     PipelineStatus,
@@ -17,12 +19,30 @@ from uuid import uuid4
 
 router = APIRouter(prefix="/api/v1/pipeline", tags=["pipeline"])
 
+# 手动步进模式使用的内存状态（每个 project 一个）
+_pipeline_states: dict[str, dict] = {}
+
+
+def _get_or_create(project_id: str) -> dict:
+    """获取或初始化手动步进模式的内存状态。"""
+    if project_id not in _pipeline_states:
+        _pipeline_states[project_id] = {
+            "status": PipelineStatus.PENDING,
+            "progress": 0,
+            "current_step": "等待开始",
+            "error": None,
+            "progress_detail": None,
+            "generated_files": None,
+        }
+    return _pipeline_states[project_id]
+
 
 @router.post("/{project_id}/auto-generate", response_model=AutoGenerateResponse)
 async def auto_generate(
     project_id: str,
     req: AutoGenerateRequest,
     background_tasks: BackgroundTasks,
+    request: Request,
 ):
     """
     一键生成完整视频 - 自动执行全流程
@@ -33,6 +53,16 @@ async def auto_generate(
     """
     # 创建新的 pipeline 记录
     pipeline_id = str(uuid4())
+
+    # 在请求上下文中提取 API Key（header 优先，回退到请求体字段）
+    # resolve_image_key / resolve_video_key 会在此处提前校验并回退 .env，确保三段式统一
+    keys = extract_api_keys(request)
+    llm_api_key  = keys.llm_api_key  or req.llm_api_key  or ""
+    llm_base_url = keys.llm_base_url or req.llm_base_url or ""
+    image_api_key = resolve_image_key(keys.image_api_key or req.image_api_key or "")
+    image_base_url = keys.image_base_url or _cfg.siliconflow_base_url
+    video_api_key = resolve_video_key(keys.video_api_key or req.video_api_key or "")
+    video_base_url = keys.video_base_url or _cfg.dashscope_base_url
 
     async def _run_pipeline():
         """后台执行流水线"""
@@ -58,6 +88,12 @@ async def auto_generate(
                 image_model=req.image_model,
                 video_model=req.video_model,
                 base_url=req.base_url,
+                llm_api_key=llm_api_key,
+                llm_base_url=llm_base_url,
+                image_api_key=image_api_key,
+                image_base_url=image_base_url,
+                video_api_key=video_api_key,
+                video_base_url=video_base_url,
             )
 
     background_tasks.add_task(_run_pipeline)
@@ -72,19 +108,14 @@ async def auto_generate(
 @router.post("/{project_id}/storyboard", response_model=Storyboard)
 async def generate_storyboard(
     project_id: str,
-    request: Request,
     req: StoryboardRequest = Body(...),
+    llm: dict = Depends(llm_config_dep),
     db: AsyncSession = Depends(get_db),
 ):
     """手动触发：分镜解析"""
     pipeline_id = str(uuid4())
+    provider = llm["provider"] or req.provider or "claude"
 
-    # 从 headers 获取 LLM 配置
-    api_key = request.headers.get("X-LLM-API-Key", "")
-    base_url = request.headers.get("X-LLM-Base-URL", "")
-    provider = request.headers.get("X-LLM-Provider", req.provider or "claude")
-
-    # 创建 pipeline 记录
     await repo.save_pipeline(db, pipeline_id, project_id, {
         "status": PipelineStatus.STORYBOARD,
         "progress": 10,
@@ -96,8 +127,8 @@ async def generate_storyboard(
             req.script,
             provider=provider,
             model=req.model,
-            api_key=api_key,
-            base_url=base_url,
+            api_key=llm["api_key"],
+            base_url=llm["base_url"],
         )
     except Exception as e:
         await repo.save_pipeline(db, pipeline_id, project_id, {
@@ -124,6 +155,7 @@ async def generate_storyboard(
 async def generate_assets(
     project_id: str,
     storyboard: Storyboard,
+    image_config: dict = Depends(image_config_dep),
     voice: str = Query("zh-CN-XiaoxiaoNeural", description="TTS 语音"),
     image_model: str = Query("black-forest-labs/FLUX.1-schnell", description="图片生成模型"),
     background_tasks: BackgroundTasks = None,
@@ -163,6 +195,7 @@ async def generate_assets(
             image_results = await image.generate_images_batch(
                 shots=[{"shot_id": s.shot_id, "visual_prompt": s.visual_prompt} for s in shots],
                 model=image_model,
+                **image_config,
             )
 
             # 保存结果
@@ -189,6 +222,7 @@ async def generate_assets(
 async def render_video(
     project_id: str,
     shots_data: list[dict],
+    video_config: dict = Depends(video_config_dep),
     base_url: str = Query("http://localhost:8000", description="服务器地址"),
     video_model: str = Query("wan2.6-i2v-flash", description="视频生成模型"),
     background_tasks: BackgroundTasks = None,
@@ -220,6 +254,7 @@ async def render_video(
                 shots=shots_data,
                 base_url=base_url,
                 model=video_model,
+                **video_config,
             )
 
             state.update(
