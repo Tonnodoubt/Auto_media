@@ -8,7 +8,11 @@
   keys = extract_api_keys(request)
   image_key = resolve_image_key(keys.image_api_key)
 """
+import ipaddress
+import socket
 from dataclasses import dataclass
+from urllib.parse import urlparse
+
 from fastapi import HTTPException, Request
 from app.core.config import settings as _cfg
 
@@ -18,6 +22,7 @@ class ApiKeyBundle:
     llm_api_key: str
     llm_base_url: str
     llm_provider: str
+    llm_model: str
     image_api_key: str
     image_base_url: str
     video_api_key: str
@@ -30,6 +35,7 @@ def extract_api_keys(request: Request) -> ApiKeyBundle:
         llm_api_key=request.headers.get("X-LLM-API-Key", ""),
         llm_base_url=request.headers.get("X-LLM-Base-URL", ""),
         llm_provider=request.headers.get("X-LLM-Provider", ""),
+        llm_model=request.headers.get("X-LLM-Model", ""),
         image_api_key=request.headers.get("X-Image-API-Key", ""),
         image_base_url=request.headers.get("X-Image-Base-URL", ""),
         video_api_key=request.headers.get("X-Video-API-Key", ""),
@@ -65,6 +71,59 @@ def resolve_video_key(header_key: str) -> str:
     return key
 
 
+def validate_user_base_url(url: str) -> str:
+    """
+    验证用户提供的 base URL，防止 SSRF 攻击。
+
+    规则（始终执行）：
+    - 空字符串直接放行（调用方回退到默认值）
+    - 必须使用 https 协议
+    - 若 hostname 本身是 IP 字面量，拒绝 loopback / 私有 / link-local
+
+    规则（仅 VALIDATE_BASE_URL_DNS=true 时执行）：
+    - 对域名做 DNS 解析，拒绝解析结果为内网 IP 的地址
+    - 生产环境建议开启；国内开发环境可保持默认 false（境外域名可能无法解析）
+
+    不做 host 白名单：本项目支持任意第三方 API 供应商。
+    """
+    if not url:
+        return url
+
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        raise HTTPException(status_code=400, detail="base_url 必须使用 https 协议")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise HTTPException(status_code=400, detail="base_url 缺少有效的主机名")
+
+    # 始终检查：hostname 本身是 IP 字面量时拒绝内网地址
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if ip.is_loopback or ip.is_private or ip.is_link_local:
+            raise HTTPException(status_code=400, detail="base_url 不允许指向内网或本地地址")
+        return url  # 合法公网 IP，无需再做 DNS 解析
+    except ValueError:
+        pass  # 普通域名，继续走 DNS 检查逻辑
+
+    # 可选检查：DNS 解析后验证结果 IP
+    if _cfg.validate_base_url_dns:
+        try:
+            infos = socket.getaddrinfo(hostname, None)
+        except socket.gaierror:
+            raise HTTPException(status_code=400, detail=f"base_url 主机名无法解析: {hostname}")
+        for info in infos:
+            ip_str = info[4][0]
+            try:
+                ip = ipaddress.ip_address(ip_str)
+            except ValueError:
+                continue
+            if ip.is_loopback or ip.is_private or ip.is_link_local:
+                raise HTTPException(status_code=400, detail="base_url 不允许指向内网或本地地址")
+
+    return url
+
+
 def mask_key(key: str) -> str:
     """脱敏 API Key，用于日志和错误信息输出，避免明文泄露。"""
     if not key:
@@ -78,6 +137,35 @@ def mask_key(key: str) -> str:
 # 用于 router 函数签名，消除每个 endpoint 重复的两行 extract + resolve 样板代码。
 # FastAPI 自动将 request: Request 注入，HTTPException 在此处抛出与在 endpoint 中等价。
 
+# provider 名称 → (api_key 字段名, base_url 字段名)
+# "claude" 对应 config 里的 anthropic_* 字段
+_PROVIDER_CONFIG: dict[str, tuple[str, str]] = {
+    "claude": ("anthropic_api_key", "anthropic_base_url"),
+    "openai": ("openai_api_key",    "openai_base_url"),
+    "qwen":   ("qwen_api_key",      "qwen_base_url"),
+    "zhipu":  ("zhipu_api_key",     "zhipu_base_url"),
+    "gemini": ("gemini_api_key",    "gemini_base_url"),
+}
+
+
+def resolve_llm_config(header_key: str, header_base_url: str, header_provider: str, header_model: str = "") -> dict:
+    """
+    解析 LLM 配置，优先级：
+      api_key  : Header X-LLM-API-Key  → .env <provider>_API_KEY
+      base_url : Header X-LLM-Base-URL → .env <provider>_BASE_URL
+      provider : Header X-LLM-Provider → settings.default_llm_provider
+      model    : Header X-LLM-Model    → "" (后端用 MODEL_MAP 默认值)
+    """
+    provider = header_provider or _cfg.default_llm_provider
+    key_attr, url_attr = _PROVIDER_CONFIG.get(
+        provider,
+        ("anthropic_api_key", "anthropic_base_url"),  # 未知 provider 回退 claude
+    )
+    api_key  = header_key or getattr(_cfg, key_attr, "")
+    base_url = validate_user_base_url(header_base_url) or getattr(_cfg, url_attr, "")
+    return {"api_key": api_key, "base_url": base_url, "provider": provider, "model": header_model}
+
+
 def image_key_dep(request: Request) -> str:
     """Depends：提取并 resolve 图片生成 Key（Header → .env → HTTP 400）"""
     return resolve_image_key(extract_api_keys(request).image_api_key)
@@ -88,7 +176,7 @@ def image_config_dep(request: Request) -> dict:
     keys = extract_api_keys(request)
     return {
         "image_api_key": resolve_image_key(keys.image_api_key),
-        "image_base_url": keys.image_base_url or _cfg.siliconflow_base_url,
+        "image_base_url": validate_user_base_url(keys.image_base_url) or _cfg.siliconflow_base_url,
     }
 
 
@@ -102,15 +190,11 @@ def video_config_dep(request: Request) -> dict:
     keys = extract_api_keys(request)
     return {
         "video_api_key": resolve_video_key(keys.video_api_key),
-        "video_base_url": keys.video_base_url or _cfg.dashscope_base_url,
+        "video_base_url": validate_user_base_url(keys.video_base_url) or _cfg.dashscope_base_url,
     }
 
 
 def llm_config_dep(request: Request) -> dict:
     """Depends：提取 LLM 配置（api_key / base_url / provider），返回 dict 供 ** 解构。"""
     keys = extract_api_keys(request)
-    return {
-        "api_key": keys.llm_api_key,
-        "base_url": keys.llm_base_url,
-        "provider": keys.llm_provider,
-    }
+    return resolve_llm_config(keys.llm_api_key, keys.llm_base_url, keys.llm_provider, keys.llm_model)

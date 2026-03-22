@@ -63,12 +63,23 @@
       </div>
     </div>
   </div>
+
+  <div v-if="error" class="error-tip">{{ error }}</div>
+
+  <ApiKeyModal
+    :show="showKeyModal"
+    :type="keyModalType"
+    :title="keyModalType === 'invalid' ? 'API Key 无效' : 'API Key 未设置'"
+    :message="keyModalMsg"
+    @close="showKeyModal = false"
+  />
 </template>
 
 <script setup>
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useStoryStore } from '../stores/story.js'
 import { generateCharacterImage, generateAllCharacterImages, getCharacterImages } from '../api/story.js'
+import ApiKeyModal from './ApiKeyModal.vue'
 
 const props = defineProps({
   characters: {
@@ -81,6 +92,24 @@ const store = useStoryStore()
 const currentIndex = ref(0)
 const isGenerating = ref(false)
 const characterData = reactive({})
+const error = ref('')
+const showKeyModal = ref(false)
+const keyModalType = ref('missing')
+const keyModalMsg = ref('')
+
+function isAuthError(msg) {
+  return /401|403|invalid|incorrect|unauthorized|api.?key/i.test(msg)
+}
+
+function handleError(msg) {
+  if (isAuthError(msg)) {
+    keyModalType.value = 'invalid'
+    keyModalMsg.value = 'API Key 无效或已过期，请检查后重新设置。'
+    showKeyModal.value = true
+  } else {
+    error.value = msg || '生成失败，请重试'
+  }
+}
 
 const anyLoading = computed(() =>
   isGenerating.value || Object.values(characterData).some(d => d.loading)
@@ -126,9 +155,10 @@ async function generateOne(name) {
   try {
     const result = await generateCharacterImage(store.storyId, char)
     data.imageUrl = result.image_url
+    error.value = ''
   } catch (e) {
     console.error('Failed to generate character image:', e)
-    alert(`生成失败: ${e.message}`)
+    handleError(e.message)
   } finally {
     data.loading = false
   }
@@ -152,11 +182,13 @@ async function generateAll() {
     }
     if (errors && errors.length > 0) {
       const names = errors.map(e => e.character_name).join('、')
-      alert(`以下角色生成失败: ${names}`)
+      error.value = `以下角色生成失败: ${names}`
+    } else {
+      error.value = ''
     }
   } catch (e) {
     console.error('Failed to generate all character images:', e)
-    alert(`批量生成失败: ${e.message}`)
+    handleError(e.message)
   } finally {
     isGenerating.value = false
     for (const char of props.characters) {
@@ -405,5 +437,12 @@ onMounted(loadExistingImages)
 
 .indicator:hover:not(.active) {
   background: #bbb;
+}
+
+.error-tip {
+  margin-top: 10px;
+  color: #e53935;
+  font-size: 13px;
+  text-align: center;
 }
 </style>

@@ -120,4 +120,9 @@ async def generate_character_images_batch(
         )
         for char in characters
     ]
-    return list(await asyncio.gather(*tasks, return_exceptions=True))
+    raw = await asyncio.gather(*tasks, return_exceptions=True)
+    return [
+        result if not isinstance(result, Exception)
+        else {"character_name": characters[i]["name"], "error": str(result)}
+        for i, result in enumerate(raw)
+    ]

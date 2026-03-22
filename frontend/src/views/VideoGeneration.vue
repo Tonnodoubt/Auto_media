@@ -740,11 +740,6 @@ async function generateAllTTS() {
 }
 
 async function generateOneImage(shotId) {
-  if (!settings.useMock && !settings.effectiveImageApiKey) {
-    showKeyModal.value = true
-    return
-  }
-
   const shot = shots.value.find(s => s.shot_id === shotId)
   if (!shot) return
 
@@ -785,11 +780,6 @@ async function generateAllImages() {
 }
 
 async function generateOneVideo(shotId) {
-  if (!settings.useMock && !settings.effectiveVideoApiKey) {
-    showKeyModal.value = true
-    return
-  }
-
   const shot = shots.value.find(s => s.shot_id === shotId)
   if (!shot || !shot.image_url) return
 

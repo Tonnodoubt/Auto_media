@@ -11,6 +11,7 @@ function getHeaders() {
   if (settings.effectiveLlmApiKey)   headers['X-LLM-API-Key']    = settings.effectiveLlmApiKey
   if (settings.effectiveLlmBaseUrl)  headers['X-LLM-Base-URL']   = settings.effectiveLlmBaseUrl
   if (settings.effectiveLlmProvider) headers['X-LLM-Provider']   = settings.effectiveLlmProvider
+  if (settings.effectiveLlmModel)    headers['X-LLM-Model']      = settings.effectiveLlmModel
   if (settings.effectiveImageApiKey)  headers['X-Image-API-Key']  = settings.effectiveImageApiKey
   if (settings.effectiveImageBaseUrl) headers['X-Image-Base-URL'] = settings.effectiveImageBaseUrl
   if (settings.effectiveVideoApiKey)  headers['X-Video-API-Key']  = settings.effectiveVideoApiKey

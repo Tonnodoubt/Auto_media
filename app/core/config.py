@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     dashscope_api_key: str = ""
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/api/v1"
 
+    # Security: whether to DNS-resolve user-supplied base URLs and reject private IPs
+    # Set to false in dev environments where foreign domains may not resolve
+    validate_base_url_dns: bool = False
+
     class Config:
         env_file = ".env"
 

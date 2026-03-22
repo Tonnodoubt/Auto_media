@@ -53,16 +53,15 @@ async def generate_single(body: CharacterImageRequest, image_config: dict = Depe
             **image_config,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"角色人设图生成失败: {e}")
+        raise HTTPException(status_code=500, detail=f"角色人设图生成失败: {e}") from e
 
-    story = await repo.get_story(db, body.story_id)
-    character_images = story.get("character_images", {})
-    character_images[body.character_name] = {
-        "image_url": result["image_url"],
-        "image_path": result["image_path"],
-        "prompt": result["prompt"],
-    }
-    await repo.save_story(db, body.story_id, {"character_images": character_images})
+    await repo.upsert_character_images(db, body.story_id, {
+        body.character_name: {
+            "image_url": result["image_url"],
+            "image_path": result["image_path"],
+            "prompt": result["prompt"],
+        }
+    })
 
     return CharacterImageResult(
         character_name=result["character_name"],
@@ -82,20 +81,19 @@ async def generate_all(body: BatchCharacterRequest, image_config: dict = Depends
             **image_config,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"批量角色人设图生成失败: {e}")
+        raise HTTPException(status_code=500, detail=f"批量角色人设图生成失败: {e}") from e
 
-    story = await repo.get_story(db, body.story_id)
-    character_images = story.get("character_images", {})
     valid_results = []
     errors = []
+    new_images = {}
 
     for i, result in enumerate(raw_results):
         char_name = body.characters[i]["name"] if i < len(body.characters) else "unknown"
-        if isinstance(result, Exception):
-            errors.append(CharacterImageError(character_name=char_name, error=str(result)))
+        if "error" in result:
+            errors.append(CharacterImageError(character_name=char_name, error=result["error"]))
             continue
 
-        character_images[char_name] = {
+        new_images[char_name] = {
             "image_url": result["image_url"],
             "image_path": result["image_path"],
             "prompt": result["prompt"],
@@ -109,7 +107,7 @@ async def generate_all(body: BatchCharacterRequest, image_config: dict = Depends
     if not valid_results:
         raise HTTPException(status_code=500, detail=f"所有角色人设图生成失败: {errors[0].error if errors else '未知错误'}")
 
-    await repo.save_story(db, body.story_id, {"character_images": character_images})
+    await repo.upsert_character_images(db, body.story_id, new_images)
     return BatchCharacterResponse(results=valid_results, errors=errors)
 
 

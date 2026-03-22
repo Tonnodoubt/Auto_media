@@ -98,6 +98,28 @@ async def delete_story(db: AsyncSession, story_id: str) -> bool:
     return True
 
 
+async def upsert_character_images(
+    db: AsyncSession,
+    story_id: str,
+    new_images: Dict[str, dict],
+) -> None:
+    """
+    原子地将多个角色图片信息合并进 story.character_images。
+
+    使用 SELECT ... FOR UPDATE 锁定行后在同一事务内更新，
+    避免并发请求互相覆盖各自写入的角色图片。
+    """
+    stmt = select(Story).where(Story.id == story_id).with_for_update()
+    result = await db.execute(stmt)
+    story = result.scalar_one_or_none()
+    if story is None:
+        raise ValueError(f"Story {story_id} not found")
+    images = dict(story.character_images or {})
+    images.update(new_images)
+    story.character_images = images
+    await db.commit()
+
+
 # ============ Pipeline Repository ============
 
 async def save_pipeline(

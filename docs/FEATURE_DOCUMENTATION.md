@@ -332,6 +332,16 @@
 
 ### 🟡 P2 — 优化
 
+- [ ] **发布前：开启 DNS-based SSRF 防护**
+  - `app/core/api_keys.py` 的 `validate_user_base_url()` 已实现 DNS 解析 + 内网 IP 拦截
+  - 开发环境默认关闭（境外域名在国内可能无法解析）
+  - 正式部署时在 `.env` 中加入 `VALIDATE_BASE_URL_DNS=true`
+
+- [ ] **发布前：移除 Mock 模式**
+  - `app/services/story_llm.py` 中各函数在 `api_key` 为空时直接 fallback 到 `mock_*` 函数（`analyze_idea`、`generate_outline`、`generate_script`、`chat`、`refine`、`world_building_start`、`world_building_turn`）
+  - `app/services/story_mock.py` 整个文件及 `mock_world_building_start` / `mock_world_building_turn` 等函数均需删除或加守卫
+  - 建议：正式发布时将 fallback 改为直接抛出 400，强制要求用户填写 API Key
+
 - [ ] **清理 Projects 遗留模块**
   - `app/routers/projects.py` 返回硬编码 Mock 数据，`Project` 模型与 Story+Pipeline 流程脱节
 

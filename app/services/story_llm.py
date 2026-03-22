@@ -134,8 +134,8 @@ def _make_client(api_key: str, base_url: str) -> AsyncOpenAI:
     return AsyncOpenAI(api_key=api_key, base_url=base_url or None)
 
 
-def _get_model(provider: str) -> str:
-    return MODEL_MAP.get(provider, "qwen-plus")
+def _get_model(provider: str, model: str = "") -> str:
+    return model or MODEL_MAP.get(provider, "qwen-plus")
 
 
 def _parse_json(content: str):
@@ -149,7 +149,7 @@ def _parse_json(content: str):
     return _json.loads(content.strip())
 
 
-async def refine(story_id: str, change_type: str, change_summary: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "") -> dict:
+async def refine(story_id: str, change_type: str, change_summary: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "", model: str = "") -> dict:
     import json as _json
     story = await repo.get_story(db, story_id)
     if not api_key:
@@ -162,7 +162,7 @@ async def refine(story_id: str, change_type: str, change_summary: str, db: Async
         change_summary=change_summary,
     )
     resp = await client.chat.completions.create(
-        model=_get_model(provider),
+        model=_get_model(provider, model),
         messages=[{"role": "user", "content": prompt}],
     )
     try:
@@ -178,7 +178,7 @@ async def refine(story_id: str, change_type: str, change_summary: str, db: Async
     }
 
 
-async def analyze_idea(idea: str, genre: str, tone: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "") -> dict:
+async def analyze_idea(idea: str, genre: str, tone: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "", model: str = "") -> dict:
     if not api_key:
         return await mock_analyze_idea(idea, genre, tone, db=db)
 
@@ -187,7 +187,7 @@ async def analyze_idea(idea: str, genre: str, tone: str, db: AsyncSession, api_k
     client = _make_client(api_key, base_url)
     prompt = ANALYZE_PROMPT.format(idea=idea, genre=genre, tone=tone)
     resp = await client.chat.completions.create(
-        model=_get_model(provider),
+        model=_get_model(provider, model),
         messages=[{"role": "user", "content": prompt}],
     )
     data = _parse_json(resp.choices[0].message.content)
@@ -203,14 +203,14 @@ async def analyze_idea(idea: str, genre: str, tone: str, db: AsyncSession, api_k
     }
 
 
-async def generate_outline(story_id: str, selected_setting: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "") -> dict:
+async def generate_outline(story_id: str, selected_setting: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "", model: str = "") -> dict:
     if not api_key:
         return await mock_generate_outline(story_id, selected_setting, db=db)
 
     client = _make_client(api_key, base_url)
     prompt = OUTLINE_PROMPT.format(selected_setting=selected_setting)
     resp = await client.chat.completions.create(
-        model=_get_model(provider),
+        model=_get_model(provider, model),
         messages=[{"role": "user", "content": prompt}],
     )
     data = _parse_json(resp.choices[0].message.content)
@@ -223,7 +223,7 @@ async def generate_outline(story_id: str, selected_setting: str, db: AsyncSessio
     }
 
 
-async def chat(story_id: str, message: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = ""):
+async def chat(story_id: str, message: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "", model: str = ""):
     if not api_key:
         async for chunk in mock_chat(story_id, message, db=db):
             yield chunk
@@ -231,7 +231,7 @@ async def chat(story_id: str, message: str, db: AsyncSession, api_key: str = "",
 
     client = _make_client(api_key, base_url)
     stream = await client.chat.completions.create(
-        model=_get_model(provider),
+        model=_get_model(provider, model),
         messages=[{"role": "user", "content": message}],
         stream=True,
     )
@@ -241,7 +241,7 @@ async def chat(story_id: str, message: str, db: AsyncSession, api_key: str = "",
             yield delta
 
 
-async def generate_script(story_id: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = ""):
+async def generate_script(story_id: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "", model: str = ""):
     if not api_key:
         async for scene in mock_generate_script(story_id):
             yield scene
@@ -264,7 +264,7 @@ async def generate_script(story_id: str, db: AsyncSession, api_key: str = "", ba
             summary=ep["summary"],
         )
         resp = await client.chat.completions.create(
-            model=_get_model(provider),
+            model=_get_model(provider, model),
             messages=[{"role": "user", "content": prompt}],
         )
         if resp.usage:
@@ -278,7 +278,7 @@ async def generate_script(story_id: str, db: AsyncSession, api_key: str = "", ba
     yield {"__usage__": {"prompt_tokens": total_prompt, "completion_tokens": total_completion}}
 
 
-async def world_building_start(idea: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "") -> dict:
+async def world_building_start(idea: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "", model: str = "") -> dict:
     import uuid
     if not api_key:
         return await mock_world_building_start(idea, db=db)
@@ -290,7 +290,7 @@ async def world_building_start(idea: str, db: AsyncSession, api_key: str = "", b
         {"role": "user", "content": f"种子想法：{idea}，请提出第一个世界观问题"},
     ]
     resp = await client.chat.completions.create(
-        model=_get_model(provider),
+        model=_get_model(provider, model),
         messages=messages,
     )
     data = _parse_json(resp.choices[0].message.content)
@@ -307,7 +307,7 @@ async def world_building_start(idea: str, db: AsyncSession, api_key: str = "", b
     }
 
 
-async def world_building_turn(story_id: str, answer: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "") -> dict:
+async def world_building_turn(story_id: str, answer: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "", model: str = "") -> dict:
     if not api_key:
         return await mock_world_building_turn(story_id, answer, db=db)
 
@@ -318,7 +318,7 @@ async def world_building_turn(story_id: str, answer: str, db: AsyncSession, api_
     history = history + [{"role": "user", "content": answer}]
     client = _make_client(api_key, base_url)
     resp = await client.chat.completions.create(
-        model=_get_model(provider),
+        model=_get_model(provider, model),
         messages=history,
     )
     data = _parse_json(resp.choices[0].message.content)

@@ -281,17 +281,23 @@ async def get_status(project_id: str, pipeline_id: str = None, db: AsyncSession 
     参数：
     - project_id: 项目 ID
     - pipeline_id: 流水线 ID（可选，如果不提供则返回最新的）
+
+    优先级：
+    1. 手动步进的内存状态（_pipeline_states）
+    2. 指定 pipeline_id 的数据库记录
+    3. 最新的数据库记录
+    4. 默认待机状态
     """
-    if pipeline_id:
-        # 获取指定的 pipeline
+    # 手动步进模式：内存状态优先（仅在未指定 pipeline_id 时）
+    if not pipeline_id and project_id in _pipeline_states:
+        pipeline = _pipeline_states[project_id]
+    elif pipeline_id:
         pipeline = await repo.get_pipeline(db, pipeline_id)
         if not pipeline:
             raise HTTPException(status_code=404, detail="Pipeline not found")
     else:
-        # 获取最新的 pipeline
         pipeline = await repo.get_pipeline_by_story(db, project_id)
         if not pipeline:
-            # 如果没有 pipeline，返回默认状态
             pipeline = {
                 "status": PipelineStatus.PENDING,
                 "progress": 0,
