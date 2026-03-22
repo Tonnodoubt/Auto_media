@@ -25,6 +25,10 @@
             :characters="store.characters"
             :relationships="store.relationships"
           />
+          <CharacterDesign
+            v-if="store.characters.length"
+            :characters="store.characters"
+          />
         </div>
       </div>
 
@@ -66,6 +70,7 @@ import StepIndicator from '../components/StepIndicator.vue'
 import OutlinePreview from '../components/OutlinePreview.vue'
 import SceneStream from '../components/SceneStream.vue'
 import CharacterGraph from '../components/CharacterGraph.vue'
+import CharacterDesign from '../components/CharacterDesign.vue'
 import ApiKeyModal from '../components/ApiKeyModal.vue'
 import OutlineChatPanel from '../components/OutlineChatPanel.vue'
 import { useStoryStore } from '../stores/story.js'
@@ -89,7 +94,7 @@ function isAuthError(msg) {
 }
 
 async function startGenerate() {
-  if (!settings.useMock && !settings.apiKey) { showKeyModal.value = true; return }
+  if (!settings.useMock && !settings.effectiveLlmApiKey) { showKeyModal.value = true; return }
   started.value = true
   streaming.value = true
   error.value = ''
