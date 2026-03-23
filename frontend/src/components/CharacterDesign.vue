@@ -30,7 +30,7 @@
                 <div v-if="!getCharacterData(char.name).imageUrl" class="placeholder-image">
                   <span>待生成</span>
                 </div>
-                <img v-else :src="getCharacterData(char.name).imageUrl" :alt="char.name" class="character-image" />
+                <img v-else :src="getMediaUrl(getCharacterData(char.name).imageUrl)" :alt="char.name" class="character-image" />
 
                 <!-- 底部操作栏覆盖在图片上 -->
                 <div class="image-overlay-footer">
@@ -78,6 +78,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useStoryStore } from '../stores/story.js'
+import { useSettingsStore } from '../stores/settings.js'
 import { generateCharacterImage, generateAllCharacterImages, getCharacterImages } from '../api/story.js'
 import ApiKeyModal from './ApiKeyModal.vue'
 
@@ -89,6 +90,16 @@ const props = defineProps({
 })
 
 const store = useStoryStore()
+const settings = useSettingsStore()
+
+function getMediaUrl(path) {
+  if (!path) return ''
+  if (path.startsWith('http')) return path
+  if (import.meta.env.DEV) return path
+  const base = settings.backendUrl ? settings.backendUrl.replace(/\/$/, '') : 'http://localhost:8000'
+  return `${base}${path}`
+}
+
 const currentIndex = ref(0)
 const isGenerating = ref(false)
 const characterData = reactive({})

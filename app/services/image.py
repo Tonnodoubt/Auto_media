@@ -19,6 +19,33 @@ DEFAULT_MODEL = "black-forest-labs/FLUX.1-schnell"
 IMAGE_SIZE = "1280x720"
 CHARACTER_SIZE = "1024x1024"
 
+# 火山方舟要求最少 3,686,400 像素（SiliconFlow 无此限制）
+ARK_IMAGE_SIZE = "2560x1440"
+ARK_CHARACTER_SIZE = "1920x1920"
+
+
+def _is_ark(base_url: str) -> bool:
+    return "volces.com" in base_url or "volcengine" in base_url
+
+
+def _extract_image_url(resp) -> str:
+    """Parse image URL from API response with clear error messages."""
+    try:
+        body = resp.json()
+    except Exception as exc:
+        raise RuntimeError(
+            f"图片 API 响应非 JSON (status={resp.status_code}): {resp.text[:200]}"
+        ) from exc
+    if not isinstance(body, dict):
+        raise RuntimeError(f"图片 API 响应格式异常 (status={resp.status_code}): {str(body)[:200]}")
+    for key in ("images", "data"):
+        items = body.get(key)
+        if isinstance(items, list) and items and isinstance(items[0], dict) and "url" in items[0]:
+            return items[0]["url"]
+    raise RuntimeError(
+        f"图片 API 响应缺少 url (status={resp.status_code}, keys={list(body.keys())}, body={str(body)[:200]})"
+    )
+
 
 async def generate_image(visual_prompt: str, shot_id: str, model: str = DEFAULT_MODEL, image_api_key: str = "", image_base_url: str = "") -> dict:
     """Generate image for a single shot. Returns { shot_id, image_path, image_url }."""
@@ -26,16 +53,17 @@ async def generate_image(visual_prompt: str, shot_id: str, model: str = DEFAULT_
     if image_base_url and not image_api_key:
         raise HTTPException(status_code=400, detail="提供自定义 image_base_url 时必须同时提供 image_api_key")
     image_api_key = image_api_key or settings.siliconflow_api_key
+    size = ARK_IMAGE_SIZE if _is_ark(base_url) else IMAGE_SIZE
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(
             f"{base_url}/images/generations",
             headers={"Authorization": f"Bearer {image_api_key}"},
-            json={"model": model, "prompt": visual_prompt, "n": 1, "image_size": IMAGE_SIZE},
+            json={"model": model, "prompt": visual_prompt, "n": 1, "size": size, "response_format": "url"},
         )
         print(f"[IMAGE] status={resp.status_code} key={mask_key(image_api_key)} base={base_url}")
         if not resp.is_success:
             raise RuntimeError(f"图片生成 API 错误 {resp.status_code}: {resp.text[:200]}")
-        image_url = resp.json()["images"][0]["url"]
+        image_url = _extract_image_url(resp)
 
         # Download and save locally
         img_resp = await client.get(image_url)
@@ -59,11 +87,22 @@ async def generate_images_batch(shots: list[dict], model: str = DEFAULT_MODEL, i
 
 def _build_character_prompt(name: str, role: str, description: str) -> str:
     """Build prompt for character design image."""
+    # Map common Chinese role keywords to English visual cues for better model interpretation
+    role_lower = role.lower()
+    if any(k in role_lower for k in ("反派", "villain", "antagonist", "boss")):
+        role_cue = "villain, sinister expression, dark presence"
+    elif any(k in role_lower for k in ("主角", "protagonist", "hero", "主人公")):
+        role_cue = "protagonist, determined expression, heroic bearing"
+    elif any(k in role_lower for k in ("配角", "supporting", "助手", "sidekick")):
+        role_cue = "supporting character, approachable expression"
+    else:
+        role_cue = f"{role}"
     return (
-        f"Character portrait of {name}, role: {role}, appearance: {description}, "
-        "cinematic portrait, highly detailed, professional character design, "
-        "consistent character reference, clean background, studio lighting, "
-        "8k resolution, photorealistic"
+        f"Character portrait of {name}, {role_cue}, "
+        f"character description: {description}, "
+        "unique individual character design, distinctive appearance, "
+        "cinematic portrait, highly detailed, professional character concept art, "
+        "clean background, studio lighting, 8k resolution, photorealistic"
     )
 
 
@@ -82,17 +121,18 @@ async def generate_character_image(
     if image_base_url and not image_api_key:
         raise HTTPException(status_code=400, detail="提供自定义 image_base_url 时必须同时提供 image_api_key")
     image_api_key = image_api_key or settings.siliconflow_api_key
+    size = ARK_CHARACTER_SIZE if _is_ark(base_url) else CHARACTER_SIZE
 
     async with httpx.AsyncClient(timeout=120) as client:
         resp = await client.post(
             f"{base_url}/images/generations",
             headers={"Authorization": f"Bearer {image_api_key}"},
-            json={"model": model, "prompt": prompt, "n": 1, "image_size": CHARACTER_SIZE},
+            json={"model": model, "prompt": prompt, "n": 1, "size": size, "response_format": "url"},
         )
         print(f"[CHARACTER IMAGE] status={resp.status_code} key={mask_key(image_api_key)} base={base_url} for {character_name}")
         if not resp.is_success:
-            raise RuntimeError(f"角色图生成 API 错误 {resp.status_code}: {resp.text[:200]}")
-        image_url = resp.json()["images"][0]["url"]
+            raise RuntimeError(f"角色图生成 API 错误 {resp.status_code}: {resp.text[:500]}")
+        image_url = _extract_image_url(resp)
 
         img_resp = await client.get(image_url)
         img_resp.raise_for_status()

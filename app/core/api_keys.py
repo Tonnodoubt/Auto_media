@@ -208,8 +208,8 @@ def video_config_dep(request: Request) -> dict:
     """Depends：提取视频生成配置（api_key / base_url / provider），返回 dict 供 ** 解构。"""
     keys = extract_api_keys(request)
     video_provider = (keys.video_provider or "dashscope").strip().lower()
-    if video_provider not in ("dashscope", "kling"):
-        raise HTTPException(status_code=400, detail=f"不支持的视频服务商: {video_provider}，可选值: dashscope, kling")
+    if video_provider not in ("dashscope", "kling", "doubao"):
+        raise HTTPException(status_code=400, detail=f"不支持的视频服务商: {video_provider}，可选值: dashscope, kling, doubao")
     validated_base_url = validate_user_base_url(keys.video_base_url)
 
     if validated_base_url:
@@ -224,6 +224,9 @@ def video_config_dep(request: Request) -> dict:
     if video_provider == "kling":
         api_key = keys.video_api_key or _cfg.kling_api_key
         base_url = _cfg.kling_base_url
+    elif video_provider == "doubao":
+        api_key = keys.video_api_key or _cfg.doubao_api_key
+        base_url = _cfg.doubao_base_url
     else:  # dashscope (default)
         api_key = keys.video_api_key or _cfg.dashscope_api_key
         base_url = _cfg.dashscope_base_url

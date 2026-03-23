@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     kling_api_key: str = ""
     kling_base_url: str = "https://api.klingai.com"
 
+    doubao_api_key: str = ""
+    doubao_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+
     # Security: whether to DNS-resolve user-supplied base URLs and reject private IPs
     # Set to false in dev environments where foreign domains may not resolve
     validate_base_url_dns: bool = False

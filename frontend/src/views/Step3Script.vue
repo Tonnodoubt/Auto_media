@@ -63,7 +63,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import StepIndicator from '../components/StepIndicator.vue'
 import OutlinePreview from '../components/OutlinePreview.vue'
@@ -88,6 +88,13 @@ const showKeyModal = ref(false)
 const keyModalType = ref('missing')
 const keyModalMsg = ref('')
 
+onMounted(() => {
+  if (store.step3Done) {
+    started.value = true
+    done.value = true
+  }
+})
+
 function isAuthError(msg) {
   return /401|403|invalid|incorrect|unauthorized|api.?key/i.test(msg)
 }
@@ -101,7 +108,7 @@ async function startGenerate() {
   await streamScript(
     store.storyId,
     (scene) => store.addScene(scene),
-    () => { streaming.value = false; done.value = true; store.setStep(4) },
+    () => { streaming.value = false; done.value = true; store.step3Done = true; store.setStep(4) },
     (msg) => {
       streaming.value = false
       if (isAuthError(msg)) {

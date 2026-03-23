@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 
 export const useStoryStore = defineStore('story', {
+  persist: true,
   state: () => ({
     currentStep: 1,
     storyId: null,
@@ -14,6 +15,8 @@ export const useStoryStore = defineStore('story', {
     relationships: [],
     outline: [],
     scenes: [],
+    step3Done: false,
+    shots: [],
     usage: { prompt_tokens: 0, completion_tokens: 0 },
     wbHistory: [],
     wbTurn: 0,
@@ -55,7 +58,11 @@ export const useStoryStore = defineStore('story', {
         this.scenes.push(scene)
       }
     },
-    resetScenes() { this.scenes = [] },
+    resetScenes() { this.scenes = []; this.step3Done = false },
+    setShots(shots) {
+      this.shots = shots.map(s => ({ ...s, ttsLoading: false, imageLoading: false, videoLoading: false }))
+    },
+    clearShots() { this.shots = [] },
     updateOutlineEpisode(episode, title, summary) {
       const ep = this.outline.find(e => e.episode === episode)
       if (ep) { ep.title = title; ep.summary = summary }

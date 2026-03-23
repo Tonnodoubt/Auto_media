@@ -296,7 +296,7 @@ const manualOverride = ref(false)
 // 解析和结果
 const isParsing = ref(false)
 const error = ref('')
-const shots = ref([])
+const shots = computed(() => storyStore.shots)
 const voices = ref([])
 const selectedVoice = ref('')
 const showKeyModal = ref(false)
@@ -461,7 +461,7 @@ function processFile(file) {
     }
     uploadedScript.value = text.trim()
     error.value = ''
-    shots.value = []
+    storyStore.clearShots()
   }
   reader.readAsText(file)
 }
@@ -533,7 +533,7 @@ async function parseStoryboard() {
 
   isParsing.value = true
   error.value = ''
-  shots.value = []
+  storyStore.clearShots()
   progress.value = { show: true, label: '正在调用 LLM 解析分镜...', percent: 20 }
 
   // Mock 模式
@@ -590,7 +590,7 @@ async function parseStoryboard() {
     ]
 
     progress.value = { show: true, label: '解析完成', percent: 100 }
-    shots.value = mockShots
+    storyStore.setShots(mockShots)
 
     setTimeout(() => {
       progress.value.show = false
@@ -625,7 +625,7 @@ async function parseStoryboard() {
 
     progress.value = { show: true, label: '解析完成，渲染卡片...', percent: 90 }
     const data = await res.json()
-    shots.value = data.shots.map(s => ({ ...s, ttsLoading: false, imageLoading: false, videoLoading: false }))
+    storyStore.setShots(data.shots)
 
     // 更新 token 统计
     if (data.usage) {
@@ -822,6 +822,13 @@ async function generateAllVideos() {
 
 onMounted(() => {
   loadVoices()
+
+  // 恢复持久化的 shots 时重置 loading 状态（防止刷新前正在生成导致状态卡住）
+  storyStore.shots.forEach(s => {
+    s.ttsLoading = false
+    s.imageLoading = false
+    s.videoLoading = false
+  })
 
   // 初始化场景选择
   if (hasStoryData.value) {

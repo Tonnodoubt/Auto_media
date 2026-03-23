@@ -164,8 +164,9 @@ async def refine(story_id: str, change_type: str, change_summary: str, db: Async
         return {"characters": None, "relationships": None, "outline": None, "meta_theme": None}
 
     client = _make_client(api_key, base_url)
+    story_data = {k: v for k, v in story.items() if k not in ('created_at', 'updated_at')}
     prompt = REFINE_PROMPT.format(
-        story_json=_json.dumps(story, ensure_ascii=False),
+        story_json=_json.dumps(story_data, ensure_ascii=False),
         change_type=change_type,
         change_summary=change_summary,
     )
@@ -382,7 +383,7 @@ async def apply_chat(story_id: str, change_type: str, chat_history: list, curren
 
     client = _make_client(api_key, base_url)
     history_text = "\n".join(
-        f"{'用户' if m['role'] == 'user' else 'AI'}: {m['text']}" for m in chat_history
+        f"{'用户' if m.role == 'user' else 'AI'}: {m.text}" for m in chat_history
     )
 
     if change_type == "character":

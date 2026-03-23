@@ -99,6 +99,13 @@ export const IMAGE_PROVIDERS = [
     ],
   },
   {
+    id: 'doubao', label: '豆包 (火山方舟)',
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+    models: [
+      { id: 'custom', label: '填写端点 ID（ep-xxx）' },
+    ],
+  },
+  {
     id: 'custom', label: '自定义',
     baseUrl: '',
     models: [{ id: 'custom', label: '自定义...' }],
@@ -126,6 +133,13 @@ export const VIDEO_PROVIDERS = [
       { id: 'kling-v1-pro',      label: 'Kling v1 Pro' },
       { id: 'kling-v1-standard', label: 'Kling v1 Standard' },
       { id: 'custom', label: '自定义...' },
+    ],
+  },
+  {
+    id: 'doubao', label: '豆包 Seedance (火山方舟)',
+    baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
+    models: [
+      { id: 'custom', label: '填写端点 ID（ep-xxx）' },
     ],
   },
   {

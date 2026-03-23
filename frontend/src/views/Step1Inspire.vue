@@ -37,7 +37,7 @@
 </template>
 
 <script setup>
-import { ref, onUnmounted } from 'vue'
+import { ref, watch, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import StepIndicator from '../components/StepIndicator.vue'
 import ApiKeyModal from '../components/ApiKeyModal.vue'
@@ -53,7 +53,8 @@ const settings = useSettingsStore()
 const isMounted = ref(true)
 onUnmounted(() => { isMounted.value = false })
 
-const idea = ref('')
+const idea = ref(store.input.idea || '')
+watch(idea, (val) => { store.input.idea = val })
 const loading = ref(false)
 const error = ref('')
 const showGenerator = ref(false)
