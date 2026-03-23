@@ -95,6 +95,7 @@ const settings = useSettingsStore()
 function getMediaUrl(path) {
   if (!path) return ''
   if (path.startsWith('http')) return path
+  if (import.meta.env.DEV) return path
   const base = settings.backendUrl ? settings.backendUrl.replace(/\/$/, '') : 'http://localhost:8000'
   return `${base}${path}`
 }
