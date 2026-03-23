@@ -20,6 +20,7 @@ class Story(Base):
     scenes = Column(JSON)  # List[SceneScript]
     wb_history = Column(JSON)  # List[dict] - world building history
     wb_turn = Column(Integer, default=0)
+    character_images = Column(JSON)  # dict - character name -> image info
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
