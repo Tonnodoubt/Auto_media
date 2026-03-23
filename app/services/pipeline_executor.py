@@ -7,7 +7,7 @@ from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas.storyboard import Shot
 from app.schemas.pipeline import GenerationStrategy, PipelineStatus
-from app.services import tts, image, video
+from app.services import tts, image, video, ffmpeg
 from app.services.storyboard import parse_script_to_storyboard
 from app.services import story_repository as repo
 
@@ -21,6 +21,7 @@ class PipelineExecutor:
         self.db = db
         self.shots: List[Shot] = []
         self.results: List[dict] = []
+        self.base_url: str = ""
 
     async def run_full_pipeline(
         self,
@@ -41,6 +42,7 @@ class PipelineExecutor:
         video_provider: str = "dashscope",
     ):
         """执行完整的生成流水线"""
+        self.base_url = base_url
         try:
             # Step 1: 分镜解析
             await self._update_state(
@@ -289,22 +291,22 @@ class PipelineExecutor:
 
     async def _stitch_videos(self):
         """使用 FFmpeg 合成音视频（仅分离式策略需要）"""
+        total = len(self.results)
         await self._update_state(
             PipelineStatus.STITCHING,
             90,
             "合成音视频中",
-            {"step": "stitch", "current": 0, "total": len(self.results), "message": "正在合成..."},
+            {"step": "stitch", "current": 0, "total": total, "message": "正在合成..."},
         )
 
-        # TODO: 实现 FFmpeg 合成逻辑
-        # 目前先跳过，直接返回分离的视频和音频文件
-        await asyncio.sleep(1)
+        self.results = await ffmpeg.stitch_batch(self.results, base_url=self.base_url)
 
+        stitched = sum(1 for r in self.results if r.get("final_video_url"))
         await self._update_state(
             PipelineStatus.STITCHING,
             95,
-            "音视频合成完成",
-            {"step": "stitch", "current": len(self.results), "total": len(self.results), "message": "合成完成"},
+            f"音视频合成完成（{stitched}/{total}）",
+            {"step": "stitch", "current": total, "total": total, "message": "合成完成"},
         )
 
     async def _update_state(
