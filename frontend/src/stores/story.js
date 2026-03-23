@@ -120,15 +120,17 @@ export const useStoryStore = defineStore('story', {
       this.wbTurn = turn
       this.wbCurrentQuestion = question
       this.wbHistory = question ? [{ role: 'ai', text: question.text, type: question.type, options: question.options }] : []
-      // New story_id means a fresh story — clear all previous story data
-      this.meta = null
-      this.characters = []
-      this.relationships = []
-      this.outline = []
-      this.scenes = []
-      this.shots = []
-      this.step3Done = false
-      this.selectedSetting = ''
+      // Only wipe story data when the story_id has actually changed
+      if (story_id !== this.storyId) {
+        this.meta = null
+        this.characters = []
+        this.relationships = []
+        this.outline = []
+        this.scenes = []
+        this.shots = []
+        this.step3Done = false
+        this.selectedSetting = ''
+      }
       if (usage) {
         this.usage.prompt_tokens += usage.prompt_tokens
         this.usage.completion_tokens += usage.completion_tokens
