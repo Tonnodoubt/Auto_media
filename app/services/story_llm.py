@@ -1,5 +1,6 @@
 from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Optional
 from app.services import story_repository as repo
 from app.services.story_mock import (
     mock_analyze_idea, mock_generate_outline, mock_generate_script, mock_chat,
@@ -371,10 +372,10 @@ async def world_building_turn(story_id: str, answer: str, db: AsyncSession, api_
 
 async def apply_chat(story_id: str, change_type: str, chat_history: list, current_item: dict,
                      db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "", model: str = "",
-                     all_characters: list = None, all_outline: list = None) -> dict:
+                     all_characters: Optional[list] = None, all_outline: Optional[list] = None) -> dict:
     import json as _json
     if not api_key:
-        return {}
+        raise ValueError("apply_chat 需要提供 api_key")
 
     client = _make_client(api_key, base_url)
     history_text = "\n".join(
@@ -408,7 +409,8 @@ async def apply_chat(story_id: str, change_type: str, chat_history: list, curren
     )
     try:
         data = _parse_json(resp.choices[0].message.content)
-    except Exception:
+    except Exception as e:
+        print(f"[APPLY_CHAT] JSON 解析失败: {e!r} | 原始响应: {resp.choices[0].message.content!r:.500}")
         return {}
 
     # 使用前端传来的完整数组（最新状态），而非从 DB 读取（可能陈旧）

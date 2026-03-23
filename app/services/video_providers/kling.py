@@ -65,10 +65,25 @@ class KlingVideoProvider(BaseVideoProvider):
             resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
             if not resp.is_success:
                 raise RuntimeError(f"Kling 视频任务查询错误 {resp.status_code}: {resp.text[:200]}")
-            data = resp.json()["data"]
-            status = data["task_status"]
+            try:
+                body = resp.json()
+            except Exception as e:
+                raise RuntimeError(f"Kling 响应 JSON 解析失败: {e!r} | 原始响应: {resp.text[:200]}") from e
+            data = body.get("data")
+            if not isinstance(data, dict):
+                raise RuntimeError(f"Kling 响应缺少 data 字段: {resp.text[:200]}")
+            status = data.get("task_status")
+            if not status:
+                raise RuntimeError(f"Kling 响应缺少 task_status 字段: {resp.text[:200]}")
             if status == "succeed":
-                return data["task_result"]["videos"][0]["url"]
+                task_result = data.get("task_result")
+                videos = task_result.get("videos") if isinstance(task_result, dict) else None
+                if not isinstance(videos, list) or not videos:
+                    raise RuntimeError(f"Kling 任务成功但 videos 为空或缺失: {resp.text[:200]}")
+                video_url = videos[0].get("url")
+                if not video_url:
+                    raise RuntimeError(f"Kling 任务成功但缺少 video url: {resp.text[:200]}")
+                return video_url
             if status == "failed":
                 raise RuntimeError(f"Kling 视频任务失败: {data.get('task_status_msg', status)}")
         raise TimeoutError(f"Kling 视频任务超时: {task_id}")

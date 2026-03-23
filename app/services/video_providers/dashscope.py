@@ -48,10 +48,19 @@ class DashScopeVideoProvider(BaseVideoProvider):
             resp = await client.get(url, headers={"Authorization": f"Bearer {api_key}"})
             if not resp.is_success:
                 raise RuntimeError(f"DashScope 视频任务查询错误 {resp.status_code}: {resp.text[:200]}")
-            data = resp.json()
-            status = data["output"]["task_status"]
+            try:
+                data = resp.json()
+            except Exception as e:
+                raise RuntimeError(f"DashScope 响应 JSON 解析失败: {e!r} | 原始响应: {resp.text[:200]}") from e
+            output = data.get("output", {})
+            status = output.get("task_status")
+            if not status:
+                raise RuntimeError(f"DashScope 响应缺少 task_status 字段: {resp.text[:200]}")
             if status == "SUCCEEDED":
-                return data["output"]["video_url"]
+                video_url = output.get("video_url")
+                if not video_url:
+                    raise RuntimeError(f"DashScope 任务成功但缺少 video_url: {resp.text[:200]}")
+                return video_url
             if status in ("FAILED", "CANCELED"):
-                raise RuntimeError(f"DashScope 视频任务失败: {data['output'].get('message', status)}")
+                raise RuntimeError(f"DashScope 视频任务失败: {output.get('message', status)}")
         raise TimeoutError(f"DashScope 视频任务超时: {task_id}")

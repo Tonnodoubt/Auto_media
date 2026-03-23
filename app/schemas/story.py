@@ -1,5 +1,5 @@
-from pydantic import BaseModel
-from typing import List, Optional
+from pydantic import BaseModel, model_validator
+from typing import List, Literal, Optional
 
 
 class AnalyzeIdeaRequest(BaseModel):
@@ -60,25 +60,36 @@ class GenerateScriptRequest(BaseModel):
     story_id: str
 
 
+class ChatMessage(BaseModel):
+    role: Literal["user", "ai"]
+    text: str
+
+
 class PatchStoryRequest(BaseModel):
     story_id: str
-    characters: Optional[List[dict]] = None
-    outline: Optional[List[dict]] = None
+    characters: Optional[List[Character]] = None
+    outline: Optional[List[OutlineScene]] = None
+
+    @model_validator(mode="after")
+    def at_least_one_field(self) -> "PatchStoryRequest":
+        if self.characters is None and self.outline is None:
+            raise ValueError("至少需要提供 characters 或 outline 之一")
+        return self
 
 
 class ApplyChatRequest(BaseModel):
     story_id: str
-    change_type: str          # "character" | "episode"
-    chat_history: List[dict]  # [{role: "user"|"ai", text: "..."}]
-    current_item: dict        # current character or episode object
-    all_characters: Optional[List[dict]] = None   # full characters array from store
-    all_outline: Optional[List[dict]] = None      # full outline array from store
+    change_type: Literal["character", "episode"]
+    chat_history: List[ChatMessage]
+    current_item: dict        # character 或 episode 对象（类型依 change_type 而定）
+    all_characters: Optional[List[dict]] = None
+    all_outline: Optional[List[dict]] = None
 
 
 class RefineRequest(BaseModel):
     story_id: str
-    change_type: str  # "character" | "episode"
-    change_summary: str  # 描述改了什么
+    change_type: Literal["character", "episode"]
+    change_summary: str
 
 
 class RefineResponse(BaseModel):

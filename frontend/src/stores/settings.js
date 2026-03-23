@@ -99,25 +99,6 @@ export const IMAGE_PROVIDERS = [
     ],
   },
   {
-    id: 'openai', label: 'OpenAI',
-    baseUrl: 'https://api.openai.com/v1',
-    models: [
-      { id: 'dall-e-3', label: 'DALL-E 3' },
-      { id: 'dall-e-2', label: 'DALL-E 2' },
-      { id: 'custom', label: '自定义...' },
-    ],
-  },
-  {
-    id: 'zhipu', label: '智谱 CogView',
-    baseUrl: 'https://open.bigmodel.cn/api/paas/v4/',
-    models: [
-      { id: 'cogview-4',       label: 'CogView-4' },
-      { id: 'cogview-4-flash', label: 'CogView-4 Flash' },
-      { id: 'cogview-3-flash', label: 'CogView-3 Flash' },
-      { id: 'custom', label: '自定义...' },
-    ],
-  },
-  {
     id: 'custom', label: '自定义',
     baseUrl: '',
     models: [{ id: 'custom', label: '自定义...' }],
