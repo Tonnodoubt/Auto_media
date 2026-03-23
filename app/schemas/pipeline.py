@@ -41,6 +41,7 @@ class StoryboardRequest(BaseModel):
     script: str
     provider: Optional[str] = None
     model: Optional[str] = None
+    story_id: Optional[str] = None
 
 
 class AutoGenerateRequest(BaseModel):
@@ -49,6 +50,7 @@ class AutoGenerateRequest(BaseModel):
     strategy: GenerationStrategy = GenerationStrategy.SEPARATED
     provider: str = "claude"
     model: Optional[str] = None
+    story_id: Optional[str] = None
 
     # API Keys (从前端传入)
     llm_api_key: Optional[str] = ""
@@ -76,6 +78,7 @@ class ShotResult(BaseModel):
     audio_duration: Optional[float] = None
     image_url: Optional[str] = None
     video_url: Optional[str] = None
+    final_video_url: Optional[str] = None
 
 
 class AutoGenerateResponse(BaseModel):
@@ -83,3 +86,13 @@ class AutoGenerateResponse(BaseModel):
     project_id: str
     message: str
     strategy: GenerationStrategy
+
+
+class ConcatRequest(BaseModel):
+    """视频拼接请求 — 按顺序排列的视频 URL"""
+    video_urls: list[str]
+
+
+class ConcatResponse(BaseModel):
+    """视频拼接响应"""
+    video_url: str

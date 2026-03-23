@@ -9,6 +9,9 @@ class Shot(BaseModel):
     camera_motion: str = Field(description="Simple English instruction for video generation, e.g. 'Pan right', 'Zoom in slowly', 'Static'.")
     dialogue: Optional[str] = Field(default=None, description="Exact Chinese text for TTS. None if no dialogue.")
     estimated_duration: int = Field(default=4, description="Estimated duration in seconds (3-5).")
+    shot_size: str = Field(default="Medium", description="Shot size: EWS/WS/MWS/MS/MCU/CU/ECU/OTS")
+    mood: Optional[str] = Field(default=None, description="Emotional tone of the shot, e.g. 'tense', 'warm'")
+    scene_position: Optional[str] = Field(default=None, description="Narrative position: establishing/development/climax/resolution")
 
 
 class Usage(BaseModel):

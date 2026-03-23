@@ -1,13 +1,32 @@
 import asyncio
+import base64
+import mimetypes
 
 import httpx
 
 from app.core.api_keys import mask_key
 from app.services.video_providers.base import BaseVideoProvider
 
+
+async def _to_data_url(image_url: str) -> str:
+    """若 image_url 是本地/内网地址，先下载再转为 base64 data URL；否则原样返回。"""
+    from urllib.parse import urlparse
+    parsed = urlparse(image_url)
+    host = parsed.hostname or ""
+    is_local = host in ("localhost", "127.0.0.1", "0.0.0.0") or host.startswith("192.168.") or host.startswith("10.")
+    if not is_local:
+        return image_url
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(image_url)
+        resp.raise_for_status()
+    mime = resp.headers.get("content-type") or mimetypes.guess_type(parsed.path)[0] or "image/png"
+    mime = mime.split(";")[0].strip()
+    b64 = base64.b64encode(resp.content).decode()
+    return f"data:{mime};base64,{b64}"
+
 DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
-_SUBMIT_PATH = "/contents/generations"
-_POLL_PATH = "/contents/generations/{task_id}"
+_SUBMIT_PATH = "/contents/generations/tasks"
+_POLL_PATH = "/contents/generations/tasks/{task_id}"
 
 
 class DoubaoVideoProvider(BaseVideoProvider):
@@ -22,17 +41,16 @@ class DoubaoVideoProvider(BaseVideoProvider):
 
     async def _submit(self, client: httpx.AsyncClient, image_url: str, prompt: str, model: str, api_key: str, base_url: str) -> str:
         url = f"{base_url}{_SUBMIT_PATH}"
+        resolved_image = await _to_data_url(image_url)
         resp = await client.post(
             url,
             headers={"Authorization": f"Bearer {api_key}"},
             json={
-                "model": model or "seedance-2.0",
+                "model": model,
                 "content": [
-                    {"type": "image_url", "image_url": {"url": image_url}},
                     {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": resolved_image}},
                 ],
-                "duration": 5,
-                "aspect_ratio": "16:9",
             },
         )
         print(f"[VIDEO DOUBAO SUBMIT] status={resp.status_code} key={mask_key(api_key)} base={base_url}")
@@ -63,7 +81,7 @@ class DoubaoVideoProvider(BaseVideoProvider):
             status = data.get("status")
             if not status:
                 raise RuntimeError(f"Doubao 响应缺少 status 字段: {resp.text[:200]}")
-            if status == "completed":
+            if status == "succeeded":
                 content = data.get("content")
                 video_url = content.get("video_url") if isinstance(content, dict) else None
                 if not video_url:

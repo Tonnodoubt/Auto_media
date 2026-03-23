@@ -216,6 +216,14 @@
             <button class="action-btn" @click="generateAllTTS">全部生成语音</button>
             <button class="action-btn" @click="generateAllImages">全部生成图片</button>
             <button class="action-btn" @click="generateAllVideos">全部生成视频</button>
+            <button
+              v-if="hasAnyVideo"
+              class="action-btn concat-btn"
+              :disabled="concatLoading"
+              @click="concatAllVideos"
+            >
+              {{ concatLoading ? '拼接中...' : '导出完整视频' }}
+            </button>
           </div>
         </div>
         <div class="shots-grid">
@@ -264,6 +272,13 @@
             </div>
             <video v-if="shot.video_url" :src="getMediaUrl(shot.video_url)" controls class="shot-video"></video>
           </div>
+        </div>
+
+        <!-- 完整视频播放器 -->
+        <div v-if="concatVideoUrl" class="concat-result">
+          <h3>完整视频</h3>
+          <video :src="getMediaUrl(concatVideoUrl)" controls class="concat-video"></video>
+          <a :href="getMediaUrl(concatVideoUrl)" download class="action-btn download-btn">下载完整视频</a>
         </div>
       </div>
     </div>
@@ -315,6 +330,12 @@ onUnmounted(() => {
   isMounted.value = false
   parseAbortController?.abort()
 })
+
+// 视频拼接
+const concatLoading = ref(false)
+const concatVideoUrl = ref('')
+
+const hasAnyVideo = computed(() => shots.value.some(s => s.video_url))
 
 // 生成唯一 ID
 function generateUniqueId() {
@@ -689,8 +710,9 @@ function getHeaders() {
   if (settings.effectiveLlmProvider) headers['X-LLM-Provider']  = settings.effectiveLlmProvider
   if (settings.effectiveImageApiKey)  headers['X-Image-API-Key']  = settings.effectiveImageApiKey
   if (settings.effectiveImageBaseUrl) headers['X-Image-Base-URL'] = settings.effectiveImageBaseUrl
-  if (settings.effectiveVideoApiKey)  headers['X-Video-API-Key']  = settings.effectiveVideoApiKey
-  if (settings.effectiveVideoBaseUrl) headers['X-Video-Base-URL'] = settings.effectiveVideoBaseUrl
+  if (settings.effectiveVideoApiKey)    headers['X-Video-API-Key']    = settings.effectiveVideoApiKey
+  if (settings.effectiveVideoBaseUrl)   headers['X-Video-Base-URL']   = settings.effectiveVideoBaseUrl
+  if (settings.effectiveVideoProvider)  headers['X-Video-Provider']   = settings.effectiveVideoProvider
   return headers
 }
 
@@ -838,6 +860,40 @@ async function generateOneVideo(shotId) {
 async function generateAllVideos() {
   const shotsWithImages = shots.value.filter(s => s.image_url)
   await runWithConcurrency(shotsWithImages, s => generateOneVideo(s.shot_id))
+}
+
+async function concatAllVideos() {
+  const shotsWithVideo = shots.value
+    .filter(s => s.video_url)
+    .sort((a, b) => a.shot_id.localeCompare(b.shot_id))
+
+  if (shotsWithVideo.length === 0) return
+
+  concatLoading.value = true
+  concatVideoUrl.value = ''
+  error.value = ''
+
+  try {
+    const projectId = generateUniqueId()
+    const res = await fetch(`${getBackendUrl()}/api/v1/pipeline/${projectId}/concat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getHeaders() },
+      body: JSON.stringify({
+        video_urls: shotsWithVideo.map(s => s.video_url)
+      })
+    })
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null)
+      throw new Error(errData?.detail || `拼接失败 (${res.status})`)
+    }
+    const data = await res.json()
+    concatVideoUrl.value = data.video_url
+  } catch (err) {
+    console.error('Concat failed:', err)
+    error.value = '视频拼接失败：' + (err.message || '请求失败')
+  } finally {
+    concatLoading.value = false
+  }
 }
 
 onMounted(() => {
@@ -1644,4 +1700,57 @@ button:disabled {
   border-radius: 6px;
   margin-top: 8px;
 }
+/* 导出完整视频按钮 */
+.concat-btn {
+  background: #6c63ff;
+  color: #fff;
+  border-color: #6c63ff;
+}
+
+.concat-btn:hover:not(:disabled) {
+  background: #5a52e0;
+  border-color: #5a52e0;
+}
+
+.concat-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* 完整视频播放区域 */
+.concat-result {
+  margin-top: 24px;
+  padding: 20px;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 12px;
+}
+
+.concat-result h3 {
+  margin: 0 0 12px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+.concat-video {
+  width: 100%;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+
+.download-btn {
+  display: inline-flex;
+  text-decoration: none;
+  background: #6c63ff;
+  color: #fff;
+  border-color: #6c63ff;
+}
+
+.download-btn:hover {
+  background: #5a52e0;
+  border-color: #5a52e0;
+  color: #fff;
+}
+
 </style>

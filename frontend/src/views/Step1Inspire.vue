@@ -24,6 +24,9 @@
       <button class="next-btn" :disabled="!idea.trim() || loading" @click="submit">
         {{ loading ? '分析中...' : '开始构建世界观 →' }}
       </button>
+      <button class="history-btn" @click="router.push('/history')">
+        查看历史剧本
+      </button>
       <div v-if="error" class="error-tip">{{ error }}</div>
     </div>
   </div>
@@ -141,5 +144,18 @@ textarea:focus { border-color: #6c63ff; outline: none; }
 }
 .next-btn:hover:not(:disabled) { background: #5a52e0; }
 .next-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.history-btn {
+  width: 100%;
+  padding: 14px;
+  background: #fff;
+  color: #6c63ff;
+  border-radius: 14px;
+  font-size: 15px;
+  font-weight: 600;
+  border: 2px solid #e0e0e0;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+.history-btn:hover { border-color: #6c63ff; }
 .error-tip { color: #e53935; font-size: 13px; text-align: center; }
 </style>

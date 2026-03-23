@@ -89,6 +89,32 @@ export const useStoryStore = defineStore('story', {
         this.usage.completion_tokens += usage.completion_tokens
       }
     },
+    loadStory(storyData) {
+      // 从服务器数据恢复完整 store 状态（用于历史剧本恢复）
+      this.$reset()
+      this.storyId = storyData.id
+      this.input = {
+        idea: storyData.idea || '',
+        genre: storyData.genre || '',
+        tone: storyData.tone || '',
+      }
+      this.selectedSetting = storyData.selected_setting || ''
+      this.meta = storyData.meta || null
+      this.characters = storyData.characters || []
+      this.relationships = storyData.relationships || []
+      this.outline = storyData.outline || []
+      this.scenes = storyData.scenes || []
+      this.wbHistory = storyData.wb_history || []
+      this.wbTurn = storyData.wb_turn || 0
+      this.step3Done = (storyData.scenes || []).length > 0
+      if (this.step3Done) {
+        this.currentStep = 4
+      } else if ((storyData.characters || []).length > 0) {
+        this.currentStep = 3
+      } else {
+        this.currentStep = 2
+      }
+    },
     setWorldBuildingStart({ story_id, turn, question, usage }) {
       this.storyId = story_id
       this.wbTurn = turn

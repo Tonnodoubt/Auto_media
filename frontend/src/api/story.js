@@ -34,6 +34,24 @@ function getPipelineUrl(path) {
   return `${base}/api/v1/pipeline${path}`
 }
 
+export async function deleteStory(storyId) {
+  const res = await fetch(getUrl(`/${storyId}`), { method: 'DELETE', headers: getHeaders() })
+  if (!res.ok) throw new Error(`请求失败 (${res.status})`)
+  return res.json()
+}
+
+export async function listStories() {
+  const res = await fetch(getUrl('/'), { headers: getHeaders() })
+  if (!res.ok) throw new Error(`请求失败 (${res.status})`)
+  return res.json()
+}
+
+export async function getStory(storyId) {
+  const res = await fetch(getUrl(`/${storyId}`), { headers: getHeaders() })
+  if (!res.ok) throw new Error(`请求失败 (${res.status})`)
+  return res.json()
+}
+
 export async function finalizeScript(storyId) {
   const res = await fetch(getUrl(`/${storyId}/finalize`), { method: 'POST', headers: getHeaders() })
   if (!res.ok) throw new Error(`请求失败 (${res.status})`)

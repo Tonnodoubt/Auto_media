@@ -139,6 +139,8 @@ export const VIDEO_PROVIDERS = [
     id: 'doubao', label: '豆包 Seedance (火山方舟)',
     baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
     models: [
+      { id: 'doubao-seedance-1-5-pro-251215', label: 'Seedance 1.5 Pro' },
+      { id: 'doubao-seedance-1-0-lite-250528', label: 'Seedance 1.0 Lite（快）' },
       { id: 'custom', label: '填写端点 ID（ep-xxx）' },
     ],
   },

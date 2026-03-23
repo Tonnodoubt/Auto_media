@@ -133,6 +133,11 @@ class ScriptScene(BaseModel):
     environment: str
     visual: str
     audio: List[AudioLine]
+    mood: Optional[str] = None
+    lighting: Optional[str] = None
+    key_actions: Optional[List[str]] = None
+    shot_suggestions: Optional[List[str]] = None
+    transition_from_previous: Optional[str] = None
 
 
 class SceneScript(BaseModel):
