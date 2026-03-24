@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from app.core.config import settings
 from app.core.api_keys import mask_key
+from app.prompts.character import build_character_prompt
 
 IMAGE_DIR = Path("media/images")
 IMAGE_DIR.mkdir(parents=True, exist_ok=True)
@@ -85,27 +86,6 @@ async def generate_images_batch(shots: list[dict], model: str = DEFAULT_MODEL, i
     return list(await asyncio.gather(*tasks))
 
 
-def _build_character_prompt(name: str, role: str, description: str) -> str:
-    """Build prompt for character design image."""
-    # Map common Chinese role keywords to English visual cues for better model interpretation
-    role_lower = role.lower()
-    if any(k in role_lower for k in ("反派", "villain", "antagonist", "boss")):
-        role_cue = "villain, sinister expression, dark presence"
-    elif any(k in role_lower for k in ("主角", "protagonist", "hero", "主人公")):
-        role_cue = "protagonist, determined expression, heroic bearing"
-    elif any(k in role_lower for k in ("配角", "supporting", "助手", "sidekick")):
-        role_cue = "supporting character, approachable expression"
-    else:
-        role_cue = f"{role}"
-    return (
-        f"Character portrait of {name}, {role_cue}, "
-        f"character description: {description}, "
-        "unique individual character design, distinctive appearance, "
-        "cinematic portrait, highly detailed, professional character concept art, "
-        "clean background, studio lighting, 8k resolution, photorealistic"
-    )
-
-
 async def generate_character_image(
     character_name: str,
     role: str,
@@ -116,7 +96,7 @@ async def generate_character_image(
     image_base_url: str = "",
 ) -> dict:
     """Generate character design image. Returns { character_name, image_path, image_url, prompt }."""
-    prompt = _build_character_prompt(character_name, role, description)
+    prompt = build_character_prompt(character_name, role, description)
     base_url = image_base_url or settings.siliconflow_base_url
     if image_base_url and not image_api_key:
         raise HTTPException(status_code=400, detail="提供自定义 image_base_url 时必须同时提供 image_api_key")

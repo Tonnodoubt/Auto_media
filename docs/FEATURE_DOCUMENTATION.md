@@ -1,6 +1,6 @@
 # AutoMedia AI 短剧项目 - 功能文档
 
-> 更新日期：2026-03-21 | 项目状态：MVP 冲刺阶段
+> 更新日期：2026-03-24 | 项目状态：MVP 完成，视频合成全链路可用
 
 ---
 
@@ -82,19 +82,20 @@
 |------|------|------------|
 | 视觉分镜预览 | ✅ | SceneStream.vue |
 | JSON / Markdown 导出 | ✅ | ExportPanel.vue |
-| 动态绘本 Demo | 🔶 | 视频合成待实现 |
-| 视频导出 | 🔶 | FFmpeg 合成尚未实现（Mock） |
+| 完整视频导出 | ✅ | 前端导出按钮，调用 `/concat` 拼接后下载 |
 
 ### 2.3 视频流水线
 
 | 功能 | 状态 | 备注 |
 |------|------|------|
-| 分镜解析（LLM） | ✅ | storyboard.py，支持所有 provider |
+| 分镜解析（LLM，升级版） | ✅ | storyboard.py，支持所有 provider，含镜头语言增强 |
 | TTS 语音（Edge TTS） | ✅ | 18+ 中文语音，生成 MP3 |
 | 场景图片生成（FLUX.1） | ✅ | 1280×720，异步批处理 |
 | 图生视频（Wan2.6-i2v） | ✅ | DashScope 异步任务轮询，下载 MP4 |
-| **FFmpeg 音视频合成** | ⚠️ | SEPARATED 策略中仅 `asyncio.sleep(1)` 占位，未实现 |
-| INTEGRATED 策略 | 🔶 | 代码框架已有，实际仍复用 image-to-video API，未调用真正的视频语音一体 API |
+| FFmpeg 音视频合成（auto-generate） | ✅ | `_stitch_videos()` → `ffmpeg.stitch_batch()` 真实实现 |
+| FFmpeg 视频拼接（/concat） | ✅ | stream copy 不重编码，速度快 |
+| 手动步进 `/stitch` | ⚠️ | 仍为 `asyncio.sleep(2)` 占位，建议改用 `/concat` |
+| INTEGRATED 策略 | 🔶 | 代码框架已有，实际仍复用 image-to-video API，未对接真正的视频语音一体 API |
 | 一键自动生成 | ✅ | `/{id}/auto-generate`，后台执行全流程 |
 | 实时进度（轮询） | ✅ | `/{id}/status`，数据库持久化状态 |
 | 任务持久化（数据库） | ✅ | Pipeline 状态写入 SQLite，重启不丢失 |
@@ -202,10 +203,12 @@
 | 端点 | 方法 | 状态 |
 |------|------|------|
 | /analyze-idea | POST | ✅ |
-| /generate-outline | POST | ✅ |
+| /generate-outline | POST SSE | ✅ 流式输出（防 ReadError） |
 | /generate-script | POST SSE | ✅ |
 | /chat | POST SSE | ✅ |
-| /refine | POST | ✅ |
+| /refine | POST | ✅ 保留原有 meta 字段 |
+| /patch | POST | ✅ |
+| /apply-chat | POST | ✅ |
 | /world-building/start | POST | ✅ |
 | /world-building/turn | POST | ✅ |
 | /{story_id}/finalize | POST | ✅ |
@@ -215,13 +218,14 @@
 | 端点 | 方法 | 状态 | 模式 |
 |------|------|------|------|
 | /{id}/auto-generate | POST | ✅ | 自动：后台全流程，DB 持久化状态 |
-| /{id}/storyboard | POST | ✅ | 手动步进：分镜解析 |
+| /{id}/storyboard | POST | ✅ | 手动步进：分镜解析（升级版） |
 | /{id}/generate-assets | POST | ✅ | 手动步进：TTS + 图片，内存状态 |
 | /{id}/render-video | POST | ✅ | 手动步进：图生视频，内存状态 |
-| /{id}/stitch | POST | ⚠️ | 手动步进：FFmpeg 占位（asyncio.sleep） |
+| /{id}/concat | POST | ✅ | 多镜头视频拼接（真实 FFmpeg，stream copy） |
+| /{id}/stitch | POST | ⚠️ | 手动步进：FFmpeg 占位（asyncio.sleep），建议改用 /concat |
 | /{id}/status | GET | ✅ | 自动模式状态查询（DB） |
 
-> **注意**：`generate-assets`、`render-video`、`stitch` 为手动步进端点，使用进程内存状态（重启丢失）。自动模式 `auto-generate` 使用数据库持久化状态。
+> **注意**：`generate-assets`、`render-video` 为手动步进端点，使用进程内存状态（重启丢失）。自动模式 `auto-generate` 使用数据库持久化状态。
 
 #### Character API (`/api/v1/character`)
 
@@ -293,7 +297,7 @@
 
 | 风险项 | 级别 | 现状 |
 |--------|------|------|
-| FFmpeg 合成 Mock | 🔴 高 | SEPARATED 策略 `_stitch_videos()` 为 `asyncio.sleep(1)` 占位，视频无音轨 |
+| 手动 `/stitch` 仍为 Mock | 🟠 中 | `asyncio.sleep(2)` 占位，前端应改用 `/concat` |
 | 人物一致性 | 🔴 高 | 各 shot 独立生成图片，人物外观不一致 |
 | INTEGRATED 策略未完成 | 🟠 中 | 代码框架有，实际复用 image-to-video API，未对接真正的视频语音一体 API |
 | 手动步进内存状态 | 🟠 中 | generate-assets / render-video 用进程内存，重启后丢失 |
@@ -306,14 +310,18 @@
 
 ## 六、TODO 清单
 
-### 🔴 P0 — 阻断级，影响核心功能
+### ✅ 已完成（原 P0）
 
-- [ ] **实现 FFmpeg 音视频合成**
-  - `pipeline_executor.py` `_stitch_videos()` 当前为 `asyncio.sleep(1)` 占位
-  - 需将各 shot 的 `audio_url` + `video_url` 用 FFmpeg 合并为带音轨的 MP4
-  - 加 `scale,pad` 兜底统一分辨率 1280×720，防止 AI 生图比例异常导致报错
+- [x] **FFmpeg 音视频合成** — `ffmpeg.stitch_batch()` + `/concat` 端点已实现
+- [x] **前端视频导出** — VideoGeneration 页面支持直接下载最终视频
+- [x] **分镜引擎升级** — 新版 storyboard 含镜头语言增强，提升视频生成质量
+- [x] **`generate-outline` SSE 流式** — 防止长响应触发 ReadError
 
 ### 🟠 P1 — 重要，影响用户体验
+
+- [ ] **修复手动 `/stitch` 占位**
+  - `pipeline.py` `stitch_video()` 仍为 `asyncio.sleep(2)` + TODO
+  - 接入 `ffmpeg.stitch_batch()` 或统一引导前端改用 `/concat`
 
 - [ ] **INTEGRATED 策略完成**
   - `pipeline_executor.py` INTEGRATED 分支目前复用 image-to-video API
@@ -378,4 +386,4 @@
 
 ---
 
-*文档更新于 2026-03-21，基于项目代码实际分析*
+*文档更新于 2026-03-24，基于项目代码实际分析*

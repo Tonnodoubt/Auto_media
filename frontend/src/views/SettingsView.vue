@@ -268,13 +268,11 @@ function onScriptProviderChange() {
 }
 
 function onScriptModelToggle() {
-  if (!useScriptModel.value) {
-    scriptProvider.value    = llmProvider.value
-    scriptBaseUrl.value     = llmBaseUrl.value
-    scriptApiKey.value      = ''
-    scriptModelSelect.value = currentScriptModels.value[0]?.id ?? 'custom'
-    scriptModelCustom.value = ''
-  }
+  scriptProvider.value    = llmProvider.value
+  scriptBaseUrl.value     = llmBaseUrl.value
+  scriptApiKey.value      = ''
+  scriptModelSelect.value = llmModelSelect.value
+  scriptModelCustom.value = llmModelCustom.value
 }
 
 // Image
