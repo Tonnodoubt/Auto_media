@@ -183,6 +183,7 @@
             <button class="toggle-btn" @click="showVideoKey = !showVideoKey">{{ showVideoKey ? '隐藏' : '显示' }}</button>
           </div>
           <span v-if="videoProvider === 'kling'" class="hint">Kling 格式：access_key_id:secret_key（冒号连接两个字段）</span>
+          <span v-else-if="videoProvider === 'minimax'" class="hint">MiniMax 开放平台获取 API Key，填入后直接使用</span>
           <span v-else class="hint">密钥仅保存在本地浏览器中</span>
         </div>
         <div class="field">

@@ -136,6 +136,15 @@ export const VIDEO_PROVIDERS = [
     ],
   },
   {
+    id: 'minimax', label: 'MiniMax 海螺视频 (Hailuo)',
+    baseUrl: 'https://api.minimaxi.chat',
+    models: [
+      { id: 'video-01',      label: 'Video-01（主力，I2V）' },
+      { id: 'video-01-live', label: 'Video-01 Live（动态感强）' },
+      { id: 'custom', label: '自定义...' },
+    ],
+  },
+  {
     id: 'doubao', label: '豆包 Seedance (火山方舟)',
     baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
     models: [

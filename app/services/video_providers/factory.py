@@ -5,7 +5,7 @@ def get_video_provider(provider: str) -> BaseVideoProvider:
     """
     Return a video provider instance by name.
 
-    Supported providers: dashscope (default), kling, doubao
+    Supported providers: dashscope (default), kling, doubao, minimax
     """
     name = (provider or "dashscope").lower()
 
@@ -16,6 +16,10 @@ def get_video_provider(provider: str) -> BaseVideoProvider:
     if name == "doubao":
         from app.services.video_providers.doubao import DoubaoVideoProvider
         return DoubaoVideoProvider()
+
+    if name == "minimax":
+        from app.services.video_providers.minimax import MinimaxVideoProvider
+        return MinimaxVideoProvider()
 
     from app.services.video_providers.dashscope import DashScopeVideoProvider
     return DashScopeVideoProvider()
