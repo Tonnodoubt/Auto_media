@@ -259,7 +259,7 @@ const scriptModelSelect = ref(_ss)
 const scriptModelCustom = ref(_sc)
 
 function onScriptProviderChange() {
-  const p = LLM_PROVIDERS.find(p => p.id === scriptProvider.value)
+  const p = LLM_PROVIDERS.find(prov => prov.id === scriptProvider.value)
   if (p && p.id !== 'custom') scriptBaseUrl.value = p.baseUrl
   scriptModelSelect.value = currentScriptModels.value[0]?.id ?? 'custom'
   scriptModelCustom.value = ''
