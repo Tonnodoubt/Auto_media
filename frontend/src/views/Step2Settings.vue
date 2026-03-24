@@ -1,6 +1,6 @@
 <template>
   <div class="page">
-    <StepIndicator :current="2" />
+    <StepIndicator :current="2" :loading="submitting" />
     <div class="content">
       <h1>世界观构建</h1>
       <p class="subtitle">AI 将通过几轮提问帮你构建完整的故事世界观</p>

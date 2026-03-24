@@ -37,8 +37,12 @@ media/audio/*.wav
 media/images/*.png
 media/images/*.jpg
 media/videos/*.mp4
+media/videos/*.txt
+media/characters/*.png
+media/characters/*.jpg
 
 # Keep directory structure
 !media/audio/.gitkeep
 !media/images/.gitkeep
 !media/videos/.gitkeep
+!media/characters/.gitkeep

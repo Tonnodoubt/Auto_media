@@ -19,8 +19,8 @@
         <span class="usage-unit">tokens</span>
         <span class="usage-detail">↑{{ store.usage.prompt_tokens.toLocaleString() }} ↓{{ store.usage.completion_tokens.toLocaleString() }}</span>
       </div>
-      <button v-if="current > 1" class="back-top-btn" @click="goBack">← 上一步</button>
-      <button class="settings-btn" @click="router.push('/settings')">⚙ 设置</button>
+      <button v-if="current > 1" class="back-top-btn" @click="goBack" :disabled="loading">← 上一步</button>
+      <button class="settings-btn" @click="router.push('/settings')" :disabled="loading">⚙ 设置</button>
     </div>
   </div>
 </template>
@@ -29,7 +29,7 @@
 import { useRouter } from 'vue-router'
 import { useStoryStore } from '../stores/story.js'
 
-const props = defineProps({ current: Number })
+const props = defineProps({ current: Number, loading: Boolean })
 const steps = ['输入灵感', '选择设定', '生成剧本', '预览导出', '视图生成']
 const lineWidth = `${((props.current - 1) / 4) * 100}%`
 
@@ -94,6 +94,7 @@ function goBack() {
   transition: background 0.2s;
 }
 .back-top-btn:hover { background: #f0eeff; }
+.back-top-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .settings-btn {
   padding: 6px 14px;
   background: #fff;
@@ -105,7 +106,8 @@ function goBack() {
   cursor: pointer;
   transition: all 0.2s;
 }
-.settings-btn:hover { border-color: #6c63ff; color: #6c63ff; background: #f0eeff; }
+.settings-btn:hover:not(:disabled) { border-color: #6c63ff; color: #6c63ff; background: #f0eeff; }
+.settings-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .step-indicator::before {
   content: '';
   position: absolute;

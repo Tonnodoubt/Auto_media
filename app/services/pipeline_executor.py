@@ -129,7 +129,10 @@ class PipelineExecutor:
         )
 
         tts_results = await tts.generate_tts_batch(
-            shots=[{"shot_id": s.shot_id, "dialogue": s.dialogue} for s in self.shots],
+            shots=[{
+                "shot_id": s.shot_id,
+                "dialogue": s.audio_reference.content if s.audio_reference and s.audio_reference.type in ("dialogue", "narration") else None,
+            } for s in self.shots],
             voice=voice,
         )
         tts_map = {r["shot_id"]: r for r in tts_results}
@@ -155,7 +158,7 @@ class PipelineExecutor:
             shots=[
                 {
                     "shot_id": s.shot_id,
-                    "visual_prompt": self._enhance_prompt_with_character(s.visual_prompt, self.character_info),
+                    "visual_prompt": self._enhance_prompt_with_character(s.final_video_prompt, self.character_info),
                 }
                 for s in self.shots
             ],
@@ -187,8 +190,7 @@ class PipelineExecutor:
                 {
                     "shot_id": s.shot_id,
                     "image_url": image_map[s.shot_id]["image_url"],
-                    "visual_prompt": s.visual_prompt,
-                    "camera_motion": s.camera_motion,
+                    "final_video_prompt": s.final_video_prompt,
                 }
                 for s in self.shots
                 if s.shot_id in image_map
@@ -287,7 +289,10 @@ class PipelineExecutor:
         )
 
         tts_results = await tts.generate_tts_batch(
-            shots=[{"shot_id": s.shot_id, "dialogue": s.dialogue} for s in self.shots],
+            shots=[{
+                "shot_id": s.shot_id,
+                "dialogue": s.audio_reference.content if s.audio_reference and s.audio_reference.type in ("dialogue", "narration") else None,
+            } for s in self.shots],
             voice=voice,
         )
         tts_map = {r["shot_id"]: r for r in tts_results}
@@ -310,11 +315,10 @@ class PipelineExecutor:
         # 构建 shots 数据并增强 prompt
         shots_data = []
         for s in self.shots:
-            enhanced_prompt = self._enhance_prompt_with_character(s.visual_prompt, self.character_info)
+            enhanced_prompt = self._enhance_prompt_with_character(s.final_video_prompt, self.character_info)
             shots_data.append({
                 "shot_id": s.shot_id,
-                "visual_prompt": enhanced_prompt,
-                "camera_motion": s.camera_motion,
+                "final_video_prompt": enhanced_prompt,
             })
 
         scene_groups = video.group_shots_by_scene(shots_data)
@@ -393,7 +397,7 @@ class PipelineExecutor:
         )
 
         image_results = await image.generate_images_batch(
-            shots=[{"shot_id": s.shot_id, "visual_prompt": s.visual_prompt} for s in self.shots],
+            shots=[{"shot_id": s.shot_id, "visual_prompt": s.final_video_prompt} for s in self.shots],
             model=image_model,
             image_api_key=image_api_key,
             image_base_url=image_base_url,
@@ -424,8 +428,7 @@ class PipelineExecutor:
                 {
                     "shot_id": s.shot_id,
                     "image_url": image_map[s.shot_id]["image_url"],
-                    "visual_prompt": f"{s.visual_prompt} {s.camera_motion}",
-                    "camera_motion": s.camera_motion,
+                    "final_video_prompt": s.final_video_prompt,
                 }
                 for s in self.shots
                 if s.shot_id in image_map

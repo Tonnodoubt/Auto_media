@@ -1,6 +1,6 @@
 <template>
   <div class="page">
-    <StepIndicator :current="5" />
+    <StepIndicator :current="5" :loading="isParsing || isGenerating || concatLoading" />
     <div class="content">
       <h1>场景分镜</h1>
       <p class="subtitle">选择场景进行分镜解析和视频生成</p>
@@ -231,25 +231,25 @@
             <div class="shot-header">
               <span class="shot-id">{{ shot.shot_id }}</span>
               <div class="shot-meta">
-                <span class="tag type">{{ shot.camera_motion }}</span>
+                <span class="tag type">{{ shot.camera_setup?.movement || shot.camera_motion }}</span>
                 <span class="tag">{{ shot.estimated_duration }}s</span>
               </div>
             </div>
-            <div v-if="shot.dialogue" class="shot-field">
+            <div v-if="hasSpeechAudio(shot)" class="shot-field">
               <label>台词 / 旁白</label>
-              <p>{{ shot.dialogue }}</p>
+              <p>{{ shot.audio_reference?.content || shot.dialogue }}</p>
             </div>
             <div class="shot-field">
               <label>画面描述</label>
-              <p>{{ shot.visual_description_zh }}</p>
+              <p>{{ shot.storyboard_description || shot.visual_description_zh }}</p>
             </div>
             <div class="shot-field">
               <label>Visual Prompt</label>
-              <p class="en">{{ shot.visual_prompt }}</p>
+              <p class="en">{{ shot.final_video_prompt || shot.visual_prompt }}</p>
             </div>
 
             <!-- TTS controls -->
-            <div v-if="shot.dialogue" class="tts-bar">
+            <div v-if="hasSpeechAudio(shot)" class="tts-bar">
               <button class="tts-btn" @click="generateOneTTS(shot.shot_id)" :disabled="shot.ttsLoading">
                 {{ shot.ttsLoading ? '生成中...' : '生成语音' }}
               </button>
@@ -310,6 +310,7 @@ const manualOverride = ref(false)
 
 // 解析和结果
 const isParsing = ref(false)
+const isGenerating = ref(false)
 const error = ref('')
 const shots = computed(() => storyStore.shots)
 const voices = ref([])
@@ -577,44 +578,60 @@ async function parseStoryboard() {
     const mockShots = [
       {
         shot_id: 'scene1_shot1',
-        visual_description_zh: '清晨的森林，阳光透过树叶洒下斑驳光影，一只小鹿在溪边饮水',
-        visual_prompt: 'A serene forest in early morning, sunlight filtering through lush green leaves creating dappled shadows on the forest floor, a young deer drinking from a crystal clear stream, mist rising, soft golden lighting, peaceful atmosphere, high detail, cinematic style',
-        camera_motion: 'Slow pan right',
-        dialogue: '在这片古老的森林里，每一天都是新的开始。',
+        storyboard_description: '清晨的森林，阳光透过树叶洒下斑驳光影，一只小鹿在溪边饮水',
+        final_video_prompt: 'Wide Shot, Eye-level, Slow pan right. A serene forest in early morning, sunlight filtering through lush green leaves creating dappled shadows on the forest floor, a young deer drinking from a crystal clear stream, mist rising. Warm golden hour lighting, soft shadows. Cinematic, 4k resolution, photorealistic, --ar 16:9',
+        camera_setup: { shot_size: 'WS', camera_angle: 'Eye-level', movement: 'Pan right' },
+        visual_elements: { subject_and_clothing: 'A young spotted deer', action_and_expression: 'Drinking from stream, calm posture', environment_and_props: 'Ancient forest, crystal stream, morning mist', lighting_and_color: 'Warm golden hour, soft dappled shadows through leaves' },
+        audio_reference: { type: 'narration', content: '在这片古老的森林里，每一天都是新的开始。' },
+        scene_intensity: 'low',
         estimated_duration: 4,
+        mood: 'peaceful',
+        scene_position: 'establishing',
         ttsLoading: false,
         imageLoading: false,
         videoLoading: false
       },
       {
         shot_id: 'scene1_shot2',
-        visual_description_zh: '小鹿抬起头，警觉地望向远方，耳朵微微竖起',
-        visual_prompt: 'Close-up of a young deer lifting its head, alert expression, ears perked up, water droplets falling from its mouth, soft bokeh background of forest greenery, warm morning light, detailed fur texture, wildlife photography style',
-        camera_motion: 'Zoom in slowly',
-        dialogue: null,
+        storyboard_description: '小鹿抬起头，警觉地望向远方，耳朵微微竖起',
+        final_video_prompt: 'Close-up, Eye-level, Zoom in slowly. A young spotted deer lifting its head alertly, ears perked up, water droplets falling from its mouth, soft bokeh forest greenery background. Warm morning light, detailed fur texture. Cinematic, 4k resolution, photorealistic, --ar 16:9',
+        camera_setup: { shot_size: 'CU', camera_angle: 'Eye-level', movement: 'Slow Dolly in' },
+        visual_elements: { subject_and_clothing: 'Young spotted deer, detailed fur', action_and_expression: 'Lifting head alertly, ears perked, water drops from mouth', environment_and_props: 'Soft bokeh forest greenery background', lighting_and_color: 'Warm morning light, soft fill' },
+        audio_reference: { type: null, content: null },
+        scene_intensity: 'low',
         estimated_duration: 3,
+        mood: 'alert',
+        scene_position: 'development',
         ttsLoading: false,
         imageLoading: false,
         videoLoading: false
       },
       {
         shot_id: 'scene1_shot3',
-        visual_description_zh: '远处传来脚步声，树枝被踩断的特写',
-        visual_prompt: 'Extreme close-up of a dry twig snapping underfoot, forest floor covered with fallen autumn leaves, shallow depth of field, dramatic side lighting, tension building, cinematic thriller style',
-        camera_motion: 'Static',
-        dialogue: '沙沙的脚步声打破了森林的宁静...',
+        storyboard_description: '远处传来脚步声，树枝被踩断的特写',
+        final_video_prompt: 'Extreme Close-up, High angle, Static. A dry twig snapping underfoot on forest floor covered with fallen autumn leaves, shallow depth of field. Dramatic side lighting, tension building, desaturated color grading. Cinematic, 4k resolution, photorealistic, --ar 16:9',
+        camera_setup: { shot_size: 'ECU', camera_angle: 'High angle', movement: 'Static' },
+        visual_elements: { subject_and_clothing: 'Boot sole pressing on twig', action_and_expression: 'Twig snapping, leaves scattering slightly', environment_and_props: 'Forest floor, autumn leaves, shallow DoF', lighting_and_color: 'Dramatic side lighting, desaturated tones' },
+        audio_reference: { type: 'narration', content: '沙沙的脚步声打破了森林的宁静...' },
+        scene_intensity: 'high',
         estimated_duration: 4,
+        mood: 'tense',
+        scene_position: 'climax',
         ttsLoading: false,
         imageLoading: false,
         videoLoading: false
       },
       {
         shot_id: 'scene1_shot4',
-        visual_description_zh: '一个身穿绿色斗篷的身影从树后走出，手持地图',
-        visual_prompt: 'A mysterious figure in a flowing green cloak emerging from behind an ancient oak tree, holding an old parchment map, face partially hidden in shadow, forest background with sun rays, fantasy adventure style, detailed fabric texture',
-        camera_motion: 'Medium shot, track forward',
-        dialogue: '终于找到了...传说中的精灵之泉。',
+        storyboard_description: '一个身穿绿色斗篷的身影从树后走出，手持地图',
+        final_video_prompt: 'Medium Shot, Eye-level, Dolly forward. A mysterious figure in a flowing dark green wool cloak emerging from behind an ancient oak tree, holding an old parchment map, face partially hidden in deep shadow. Forest background with volumetric sun rays. Rim lighting on cloak edges, warm golden tones. Cinematic, 4k resolution, photorealistic, --ar 16:9',
+        camera_setup: { shot_size: 'MS', camera_angle: 'Eye-level', movement: 'Slow Dolly in' },
+        visual_elements: { subject_and_clothing: 'Mysterious figure, dark green wool cloak, old parchment map', action_and_expression: 'Emerging from behind tree, face hidden in shadow', environment_and_props: 'Ancient oak tree, forest with sun rays', lighting_and_color: 'Volumetric god rays, rim lighting on cloak, warm golden tones' },
+        audio_reference: { type: 'dialogue', content: '终于找到了...传说中的精灵之泉。' },
+        scene_intensity: 'low',
         estimated_duration: 5,
+        mood: 'mysterious',
+        scene_position: 'resolution',
         ttsLoading: false,
         imageLoading: false,
         videoLoading: false
@@ -741,11 +758,15 @@ async function loadVoices() {
   }
 }
 
+function hasSpeechAudio(shot) {
+  return !!(shot && (shot.audio_reference?.content || shot.dialogue) && shot.audio_reference?.type !== 'sfx')
+}
+
 async function generateOneTTS(shotId) {
   // Edge TTS 不需要 API Key，无需守卫
 
   const shot = shots.value.find(s => s.shot_id === shotId)
-  if (!shot || !shot.dialogue) return
+  if (!hasSpeechAudio(shot)) return
 
   shot.ttsLoading = true
   try {
@@ -779,8 +800,13 @@ async function generateOneTTS(shotId) {
 }
 
 async function generateAllTTS() {
-  const shotsWithDialogue = shots.value.filter(s => s.dialogue)
-  await runWithConcurrency(shotsWithDialogue, s => generateOneTTS(s.shot_id))
+  const shotsWithDialogue = shots.value.filter(hasSpeechAudio)
+  isGenerating.value = true
+  try {
+    await runWithConcurrency(shotsWithDialogue, s => generateOneTTS(s.shot_id))
+  } finally {
+    isGenerating.value = false
+  }
 }
 
 async function generateOneImage(shotId) {
@@ -821,7 +847,12 @@ async function generateOneImage(shotId) {
 }
 
 async function generateAllImages() {
-  await runWithConcurrency(shots.value, s => generateOneImage(s.shot_id))
+  isGenerating.value = true
+  try {
+    await runWithConcurrency(shots.value, s => generateOneImage(s.shot_id))
+  } finally {
+    isGenerating.value = false
+  }
 }
 
 async function generateOneVideo(shotId) {
@@ -863,7 +894,12 @@ async function generateOneVideo(shotId) {
 
 async function generateAllVideos() {
   const shotsWithImages = shots.value.filter(s => s.image_url)
-  await runWithConcurrency(shotsWithImages, s => generateOneVideo(s.shot_id))
+  isGenerating.value = true
+  try {
+    await runWithConcurrency(shotsWithImages, s => generateOneVideo(s.shot_id))
+  } finally {
+    isGenerating.value = false
+  }
 }
 
 async function concatAllVideos() {

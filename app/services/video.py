@@ -62,7 +62,7 @@ async def generate_videos_batch(
     tasks = [
         generate_video(
             image_url=f"{base_url}{shot['image_url']}",
-            prompt=f"{shot['visual_prompt']} {shot['camera_motion']}",
+            prompt=shot.get("final_video_prompt") or shot.get("visual_prompt", ""),
             shot_id=shot["shot_id"],
             model=model,
             video_api_key=video_api_key,
@@ -126,8 +126,7 @@ async def generate_videos_chained(
 
         for idx, shot in enumerate(scene_shots):
             shot_id = shot["shot_id"]
-            visual_prompt = shot["visual_prompt"]
-            camera_motion = shot.get("camera_motion", "")
+            visual_prompt = shot.get("final_video_prompt") or shot.get("visual_prompt", "")
 
             if on_progress:
                 await on_progress(scene_key, idx, len(scene_shots), shot_id)
@@ -158,7 +157,7 @@ async def generate_videos_chained(
             # 图到视频
             video_result = await generate_video(
                 image_url=image_url_for_video,
-                prompt=f"{visual_prompt} {camera_motion}",
+                prompt=visual_prompt,
                 shot_id=shot_id,
                 model=model,
                 video_api_key=video_api_key,

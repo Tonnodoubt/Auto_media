@@ -180,11 +180,6 @@ def resolve_llm_config(header_key: str, header_base_url: str, header_provider: s
     return {"api_key": api_key, "base_url": base_url, "provider": provider, "model": header_model}
 
 
-def image_key_dep(request: Request) -> str:
-    """Depends：提取并 resolve 图片生成 Key（Header → .env → HTTP 400）"""
-    return resolve_image_key(extract_api_keys(request).image_api_key)
-
-
 def image_config_dep(request: Request) -> dict:
     """Depends：提取图片生成配置（api_key / base_url），返回 dict 供 ** 解构。"""
     keys = extract_api_keys(request)

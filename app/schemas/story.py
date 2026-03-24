@@ -82,8 +82,6 @@ class ApplyChatRequest(BaseModel):
     change_type: Literal["character", "episode"]
     chat_history: List[ChatMessage]
     current_item: dict        # character 或 episode 对象（类型依 change_type 而定）
-    all_characters: Optional[List[dict]] = None
-    all_outline: Optional[List[dict]] = None
 
 
 class RefineRequest(BaseModel):

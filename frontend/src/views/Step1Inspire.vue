@@ -1,6 +1,6 @@
 <template>
   <div class="page">
-    <StepIndicator :current="1" />
+    <StepIndicator :current="1" :loading="loading" />
     <div class="content">
       <h1>输入你的灵感</h1>
       <p class="subtitle">一句话描述你的故事创意，越具体生成越准</p>
@@ -24,7 +24,7 @@
       <button class="next-btn" :disabled="!idea.trim() || loading" @click="submit">
         {{ loading ? '分析中...' : '开始构建世界观 →' }}
       </button>
-      <button class="history-btn" @click="router.push('/history')">
+      <button class="history-btn" @click="router.push('/history')" :disabled="loading">
         查看历史剧本
       </button>
       <div v-if="error" class="error-tip">{{ error }}</div>
@@ -152,6 +152,7 @@ textarea:focus { border-color: #6c63ff; outline: none; }
   cursor: pointer;
   transition: border-color 0.2s;
 }
-.history-btn:hover { border-color: #6c63ff; }
+.history-btn:hover:not(:disabled) { border-color: #6c63ff; }
+.history-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .error-tip { color: #e53935; font-size: 13px; text-align: center; }
 </style>

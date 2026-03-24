@@ -1,6 +1,6 @@
 <template>
   <div class="page">
-    <StepIndicator :current="4" />
+    <StepIndicator :current="4" :loading="false" />
     <div class="content">
       <h1>预览 & 导出</h1>
       <p class="subtitle">你的短剧剧本已生成完毕</p>

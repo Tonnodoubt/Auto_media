@@ -1,6 +1,6 @@
 <template>
   <div class="page">
-    <StepIndicator :current="3" />
+    <StepIndicator :current="3" :loading="streaming" />
     <div class="content">
       <div class="title-row">
         <div>

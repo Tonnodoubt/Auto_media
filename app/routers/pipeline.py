@@ -242,14 +242,17 @@ async def generate_assets(
             # TTS
             state["progress_detail"] = {"step": "tts", "current": 0, "total": total, "message": "生成语音..."}
             tts_results = await tts.generate_tts_batch(
-                shots=[{"shot_id": s.shot_id, "dialogue": s.dialogue} for s in shots],
+                shots=[{
+                    "shot_id": s.shot_id,
+                    "dialogue": s.audio_reference.content if s.audio_reference and s.audio_reference.type in ("dialogue", "narration") else None,
+                } for s in shots],
                 voice=voice,
             )
 
             # 图片
             state["progress_detail"] = {"step": "image", "current": 0, "total": total, "message": "生成图片..."}
             image_results = await image.generate_images_batch(
-                shots=[{"shot_id": s.shot_id, "visual_prompt": s.visual_prompt} for s in shots],
+                shots=[{"shot_id": s.shot_id, "final_video_prompt": s.final_video_prompt} for s in shots],
                 model=image_model,
                 **image_config,
             )

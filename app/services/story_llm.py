@@ -1,6 +1,5 @@
 from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional
 from fastapi import HTTPException
 from app.services import story_repository as repo
 from app.services.story_mock import (
@@ -268,8 +267,7 @@ async def world_building_turn(story_id: str, answer: str, db: AsyncSession, api_
     }
 
 async def apply_chat(story_id: str, change_type: str, chat_history: list, current_item: dict,
-                     db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "", model: str = "",
-                     all_characters: Optional[list] = None, all_outline: Optional[list] = None) -> dict:
+                     db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "", model: str = "") -> dict:
     import json as _json
     if not api_key:
         raise HTTPException(status_code=400, detail="apply_chat 需要提供 api_key")

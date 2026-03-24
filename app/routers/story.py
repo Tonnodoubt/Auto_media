@@ -119,8 +119,7 @@ async def api_patch(req: PatchStoryRequest, db: AsyncSession = Depends(get_db)):
 @router.post("/apply-chat")
 async def api_apply_chat(req: ApplyChatRequest, llm: dict = Depends(llm_config_dep), db: AsyncSession = Depends(get_db)):
     return await apply_chat(
-        req.story_id, req.change_type, req.chat_history, req.current_item, db=db,
-        all_characters=req.all_characters, all_outline=req.all_outline, **llm
+        req.story_id, req.change_type, req.chat_history, req.current_item, db=db, **llm
     )
 
 
