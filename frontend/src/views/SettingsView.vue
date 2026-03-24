@@ -85,31 +85,33 @@
           <span class="hint">启用后，分镜生成步骤将使用下方独立配置（服务商 / API Key / 模型），其余步骤仍使用上方默认 LLM 配置。</span>
           <template v-if="useScriptModel">
             <div class="field" style="margin-top:12px; margin-bottom:0">
-              <label>服务商</label>
-              <select v-model="scriptProvider" @change="onScriptProviderChange" class="select-input">
+              <label for="script-provider">服务商</label>
+              <select id="script-provider" v-model="scriptProvider" @change="onScriptProviderChange" class="select-input">
                 <option v-for="p in LLM_PROVIDERS" :key="p.id" :value="p.id">{{ p.label }}</option>
               </select>
             </div>
             <div class="field" style="margin-bottom:0">
-              <label>Base URL</label>
-              <input v-model="scriptBaseUrl" placeholder="https://api.example.com/v1" />
+              <label for="script-base-url">Base URL</label>
+              <input id="script-base-url" v-model="scriptBaseUrl" placeholder="https://api.example.com/v1" />
             </div>
             <div class="field" style="margin-bottom:0">
-              <label>API Key</label>
+              <label for="script-api-key">API Key</label>
               <div class="input-row">
-                <input v-model="scriptApiKey" :type="showScriptKey ? 'text' : 'password'" placeholder="sk-..." />
+                <input id="script-api-key" v-model="scriptApiKey" :type="showScriptKey ? 'text' : 'password'" placeholder="sk-..." />
                 <button class="toggle-btn" @click="showScriptKey = !showScriptKey">{{ showScriptKey ? '隐藏' : '显示' }}</button>
               </div>
               <span class="hint">密钥仅保存在本地浏览器中</span>
             </div>
             <div class="field" style="margin-bottom:0">
-              <label>模型</label>
-              <select v-model="scriptModelSelect" class="select-input">
+              <label for="script-model-select">模型</label>
+              <select id="script-model-select" v-model="scriptModelSelect" class="select-input">
                 <option v-for="m in currentScriptModels" :key="m.id" :value="m.id">{{ m.label }}</option>
               </select>
               <input
                 v-if="scriptModelSelect === 'custom'"
+                id="script-model-custom"
                 v-model="scriptModelCustom"
+                aria-label="自定义模型名称"
                 placeholder="输入模型名称，如 claude-opus-4-6"
                 style="margin-top:6px"
               />
