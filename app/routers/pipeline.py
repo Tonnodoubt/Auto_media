@@ -49,9 +49,10 @@ async def auto_generate(
     """
     一键生成完整视频 - 自动执行全流程
 
-    支持两种策略：
+    支持三种策略：
     - separated: TTS → 图片 → 图生视频 → FFmpeg 合成
     - integrated: 图片 → 视频语音一体生成
+    - chained: 分离式 + 场景内链式帧传递，同一场景内串行生成以保持镜头间视觉一致性
     """
     # 创建新的 pipeline 记录
     pipeline_id = str(uuid4())

@@ -10,6 +10,57 @@ from typing import List, Optional
 logger = logging.getLogger(__name__)
 
 VIDEO_DIR = Path("media/videos")
+IMAGE_DIR = Path("media/images")
+
+
+async def extract_last_frame(video_path: str, shot_id: str) -> str:
+    """
+    从视频末尾提取最后一帧，保存为 PNG 图片。
+
+    用于链式视频生成：将当前镜头的最后一帧作为下一镜头的参考图。
+
+    Args:
+        video_path: 视频文件本地路径
+        shot_id: 镜头 ID，用于生成输出文件名
+
+    Returns:
+        输出图片的本地文件路径
+    Raises:
+        FileNotFoundError: 视频文件不存在
+        RuntimeError: ffmpeg 执行失败
+    """
+    video = Path(video_path)
+    if not video.exists():
+        raise FileNotFoundError(f"视频文件不存在: {video_path}")
+
+    IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = str(IMAGE_DIR / f"{shot_id}_lastframe.png")
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-sseof", "-0.1",
+        "-i", str(video),
+        "-frames:v", "1",
+        "-q:v", "2",
+        output_path,
+    ]
+
+    logger.info("FFmpeg 提取最后一帧: %s -> %s", video_path, output_path)
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+
+    if proc.returncode != 0:
+        err_msg = stderr.decode(errors="replace")
+        logger.error("FFmpeg 提取帧失败 (code %d): %s", proc.returncode, err_msg)
+        raise RuntimeError(f"FFmpeg 提取帧失败: {err_msg}")
+
+    logger.info("FFmpeg 提取最后一帧完成: %s", output_path)
+    return output_path
 
 
 async def stitch_audio_video(

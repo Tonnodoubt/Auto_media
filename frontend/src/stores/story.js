@@ -18,6 +18,7 @@ export const useStoryStore = defineStore('story', {
     step3Done: false,
     shots: [],
     usage: { prompt_tokens: 0, completion_tokens: 0 },
+    characterImages: {},
     wbHistory: [],
     wbTurn: 0,
     wbCurrentQuestion: null,
@@ -104,6 +105,7 @@ export const useStoryStore = defineStore('story', {
       this.relationships = storyData.relationships || []
       this.outline = storyData.outline || []
       this.scenes = storyData.scenes || []
+      this.characterImages = storyData.character_images || {}
       this.wbHistory = storyData.wb_history || []
       this.wbTurn = storyData.wb_turn || 0
       this.step3Done = (storyData.scenes || []).length > 0

@@ -24,6 +24,7 @@ async def list_stories(db: AsyncSession = Depends(get_db)):
             **s,
             "scene_count": scene_count,
             "has_script": len(full.get("scenes", [])) > 0,
+            "has_character_images": bool(full.get("character_images")),
         })
     return result
 

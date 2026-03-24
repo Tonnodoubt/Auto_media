@@ -7,6 +7,7 @@ class GenerationStrategy(str, Enum):
     """视频生成策略"""
     SEPARATED = "separated"  # 分离式：TTS → 图片 → 图生视频 → FFmpeg 合成
     INTEGRATED = "integrated"  # 一体式：图片 → 视频语音一体生成
+    CHAINED = "chained"  # 链式：分离式 + 场景内链式帧传递，提升镜头间视觉一致性
 
 
 class PipelineStatus(str, Enum):

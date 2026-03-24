@@ -27,6 +27,7 @@
               <span v-if="story.genre" class="tag">{{ story.genre }}</span>
               <span v-if="story.tone" class="tag">{{ story.tone }}</span>
               <span v-if="story.has_script" class="tag green">含剧本</span>
+              <span v-if="story.has_character_images" class="tag purple">含人设</span>
             </div>
           </div>
           <div class="story-right">
@@ -255,6 +256,11 @@ h1 {
 .tag.green {
   background: #e6f7ef;
   color: #38a169;
+}
+
+.tag.purple {
+  background: #f0eeff;
+  color: #805ad5;
 }
 
 .story-right {

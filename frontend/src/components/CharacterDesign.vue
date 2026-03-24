@@ -210,6 +210,15 @@ async function generateAll() {
 
 async function loadExistingImages() {
   if (!store.storyId) return
+
+  // 优先使用 store 中已加载的 characterImages（历史剧本恢复时已填充）
+  if (store.characterImages && Object.keys(store.characterImages).length > 0) {
+    for (const [name, data] of Object.entries(store.characterImages)) {
+      getCharacterData(name).imageUrl = data.image_url
+    }
+    return
+  }
+
   try {
     const { character_images } = await getCharacterImages(store.storyId)
     if (character_images) {
