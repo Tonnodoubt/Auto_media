@@ -28,6 +28,13 @@
               <span v-if="story.tone" class="tag">{{ story.tone }}</span>
               <span v-if="story.has_script" class="tag green">含剧本</span>
               <span v-if="story.has_character_images" class="tag purple">含人设</span>
+              <span
+                v-if="story.art_style"
+                class="tag art-style"
+                :title="story.art_style"
+              >
+                画风: {{ formatArtStyleTag(story.art_style) }}
+              </span>
             </div>
           </div>
           <div class="story-right">
@@ -77,6 +84,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { listStories, getStory, deleteStory } from '../api/story.js'
 import { useStoryStore } from '../stores/story.js'
+import { ART_STYLE_PROMPT_TO_LABEL, ART_STYLE_TRUNCATE_LEN } from '../constants/artStylePresets.js'
 
 const router = useRouter()
 const store = useStoryStore()
@@ -102,6 +110,17 @@ function formatDate(dt) {
   if (!dt) return ''
   const d = new Date(dt)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+function formatArtStyleTag(artStyle) {
+  const normalized = typeof artStyle === 'string' ? artStyle.trim() : ''
+  if (!normalized) return ''
+  if (ART_STYLE_PROMPT_TO_LABEL.has(normalized)) {
+    return ART_STYLE_PROMPT_TO_LABEL.get(normalized)
+  }
+  return normalized.length > ART_STYLE_TRUNCATE_LEN
+    ? `${normalized.slice(0, ART_STYLE_TRUNCATE_LEN)}...`
+    : normalized
 }
 
 async function loadStory(storyId) {
@@ -251,6 +270,13 @@ h1 {
   font-size: 12px;
   padding: 2px 8px;
   border-radius: 20px;
+}
+
+.tag.art-style {
+  max-width: min(100%, 260px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tag.green {

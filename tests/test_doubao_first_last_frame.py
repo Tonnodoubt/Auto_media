@@ -12,6 +12,7 @@
 """
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -22,7 +23,24 @@ from app.services.video import generate_video
 from app.services.image import generate_image
 
 
-async def test_single_frame_i2v():
+IMAGE_API_KEY = os.getenv("TEST_IMAGE_API_KEY") or os.getenv("SILICONFLOW_API_KEY", "")
+VIDEO_API_KEY = os.getenv("TEST_DOUBAO_VIDEO_API_KEY") or os.getenv("DOUBAO_API_KEY", "")
+VIDEO_BASE_URL = os.getenv("TEST_DOUBAO_BASE_URL") or os.getenv("DOUBAO_BASE_URL") or "https://ark.cn-beijing.volces.com/api/v3"
+
+
+def _require_manual_env() -> None:
+    missing = []
+    if not IMAGE_API_KEY:
+        missing.append("TEST_IMAGE_API_KEY or SILICONFLOW_API_KEY")
+    if not VIDEO_API_KEY:
+        missing.append("TEST_DOUBAO_VIDEO_API_KEY or DOUBAO_API_KEY")
+    if missing:
+        raise RuntimeError(
+            "Manual first/last-frame test requires env vars: " + ", ".join(missing)
+        )
+
+
+async def run_single_frame_i2v():
     """测试单帧 I2V（当前方案）"""
     print("\n" + "="*80)
     print("测试1：单帧 I2V（当前方案）")
@@ -34,7 +52,7 @@ async def test_single_frame_i2v():
         visual_prompt="一个年轻男性站在办公室门口，穿着蓝色衬衫，现代办公室背景，温暖晨光，电影感，4k",
         shot_id="test_single_firstframe",
         model="black-forest-labs/FLUX.1-schnell",
-        image_api_key="",  # 需要配置
+        image_api_key=IMAGE_API_KEY,
         image_base_url="",
     )
 
@@ -45,8 +63,8 @@ async def test_single_frame_i2v():
         prompt="年轻人从门口走到桌前坐下",
         shot_id="test_single_i2v",
         model="doubao-seedance-1-5-pro-251215",
-        video_api_key="",  # 需要配置
-        video_base_url="https://ark.cn-beijing.volces.com/api/v3",
+        video_api_key=VIDEO_API_KEY,
+        video_base_url=VIDEO_BASE_URL,
         video_provider="doubao",
     )
 
@@ -57,7 +75,7 @@ async def test_single_frame_i2v():
     return first_frame, video
 
 
-async def test_first_last_frame_transition():
+async def run_first_last_frame_transition():
     """测试双帧过渡（新功能）"""
     print("\n" + "="*80)
     print("测试2：双帧过渡（新功能）")
@@ -69,7 +87,7 @@ async def test_first_last_frame_transition():
         visual_prompt="一个年轻男性站在办公室门口，穿着蓝色衬衫，站立姿势，现代办公室背景，温暖晨光，电影感，4k",
         shot_id="test_transition_firstframe",
         model="black-forest-labs/FLUX.1-schnell",
-        image_api_key="",  # 需要配置
+        image_api_key=IMAGE_API_KEY,
         image_base_url="",
     )
 
@@ -79,7 +97,7 @@ async def test_first_last_frame_transition():
         visual_prompt="一个年轻男性坐在办公椅上，穿着蓝色衬衫，手放在膝盖上，现代办公室背景，温暖晨光，电影感，4k",
         shot_id="test_transition_lastframe",
         model="black-forest-labs/FLUX.1-schnell",
-        image_api_key="",  # 需要配置
+        image_api_key=IMAGE_API_KEY,
         image_base_url="",
     )
 
@@ -90,8 +108,8 @@ async def test_first_last_frame_transition():
         prompt="从站立姿势自然过渡到坐在椅子上",
         shot_id="test_transition_video",
         model="doubao-seedance-1-5-pro-251215",
-        video_api_key="",  # 需要配置
-        video_base_url="https://ark.cn-beijing.volces.com/api/v3",
+        video_api_key=VIDEO_API_KEY,
+        video_base_url=VIDEO_BASE_URL,
         video_provider="doubao",
         last_frame_url=f"http://localhost:8000{last_frame['image_url']}",  # ← 关键参数！
     )
@@ -104,7 +122,7 @@ async def test_first_last_frame_transition():
     return first_frame, last_frame, video
 
 
-async def test_scene_transition():
+async def run_scene_transition():
     """测试场景切换过渡"""
     print("\n" + "="*80)
     print("测试3：场景切换过渡")
@@ -116,7 +134,7 @@ async def test_scene_transition():
         visual_prompt="年轻男性走出办公室门口，背影，回头看，现代办公室背景，电影感，4k",
         shot_id="test_scene1_lastframe",
         model="black-forest-labs/FLUX.1-schnell",
-        image_api_key="",  # 需要配置
+        image_api_key=IMAGE_API_KEY,
         image_base_url="",
     )
 
@@ -126,7 +144,7 @@ async def test_scene_transition():
         visual_prompt="年轻男性走进会议室，侧面，现代会议室背景，自然光，电影感，4k",
         shot_id="test_scene2_firstframe",
         model="black-forest-labs/FLUX.1-schnell",
-        image_api_key="",  # 需要配置
+        image_api_key=IMAGE_API_KEY,
         image_base_url="",
     )
 
@@ -137,8 +155,8 @@ async def test_scene_transition():
         prompt="平滑的场景切换，从办公室到会议室",
         shot_id="test_scene_transition",
         model="doubao-seedance-1-5-pro-251215",
-        video_api_key="",  # 需要配置
-        video_base_url="https://ark.cn-beijing.volces.com/api/v3",
+        video_api_key=VIDEO_API_KEY,
+        video_base_url=VIDEO_BASE_URL,
         video_provider="doubao",
         last_frame_url=f"http://localhost:8000{scene2_first['image_url']}",
     )
@@ -153,24 +171,23 @@ async def test_scene_transition():
 
 async def main():
     """运行所有测试"""
+    _require_manual_env()
     print("\n" + "🔍 豆包首尾帧功能测试" + "\n")
     print("="*80)
-    print("⚠️  注意：运行前请先配置API密钥！")
-    print("   - 图像API: 在代码中设置 image_api_key")
-    print("   - 视频API: 在代码中设置 video_api_key")
+    print("⚠️  注意：这是手动测试脚本，需要先配置环境变量。")
+    print("   - 图像API: TEST_IMAGE_API_KEY 或 SILICONFLOW_API_KEY")
+    print("   - 视频API: TEST_DOUBAO_VIDEO_API_KEY 或 DOUBAO_API_KEY")
     print("="*80)
-
-    input("\n按 Enter 继续...")
 
     try:
         # 测试1：单帧 I2V
-        await test_single_frame_i2v()
+        await run_single_frame_i2v()
 
         # 测试2：双帧过渡
-        await test_first_last_frame_transition()
+        await run_first_last_frame_transition()
 
         # 测试3：场景切换
-        await test_scene_transition()
+        await run_scene_transition()
 
         print("\n" + "="*80)
         print("✅ 所有测试完成！")

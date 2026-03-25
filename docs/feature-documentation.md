@@ -1,389 +1,307 @@
-# AutoMedia AI 短剧项目 - 功能文档
+# AutoMedia 功能文档
 
-> 更新日期：2026-03-24 | 项目状态：MVP 完成，视频合成全链路可用
+> 更新日期：2026-03-25
+>
+> 当前状态：MVP 可用，故事生成、角色设计、视频流水线、历史恢复与画风设定均已接通。
 
 ---
 
 ## 一、项目概览
 
-| 项目信息 | 详情 |
-|---------|------|
-| **项目名称** | AutoMedia - AI 短剧自动生成系统 |
-| **技术栈** | Vue 3 (前端) + FastAPI (后端) + SQLite (SQLAlchemy 异步) |
-| **架构模式** | BFF (Backend for Frontend) |
-| **核心目标** | 通过 AI 自动化完成短剧从灵感到视频的全流程生成 |
+| 项目项 | 说明 |
+|------|------|
+| 项目名称 | AutoMedia |
+| 技术栈 | Vue 3 + Pinia + FastAPI + SQLAlchemy Async + SQLite |
+| 核心目标 | 让用户从“一个故事创意”走到“可预览、可下载的视频素材” |
+| 当前架构 | 前后端分离，FastAPI 作为 BFF / 任务编排后端 |
 
-### 核心流程
+### 主流程
 
-| Step | 阶段 | 功能 |
+| 阶段 | 页面 / 模块 | 当前能力 |
 |------|------|------|
-| Step 1 | 灵感输入 | 灵感捕获 + 风格选择 |
-| Step 2 | 世界构建 | 6 轮引导式问答 |
-| Step 3 | 剧本生成 | 大纲 + 流式剧本 + AI 修改 |
-| Video | 视频生成 | 分镜 → TTS → 图片 → 视频 → 合成 |
-| Step 4 | 导出预览 | 分镜预览 + 导出 |
+| Step 1 | 灵感输入 | 创意输入、要素分析 |
+| Step 2 | 世界构建 | 6 轮引导式问答，产出 `selected_setting` |
+| Step 3 | 剧本生成 | 大纲、角色关系、流式剧本、角色设计图、画风设定 |
+| Step 4 | 预览导出 | 剧本预览、导出 JSON / Markdown |
+| Video | 视频生成 | 分镜解析、TTS、图片、视频、拼接、下载 |
+| History | 历史剧本 | 加载、恢复、删除、直接进入分镜 |
 
 ---
 
-## 二、功能实现状态
+## 二、当前功能状态
 
 ### 2.1 核心架构
 
-| 模块 | 状态 | 备注 |
+| 模块 | 状态 | 说明 |
 |------|------|------|
-| 前端架构 (Vue 3 + Pinia) | ✅ | 响应式状态管理，路由守卫完善 |
-| 后端架构 (FastAPI + 异步) | ✅ | BackgroundTasks 异步任务 |
-| 多模型网关 | ✅ | 支持 5 个 LLM 提供商 |
-| JSON 契约 (Schema) | ✅ | story.py 定义完整数据结构 |
-| 数据库持久化 (SQLAlchemy + SQLite) | ✅ | Story / Pipeline 模型，异步 ORM |
-| API Key 统一管理 | ✅ | 统一走 HTTP Header，支持双 Key 回退链 |
-| Celery 任务队列 | ⏳ | 计划中，当前用 BackgroundTasks |
+| Vue 3 + Pinia 前端 | ✅ | 路由、状态恢复、历史加载均可用 |
+| FastAPI 后端 | ✅ | Story / Pipeline / Asset API 完整 |
+| SQLAlchemy + SQLite | ✅ | Story / Pipeline 持久化 |
+| API Key 统一管理 | ✅ | Header 优先，回退 `.env` |
+| 多 LLM provider | ✅ | Claude / OpenAI / SiliconFlow / Qwen / Zhipu / Gemini |
+| 图片 provider | ✅ | SiliconFlow / 豆包 |
+| 视频 provider | ✅ | DashScope / Kling / 豆包 |
+| BackgroundTasks 任务执行 | ✅ | 自动流水线可用 |
+| Celery / 外部任务队列 | ⏳ | 未接入 |
 
-### 2.2 四阶段功能
+### 2.2 故事创作链路
 
-#### 阶段 1：灵感捕获 (Step 1)
-
-| 功能 | 状态 | 组件 / API |
-|------|------|------------|
-| 灵感输入 | ✅ | Step1Inspire.vue |
-| 风格标签选择 | ✅ | StyleSelector.vue |
-| 灵感盲盒 🎲 | ✅ | IdeaGenerator.vue（6 维度随机） |
-| 引导式追问 | ✅ | FollowUpOptions.vue |
-| 6 轮世界构建问答 | ✅ | `/world-building/start` + `/world-building/turn` |
-| 要素分析 | ✅ | `/analyze-idea` |
-
-#### 阶段 2：剧本生成 (Step 2–3)
-
-| 功能 | 状态 | 组件 / API |
-|------|------|------------|
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| 灵感分析 | ✅ | `/api/v1/story/analyze-idea` |
+| 世界观构建 | ✅ | `/world-building/start` + `/world-building/turn` |
 | 大纲生成 | ✅ | `/generate-outline` |
-| 角色生成 + 关系图 | ✅ | CharacterGraph.vue（SVG 动画） |
-| 大纲预览 / 修改 | ✅ | OutlinePreview.vue |
-| AI 修改助手 (SSE) | ✅ | OutlineChatPanel.vue + `/chat` |
-| 章节专属 AI 对话 | ✅ | EpisodeChatPanel.vue |
-| 角色专属 AI 对话 | ✅ | CharacterChatPanel.vue |
-| 流式剧本生成 | ✅ | `/generate-script`（SSE） |
-| 结构化 JSON 输出 | ✅ | ScriptScene Schema |
+| 角色关系图 | ✅ | `CharacterGraph.vue` |
+| 流式剧本生成 | ✅ | `/generate-script`，SSE |
+| AI 修改助手 | ✅ | `/chat` + `/refine` + `/apply-chat` |
+| 历史剧本恢复 | ✅ | `HistoryView.vue` + `store.loadStory()` |
+| 剧本序列化到视频阶段 | ✅ | `/story/{story_id}/finalize` |
 
-#### 阶段 3：视觉资产
+### 2.3 视觉与资产链路
 
-| 功能 | 状态 | 备注 |
+| 功能 | 状态 | 说明 |
 |------|------|------|
-| 角色形象设计 UI | ✅ | CharacterDesign.vue，已对接后端 |
-| 角色图像生成 (FLUX.1) | ✅ | `/api/v1/character/generate` + generate-all |
-| 角色图像存储（数据库） | ✅ | 存入 `story.character_images` 字段 |
-| 特征提取 → Prompt | ✅ | 后端自动构建 visual_prompt |
-| 场景图像生成 (FLUX.1-schnell) | ✅ | 1280×720，SiliconFlow API |
-| **人物一致性** | ⏳ | 需要 LoRA / IP-Adapter；平替：physical_description 注入 |
+| 角色设计图生成 | ✅ | `/api/v1/character/generate` / `generate-all` |
+| 角色图片持久化 | ✅ | 存入 `story.character_images` |
+| 画风设定 UI | ✅ | `ArtStyleSelector.vue` |
+| 画风设定持久化 | ✅ | `stories.art_style` + `X-Art-Style` Header |
+| 手动场景图片生成 | ✅ | `/api/v1/image/{project_id}/generate` |
+| 手动视频生成 | ✅ | `/api/v1/video/{project_id}/generate` |
+| 语音生成 | ✅ | `/api/v1/tts/{project_id}/generate` |
+| 图片首尾帧 / 过渡辅助字段 | 🔶 | schema 与部分服务链路已支持相关字段，但主要是专项增强能力，不是默认全 provider 主路径 |
+| 完整视觉一致性引擎 | ⏳ | 设计已完成，代码尚未完整落地 |
 
-#### 阶段 4：预览导出 (Step 4)
+### 2.4 视频流水线
 
-| 功能 | 状态 | 组件 / API |
-|------|------|------------|
-| 视觉分镜预览 | ✅ | SceneStream.vue |
-| JSON / Markdown 导出 | ✅ | ExportPanel.vue |
-| 完整视频导出 | ✅ | 前端导出按钮，调用 `/concat` 拼接后下载 |
-
-### 2.3 视频流水线
-
-| 功能 | 状态 | 备注 |
+| 功能 | 状态 | 说明 |
 |------|------|------|
-| 分镜解析（LLM，升级版） | ✅ | storyboard.py，支持所有 provider，含镜头语言增强 |
-| TTS 语音（Edge TTS） | ✅ | 18+ 中文语音，生成 MP3 |
-| 场景图片生成（FLUX.1） | ✅ | 1280×720，异步批处理 |
-| 图生视频（Wan2.6-i2v） | ✅ | DashScope 异步任务轮询，下载 MP4 |
-| FFmpeg 音视频合成（auto-generate） | ✅ | `_stitch_videos()` → `ffmpeg.stitch_batch()` 真实实现 |
-| FFmpeg 视频拼接（/concat） | ✅ | stream copy 不重编码，速度快 |
-| 手动步进 `/stitch` | ⚠️ | 仍为 `asyncio.sleep(2)` 占位，建议改用 `/concat` |
-| INTEGRATED 策略 | 🔶 | 代码框架已有，实际仍复用 image-to-video API，未对接真正的视频语音一体 API |
-| 一键自动生成 | ✅ | `/{id}/auto-generate`，后台执行全流程 |
-| 实时进度（轮询） | ✅ | `/{id}/status`，数据库持久化状态 |
-| 任务持久化（数据库） | ✅ | Pipeline 状态写入 SQLite，重启不丢失 |
-| 双策略支持 | ✅ | SEPARATED / INTEGRATED |
-| 断点续传 | ⏳ | 未实现 |
-
-### 2.4 数据持久化
-
-| 数据 | 模型 | 状态 |
-|------|------|------|
-| 故事 / 剧本 | `Story` (SQLAlchemy) | ✅ |
-| 流水线状态 | `Pipeline` (SQLAlchemy) | ✅ |
-| 角色图像 URL | `story.character_images`（JSON 字段） | ✅ |
-| 旧 Project 模型 | `Project` | ⚠️ 遗留，与现有流程脱节，待清理 |
+| 分镜解析 | ✅ | `storyboard.py`，多 provider |
+| 自动全流程生成 | ✅ | `/pipeline/{project_id}/auto-generate` |
+| 手动分镜解析 | ✅ | `/pipeline/{project_id}/storyboard` |
+| 手动生成 TTS + 图片 | ✅ | `/pipeline/{project_id}/generate-assets` |
+| 手动视频渲染 | ✅ | `/pipeline/{project_id}/render-video` |
+| 进度查询 | ✅ | `/pipeline/{project_id}/status` |
+| 视频拼接 | ✅ | `/pipeline/{project_id}/concat` |
+| 单镜头音视频合成 | 🔶 | `/pipeline/{project_id}/stitch` 接口已存在，但当前仍是占位模拟实现 |
+| `separated` 策略 | ✅ | 全链路可用 |
+| `chained` 策略 | ✅ | 场景内末帧传递，增强连续性 |
+| `integrated` 策略 | 🔶 | 接口存在，但底层仍复用图生视频链路 |
 
 ---
 
-## 三、前端详情
+## 三、前端现状
 
-### 3.1 页面路由
+### 3.1 页面
 
-| 页面 | 路由 | 状态 | 核心功能 |
-|------|------|------|----------|
-| Step 1 灵感输入 | /step1 | ✅ | 灵感输入 + 盲盒 + 风格选择 |
-| Step 2 世界构建 | /step2 | ✅ | 6 轮引导式问答 |
-| Step 3 剧本生成 | /step3 | ✅ | 大纲 + 关系图 + 流式剧本 + AI 修改 |
-| Step 4 预览导出 | /step4 | ✅ | 场景预览 + 导出 |
-| 视频生成 | /video-generation | ✅ | 分镜 + TTS / 图 / 视频生成 |
-| 设置页 | /settings | ✅ | 全局 + 文本/图片/视频专用 API 配置（开关切换） |
-
-### 3.2 组件清单
-
-| 组件 | 功能 | 状态 |
-|------|------|------|
-| StepIndicator | 步骤进度指示 | ✅ |
-| ApiKeyModal | API Key 提示弹窗 | ✅ |
-| IdeaGenerator | 灵感盲盒生成器 | ✅ |
-| OutlinePreview | 大纲预览 | ✅ |
-| CharacterGraph | 角色关系图（SVG） | ✅ |
-| CharacterDesign | 角色设计 + 图像生成 | ✅ |
-| SceneStream | 场景流式展示 | ✅ |
-| OutlineChatPanel | AI 大纲修改面板 | ✅ |
-| EpisodeChatPanel | 章节专属 AI 对话 | ✅ |
-| CharacterChatPanel | 角色专属 AI 对话 | ✅ |
-| ExportPanel | 导出按钮 | ✅ |
-| StyleSelector | 风格选择器 | ✅ |
-| FollowUpOptions | 追问选项 | ✅ |
-
-### 3.3 API Key 管理（前端）
-
-前端采用**全局 + 专用（可开关）**三层配置体系，存储于 `settings` store（localStorage）：
-
-**全局配置（必填）：**
-
-| 字段 | 作用 |
-|------|------|
-| `provider` | 全局服务商选择 |
-| `apiKey` | 全局 API Key（所有未开专用的服务均使用此 Key） |
-| `llmBaseUrl` | 全局 Base URL |
-
-**专用配置（开关控制，关闭时继承全局）：**
-
-| 开关 | 字段 | 作用 |
-|------|------|------|
-| `textEnabled` | `textProvider` / `textApiKey` / `textBaseUrl` / `textModel` | 文本/LLM 专用 |
-| `imageEnabled` | `imageApiKey` / `imageBaseUrl` / `imageModel` | 图片生成专用 |
-| `videoEnabled` | `videoApiKey` / `videoBaseUrl` / `videoModel` | 视频生成专用 |
-
-**有效值 Getter（实际使用）：**
-
-| Getter | 逻辑 |
-|--------|------|
-| `effectiveLlmApiKey` | `textEnabled && textApiKey` ? textApiKey : apiKey |
-| `effectiveLlmProvider` | `textEnabled && textProvider` ? textProvider : provider |
-| `effectiveLlmBaseUrl` | `textEnabled && textBaseUrl` ? textBaseUrl : llmBaseUrl |
-| `effectiveImageApiKey` | `imageEnabled && imageApiKey` ? imageApiKey : apiKey |
-| `effectiveImageBaseUrl` | `imageEnabled && imageBaseUrl` ? imageBaseUrl : llmBaseUrl |
-| `effectiveImageModel` | imageEnabled ? imageModel : '' |
-| `effectiveVideoApiKey` | `videoEnabled && videoApiKey` ? videoApiKey : apiKey |
-| `effectiveVideoBaseUrl` | `videoEnabled && videoBaseUrl` ? videoBaseUrl : llmBaseUrl |
-| `effectiveVideoModel` | videoEnabled ? videoModel : '' |
-
-所有 HTTP 请求通过 `story.js` 的 `getHeaders()` 统一注入对应的 effective 值。
-
-### 3.4 请求头规范
-
-| Header | 对应值 |
-|--------|--------|
-| `X-LLM-API-Key` | effectiveLlmApiKey |
-| `X-LLM-Base-URL` | effectiveLlmBaseUrl |
-| `X-LLM-Provider` | effectiveLlmProvider |
-| `X-Image-API-Key` | effectiveImageApiKey |
-| `X-Image-Base-URL` | effectiveImageBaseUrl |
-| `X-Video-API-Key` | effectiveVideoApiKey |
-| `X-Video-Base-URL` | effectiveVideoBaseUrl |
-
----
-
-## 四、后端详情
-
-### 4.1 API 端点
-
-#### Story API (`/api/v1/story`)
-
-| 端点 | 方法 | 状态 |
-|------|------|------|
-| /analyze-idea | POST | ✅ |
-| /generate-outline | POST SSE | ✅ 流式输出（防 ReadError） |
-| /generate-script | POST SSE | ✅ |
-| /chat | POST SSE | ✅ |
-| /refine | POST | ✅ 保留原有 meta 字段 |
-| /patch | POST | ✅ |
-| /apply-chat | POST | ✅ |
-| /world-building/start | POST | ✅ |
-| /world-building/turn | POST | ✅ |
-| /{story_id}/finalize | POST | ✅ |
-
-#### Pipeline API (`/api/v1/pipeline`)
-
-| 端点 | 方法 | 状态 | 模式 |
+| 页面 | 路由 | 状态 | 说明 |
 |------|------|------|------|
-| /{id}/auto-generate | POST | ✅ | 自动：后台全流程，DB 持久化状态 |
-| /{id}/storyboard | POST | ✅ | 手动步进：分镜解析（升级版） |
-| /{id}/generate-assets | POST | ✅ | 手动步进：TTS + 图片，内存状态 |
-| /{id}/render-video | POST | ✅ | 手动步进：图生视频，内存状态 |
-| /{id}/concat | POST | ✅ | 多镜头视频拼接（真实 FFmpeg，stream copy） |
-| /{id}/stitch | POST | ⚠️ | 手动步进：FFmpeg 占位（asyncio.sleep），建议改用 /concat |
-| /{id}/status | GET | ✅ | 自动模式状态查询（DB） |
+| 灵感输入 | `/step1` | ✅ | 创意输入与分析 |
+| 世界构建 | `/step2` | ✅ | 6 轮问答 |
+| 剧本生成 | `/step3` | ✅ | 大纲、关系图、角色设计、画风设定 |
+| 预览导出 | `/step4` | ✅ | SceneStream + ExportPanel |
+| 视频生成 | `/video-generation` | ✅ | 手动 / 自动视频流水线入口 |
+| 设置页 | `/settings` | ✅ | LLM / 图片 / 视频配置 |
+| 历史剧本 | `/history` | ✅ | 恢复、删除、直接分镜 |
 
-> **注意**：`generate-assets`、`render-video` 为手动步进端点，使用进程内存状态（重启丢失）。自动模式 `auto-generate` 使用数据库持久化状态。
+### 3.2 关键组件
 
-#### Character API (`/api/v1/character`)
-
-| 端点 | 方法 | 状态 |
+| 组件 | 状态 | 说明 |
 |------|------|------|
-| /generate | POST | ✅ |
-| /generate-all | POST | ✅ |
-| /{story_id}/images | GET | ✅ |
+| `CharacterDesign.vue` | ✅ | 角色图像生成与展示 |
+| `ArtStyleSelector.vue` | ✅ | 画风设定、持久化、错误回滚 |
+| `CharacterGraph.vue` | ✅ | 角色关系展示 |
+| `SceneStream.vue` | ✅ | 剧本场景流展示 |
+| `ExportPanel.vue` | ✅ | 导出 JSON / 文本 |
+| `ApiKeyModal.vue` | ✅ | API Key 缺失 / 无效提示 |
 
-#### TTS / Image / Video API
+### 3.3 设置体系
 
-| 端点 | 方法 | 状态 |
-|------|------|------|
-| /api/v1/tts/voices | GET | ✅ |
-| /api/v1/tts/{id}/generate | POST | ✅ |
-| /api/v1/image/{id}/generate | POST | ✅ |
-| /api/v1/video/{id}/generate | POST | ✅ |
+当前前端设置页支持：
 
-#### Projects API (`/api/v1/projects`) — 遗留
+- 全局 LLM 配置
+- 分镜专用 Script LLM 配置
+- 图片 provider / model / key / base URL
+- 视频 provider / model / key / base URL
 
-| 端点 | 方法 | 状态 |
-|------|------|------|
-| /init | POST | ⚠️ Mock，返回硬编码模板 |
-| /{id}/chat | POST | ⚠️ Mock |
-| /{id}/script | GET | ⚠️ Mock |
+用户侧可选 provider 现状：
 
-### 4.2 API Key 管理（后端）
-
-| 模块 | 来源 | 状态 |
-|------|------|------|
-| `app/core/api_keys.py` | — | ✅ 统一提取、校验、脱敏模块 |
-| LLM Key | Header `X-LLM-API-Key` → 回退 `.env` 各 provider key | ✅ |
-| Image Key | Header `X-Image-API-Key` → 回退 `.env` `SILICONFLOW_API_KEY` | ✅ |
-| Image Base URL | Header `X-Image-Base-URL` → 回退 `.env` `SILICONFLOW_BASE_URL` | ✅ |
-| Video Key | Header `X-Video-API-Key` → 回退 `.env` `DASHSCOPE_API_KEY` | ✅ |
-| Video Base URL | Header `X-Video-Base-URL` → 回退 `.env` `DASHSCOPE_BASE_URL` | ✅ |
-| Key 脱敏（日志） | `mask_key()` — 仅显示首4尾4位 | ✅ |
-| Key 缺失时行为 | 返回 HTTP 400，不发起外部请求 | ✅ |
-| Query Param 传 Key | 已清除 | ✅ |
-
-### 4.3 LLM 集成
-
-| 提供商 | 状态 | 模型 | 接入方式 |
-|--------|------|------|----------|
-| Anthropic Claude | ✅ | claude-sonnet-4-6 / claude-opus-4-6 / claude-haiku-4-5 | 原生 SDK |
-| OpenAI | ✅ | gpt-4o / gpt-4o-mini / gpt-4-turbo | 原生 SDK |
-| 阿里通义千问 | ✅ | qwen-plus / qwen-max / qwen-turbo | OpenAI 兼容 |
-| 智谱 GLM | ✅ | glm-4 / glm-4-flash / glm-3-turbo | OpenAI 兼容 |
-| Google Gemini | ✅ | gemini-2.0-flash / gemini-2.0-pro | OpenAI 兼容 |
-| Kimi / 月之暗面 | ⏳ | — | 可快速接入 |
-
-所有 Provider 均支持 `api_key or settings.xxx_api_key` 回退逻辑（`factory.py`）。
-
-### 4.4 数据契约（JSON Schema）
-
-| 结构 | 字段 |
+| 类型 | Provider |
 |------|------|
-| story_id | 唯一标识 |
-| meta | title, logline, genre, theme |
-| characters | id, name, role, personality, visual_prompt |
-| relationships | source, target, label |
-| outline | act, title, description |
-| scenes | scene_id, setting, visual_prompt, actions, dialogues |
-| character_images | {character_name: {image_url, image_path, prompt}} |
+| LLM | Claude / OpenAI / SiliconFlow / Qwen / Zhipu / Gemini / Custom |
+| 图片 | SiliconFlow / 豆包 / Custom |
+| 视频 | DashScope / Kling / 豆包 / Custom |
+
+说明：
+
+- 前端设置中虽然保留了部分实验性 provider 配置项，但当前文档只记录已完整接通的主路径
+- 请求 Header 统一由 `frontend/src/api/story.js` 的 `getHeaders()` 构建
+- `X-Art-Style` 已在手动 / 自动视频链路中贯通
 
 ---
 
-## 五、技术风险
+## 四、后端现状
 
-| 风险项 | 级别 | 现状 |
-|--------|------|------|
-| 手动 `/stitch` 仍为 Mock | 🟠 中 | `asyncio.sleep(2)` 占位，前端应改用 `/concat` |
-| 人物一致性 | 🔴 高 | 各 shot 独立生成图片，人物外观不一致 |
-| INTEGRATED 策略未完成 | 🟠 中 | 代码框架有，实际复用 image-to-video API，未对接真正的视频语音一体 API |
-| 手动步进内存状态 | 🟠 中 | generate-assets / render-video 用进程内存，重启后丢失 |
-| SSE 并发限制 | 🟡 中 | Chrome HTTP/1.1 同域 6 连接上限 |
-| Projects 模型遗留 | 🟡 中 | 旧 interview 模式，与现有流程脱节 |
-| 无断点续传 | 🟡 中 | 视频流水线失败须重跑全流程 |
-| 前端 Key 存 localStorage | 🟡 中 | 明文，XSS 可读取；sessionStorage 为更安全选项 |
+### 4.1 Story API
 
----
+| 端点 | 方法 | 状态 | 说明 |
+|------|------|------|------|
+| `/api/v1/story/` | `GET` | ✅ | 历史故事列表 |
+| `/api/v1/story/{story_id}` | `GET` | ✅ | 获取完整 Story |
+| `/api/v1/story/{story_id}` | `DELETE` | ✅ | 删除 Story |
+| `/api/v1/story/analyze-idea` | `POST` | ✅ | 创意分析 |
+| `/api/v1/story/generate-outline` | `POST` | ✅ | 生成大纲 |
+| `/api/v1/story/generate-script` | `POST` | ✅ | SSE 剧本生成 |
+| `/api/v1/story/chat` | `POST` | ✅ | SSE 对话修改 |
+| `/api/v1/story/refine` | `POST` | ✅ | 结构化修改 |
+| `/api/v1/story/patch` | `POST` | ✅ | 局部持久化，含 `art_style` |
+| `/api/v1/story/apply-chat` | `POST` | ✅ | 应用聊天修改 |
+| `/api/v1/story/world-building/start` | `POST` | ✅ | 开始世界构建 |
+| `/api/v1/story/world-building/turn` | `POST` | ✅ | 世界构建追问 |
+| `/api/v1/story/{story_id}/finalize` | `POST` | ✅ | 导出第二阶段剧本文本 |
 
-## 六、TODO 清单
+### 4.2 Pipeline API
 
-### ✅ 已完成（原 P0）
+| 端点 | 方法 | 状态 | 说明 |
+|------|------|------|------|
+| `/api/v1/pipeline/{project_id}/auto-generate` | `POST` | ✅ | 自动全流程 |
+| `/api/v1/pipeline/{project_id}/storyboard` | `POST` | ✅ | 手动分镜解析 |
+| `/api/v1/pipeline/{project_id}/generate-assets` | `POST` | ✅ | 手动 TTS + 图片 |
+| `/api/v1/pipeline/{project_id}/render-video` | `POST` | ✅ | 手动视频生成 |
+| `/api/v1/pipeline/{project_id}/status` | `GET` | ✅ | 查询状态 |
+| `/api/v1/pipeline/{project_id}/concat` | `POST` | ✅ | 多视频拼接 |
+| `/api/v1/pipeline/{project_id}/stitch` | `POST` | 🔶 | 接口已保留，当前仍为占位模拟实现 |
 
-- [x] **FFmpeg 音视频合成** — `ffmpeg.stitch_batch()` + `/concat` 端点已实现
-- [x] **前端视频导出** — VideoGeneration 页面支持直接下载最终视频
-- [x] **分镜引擎升级** — 新版 storyboard 含镜头语言增强，提升视频生成质量
-- [x] **`generate-outline` SSE 流式** — 防止长响应触发 ReadError
+说明：
 
-### 🟠 P1 — 重要，影响用户体验
+- 自动模式状态写入数据库
+- 手动步进模式的状态仍主要保存在进程内内存中
 
-- [ ] **修复手动 `/stitch` 占位**
-  - `pipeline.py` `stitch_video()` 仍为 `asyncio.sleep(2)` + TODO
-  - 接入 `ffmpeg.stitch_batch()` 或统一引导前端改用 `/concat`
+### 4.3 Asset API
 
-- [ ] **INTEGRATED 策略完成**
-  - `pipeline_executor.py` INTEGRATED 分支目前复用 image-to-video API
-  - 需对接真正的视频语音一体生成 API
+| 端点 | 方法 | 状态 |
+|------|------|------|
+| `/api/v1/character/generate` | `POST` | ✅ |
+| `/api/v1/character/generate-all` | `POST` | ✅ |
+| `/api/v1/character/{story_id}/images` | `GET` | ✅ |
+| `/api/v1/image/{project_id}/generate` | `POST` | ✅ |
+| `/api/v1/video/{project_id}/generate` | `POST` | ✅ |
+| `/api/v1/tts/voices` | `GET` | ✅ |
+| `/api/v1/tts/{project_id}/generate` | `POST` | ✅ |
 
-- [ ] **断点续传**
-  - 长任务失败后可从失败步骤恢复，而非重新执行全流程
+### 4.4 数据模型
 
-- [ ] **WebSocket / SSE 实时进度推送**
-  - 当前 `/status` 接口为轮询模式
-  - 改为 WebSocket 或 SSE 主动推送，减少轮询开销
+| 模型 | 状态 | 说明 |
+|------|------|------|
+| `Story` | ✅ | 包含 `selected_setting`、`meta`、`characters`、`character_images`、`art_style` |
+| `Pipeline` | ✅ | 保存自动流水线状态、进度与产物 |
+| `Project` | ⚠️ | 遗留模块，仍保留但不属于主流程核心 |
 
-- [ ] **前端 Key 改用 sessionStorage**
-  - `settings.js` 中所有 API Key 从 `localStorage` 改为 `sessionStorage`
-  - Tab 关闭即清除，缩小 XSS 暴露窗口
+当前 Story 相关关键字段：
 
-### 🟡 P2 — 优化
-
-- [ ] **发布前：开启 DNS-based SSRF 防护**
-  - `app/core/api_keys.py` 的 `validate_user_base_url()` 已实现 DNS 解析 + 内网 IP 拦截
-  - 开发环境默认关闭（境外域名在国内可能无法解析）
-  - 正式部署时在 `.env` 中加入 `VALIDATE_BASE_URL_DNS=true`
-
-- [ ] **发布前：移除 Mock 模式**
-  - `app/services/story_llm.py` 中各函数在 `api_key` 为空时直接 fallback 到 `mock_*` 函数（`analyze_idea`、`generate_outline`、`generate_script`、`chat`、`refine`、`world_building_start`、`world_building_turn`）
-  - `app/services/story_mock.py` 整个文件及 `mock_world_building_start` / `mock_world_building_turn` 等函数均需删除或加守卫
-  - 建议：正式发布时将 fallback 改为直接抛出 400，强制要求用户填写 API Key
-
-- [ ] **清理 Projects 遗留模块**
-  - `app/routers/projects.py` 返回硬编码 Mock 数据，`Project` 模型与 Story+Pipeline 流程脱节
-
-- [ ] **人物一致性方案**
-  - 方案 A：LoRA / IP-Adapter（高成本）
-  - 方案 B：在每个 shot 的 `visual_prompt` 中强制注入 `physical_description` 字段（低成本平替）
-
-- [ ] **降级兜底**
-  - TTS / 图片 / 视频任一步骤失败时，提供占位内容而非整体中断
-  - 视频生成超时（>300s）时给出友好提示
-
-- [ ] **移动端适配**
-  - 响应式 CSS 媒体查询改造
-  - 按钮最小 44×44px，支持滑动手势
-
-- [ ] **陪伴式等待 UI**
-  - 长时间生成中展示动态进度说明
-
-- [ ] **图片/视频 API Key 智能继承全局配置**
-  - 当前：未启用专用配置时图片/视频 key 和 base URL 均返回空，后端读 `.env` 默认值
-  - 问题：若用户全局配的是 OpenAI / SiliconFlow 这类同时支持 LLM + 图片生成的统一供应商，应当能继承全局 key 和 base URL（同根不同枝）
-  - 方案：在 `settings.js` 中维护 `IMAGE_CAPABLE_PROVIDERS`（如 `siliconflow`、`openai`、`custom`），仅当全局 provider 在此列表中时才 fallback 到 `state.apiKey` / `state.llmBaseUrl`；Claude 等 LLM 专用供应商不继承
-
-### 🟢 P3 — 长期规划
-
-- [ ] **Celery 任务队列**
-  - 替换 BackgroundTasks，支持生产级并发任务管理、任务重试、优先级队列
-
-- [ ] **HTTP/2 支持**
-  - 解决 Chrome HTTP/1.1 同域 6 连接 SSE 并发限制
-
-- [ ] **双模式切换（普通 / 专业）**
-  - 当前 MVP 冻结，待核心功能稳定后实现
+| 字段 | 含义 |
+|------|------|
+| `selected_setting` | 世界观问答完成后的总结 |
+| `meta` | 标题、主题等元数据 |
+| `character_images` | 角色图像与 prompt 信息 |
+| `art_style` | 画风设定 |
 
 ---
 
-*文档更新于 2026-03-24，基于项目代码实际分析*
+## 五、关键实现说明
+
+### 5.1 画风设定
+
+当前画风链路已打通：
+
+- 前端 `ArtStyleSelector.vue` 负责确认式修改
+- `story.patch` 持久化到 `stories.art_style`
+- 请求 Header 通过 `X-Art-Style` 透传
+- 手动图片 / 手动视频 / 自动流水线均可消费 `art_style`
+
+相关设计说明见：
+
+- [art-style-backend.md](./art-style-backend.md)
+
+### 5.2 角色设计图
+
+角色设计图已支持：
+
+- 单角色生成
+- 批量生成
+- 保存到 `story.character_images`
+- 历史剧本恢复时回显
+
+### 5.3 视觉一致性引擎
+
+当前仓库中：
+
+- 画风透传已实现
+- 角色 prompt 增强仍是运行期拼接方式
+- 更完整的 `StoryContext` / Prompt Caching / 结构化外貌缓存方案尚未完全实现
+
+设计文档见：
+
+- [digital-asset-library-design.md](./digital-asset-library-design.md)
+
+### 5.4 首尾帧 / 视频过渡
+
+仓库内已经有针对豆包首尾帧能力的专项文档与探索实现，但该能力仍属于专项增强，不应在主功能文档中描述为“默认全 provider 已开启”。
+
+当前更准确的口径是：
+
+- `Shot` schema 与图片/视频服务层已经支持 `last_frame_prompt` / `last_frame_url` 等字段
+- 豆包 provider 对双帧过渡支持最完整
+- 其他 provider 对尾帧能力的支持程度不一致，部分链路会直接忽略相关参数
+
+相关文档：
+
+- [DOUBAO_FIRST_LAST_FRAME_DISCOVERY.md](./DOUBAO_FIRST_LAST_FRAME_DISCOVERY.md)
+- [FIRST_LAST_FRAME_USAGE_GUIDE.md](./FIRST_LAST_FRAME_USAGE_GUIDE.md)
+
+---
+
+## 六、当前边界与风险
+
+| 项目 | 级别 | 当前情况 |
+|------|------|------|
+| `integrated` 策略未真正一体化 | 中 | 仍复用图生视频链路 |
+| 手动步进状态以内存保存 | 中 | 进程重启后丢失 |
+| `/stitch` 仍为占位实现 | 中 | 接口存在，但尚未接入真实 FFmpeg 合成批处理 |
+| 人物一致性仍非结构化缓存驱动 | 高 | `StoryContext` 方案尚未完全落地 |
+| Prompt Caching 尚未接入 | 中 | 仅有设计文档 |
+| 历史遗留 `projects` 模块 | 中 | 与主 Story / Pipeline 流程割裂 |
+| 更强的断点续跑 | 中 | 尚未实现 |
+
+---
+
+## 七、推荐阅读顺序
+
+如果你是新加入项目，建议按以下顺序阅读：
+
+1. `README.md`
+2. 本文档
+3. [art-style-backend.md](./art-style-backend.md)
+4. [digital-asset-library-design.md](./digital-asset-library-design.md)
+5. `app/routers/` + `app/services/` 代码
+
+---
+
+## 八、后续重点 TODO
+
+### P1
+
+- [ ] 落地 `StoryContext` 一致性引擎
+- [ ] 接入 Prompt Caching
+- [ ] 完成真正的 `integrated` 视频语音一体策略
+- [ ] 把手动步进状态从内存迁移到可恢复存储
+
+### P2
+
+- [ ] 清理 `projects` 遗留模块
+- [ ] 优化多角色一致性
+- [ ] 增强错误恢复与断点续跑
+- [ ] 进一步完善首尾帧与过渡分镜能力
+
+---
+
+*本文档已根据当前仓库代码与现有设计文档同步更新。*

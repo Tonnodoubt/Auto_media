@@ -79,6 +79,7 @@ async def list_stories(db: AsyncSession, limit: int = 50) -> List[dict]:
             "idea": s.idea,
             "genre": s.genre,
             "tone": s.tone,
+            "art_style": s.art_style or "",
             "created_at": s.created_at,
             "updated_at": s.updated_at,
         }
