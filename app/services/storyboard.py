@@ -120,6 +120,19 @@ _MOVEMENT_LABELS_ZH = {
     "Crane up": "升降上移",
     "Crane down": "升降下移",
 }
+_CANONICAL_CAMERA_MOVEMENTS = (
+    "Static",
+    "Slow Dolly in",
+    "Dolly out",
+    "Pan left",
+    "Pan right",
+    "Tilt up",
+    "Tilt down",
+    "Tracking shot",
+    "Handheld subtle shake",
+    "Crane up",
+    "Crane down",
+)
 
 
 def _strip_terminal_punctuation(text: str) -> str:
@@ -135,6 +148,63 @@ def _trim_words(text: str, limit: int) -> str:
     if len(words) <= limit:
         return _strip_terminal_punctuation(_collapse_spaces(text))
     return _strip_terminal_punctuation(" ".join(words[:limit]))
+
+
+def _normalize_camera_movement(value: str) -> str:
+    text = _collapse_spaces(value)
+    if not text:
+        return "Static"
+
+    for movement in _CANONICAL_CAMERA_MOVEMENTS:
+        if text.lower() == movement.lower():
+            return movement
+
+    normalized = re.sub(r"[_/|]", " ", text.lower())
+    normalized = re.sub(r"\s*\+\s*", " ", normalized)
+    normalized = re.sub(r"[(),.;:]+", " ", normalized)
+    normalized = _collapse_spaces(normalized)
+
+    alias_groups = (
+        ("Slow Dolly in", ("dolly in", "push in", "push-in", "zoom in", "camera in")),
+        ("Dolly out", ("dolly out", "pull out", "pull back", "zoom out", "camera out")),
+        ("Pan left", ("pan left", "left pan", "pan to the left")),
+        ("Pan right", ("pan right", "right pan", "pan to the right")),
+        ("Tilt up", ("tilt up", "tilt upward", "tilt upwards")),
+        ("Tilt down", ("tilt down", "tilt downward", "tilt downwards")),
+        ("Tracking shot", ("tracking shot", "track shot", "tracking", "follow shot", "follow camera")),
+        ("Handheld subtle shake", ("handheld", "hand held", "subtle shake", "slight shake", "camera shake")),
+        ("Crane up", ("crane up", "boom up", "jib up")),
+        ("Crane down", ("crane down", "boom down", "jib down")),
+        ("Static", ("static", "locked off", "lock off", "still camera", "fixed camera", "no camera movement")),
+    )
+
+    weighted_matches: list[tuple[int, str]] = []
+    for index, (canonical, aliases) in enumerate(alias_groups):
+        for alias in aliases:
+            if alias in normalized:
+                score = 2 if any(speed in normalized for speed in ("fast", "slow", "slight", "subtle")) else 1
+                weighted_matches.append((score * 100 - index, canonical))
+                break
+
+    if weighted_matches:
+        return max(weighted_matches)[1]
+
+    if "dolly" in normalized or "push" in normalized or "zoom in" in normalized:
+        return "Slow Dolly in"
+    if "pull" in normalized or "zoom out" in normalized:
+        return "Dolly out"
+    if "pan" in normalized:
+        return "Pan left" if "left" in normalized else "Pan right" if "right" in normalized else "Static"
+    if "tilt" in normalized:
+        return "Tilt down" if "down" in normalized else "Tilt up" if "up" in normalized else "Static"
+    if "track" in normalized or "follow" in normalized:
+        return "Tracking shot"
+    if "handheld" in normalized or "shake" in normalized:
+        return "Handheld subtle shake"
+    if "crane" in normalized or "boom" in normalized or "jib" in normalized:
+        return "Crane down" if "down" in normalized else "Crane up"
+
+    return "Static"
 
 
 def _strip_patterns(text: str, patterns: tuple[str, ...]) -> str:
@@ -158,16 +228,21 @@ def _contains_cjk(text: str) -> bool:
 
 
 def _preferred_language(shot: Shot) -> str:
-    joined = " ".join(
+    prompt_or_structured_fields = " ".join(
         [
-            shot.storyboard_description or "",
+            shot.image_prompt or "",
+            shot.final_video_prompt or "",
+            shot.last_frame_prompt or "",
             shot.visual_elements.subject_and_clothing or "",
             shot.visual_elements.action_and_expression or "",
             shot.visual_elements.environment_and_props or "",
             shot.visual_elements.lighting_and_color or "",
+            shot.mood or "",
         ]
     )
-    return "zh" if _contains_cjk(joined) else "en"
+    if _collapse_spaces(prompt_or_structured_fields):
+        return "zh" if _contains_cjk(prompt_or_structured_fields) else "en"
+    return "zh" if _contains_cjk(shot.storyboard_description or "") else "en"
 
 
 def _sentence_localized(text: str, lang: str, prefix: str = "") -> str:
@@ -297,12 +372,12 @@ def _normalize_image_prompt(text: str) -> str:
 
 
 def _normalize_video_prompt(text: str) -> str:
-    cleaned = _strip_patterns(text, _STYLE_PATTERNS + _VIDEO_VERBOSE_PATTERNS)
+    cleaned = _strip_patterns(text, _STYLE_PATTERNS)
     cleaned = re.sub(r"[\"'][^\"']+[\"']", " speaking", cleaned)
     cleaned = re.sub(r"\s*,\s*", ", ", cleaned)
     cleaned = re.sub(r"(?:,\s*){2,}", ", ", cleaned)
     cleaned = re.sub(r"(^|[.])\s*,\s*", r"\1 ", cleaned)
-    return _trim_words(cleaned, 75)
+    return _trim_words(cleaned, 85)
 
 
 def _freeze_action_phrase(text: str) -> str:
@@ -412,15 +487,20 @@ def _postprocess_shot(shot: Shot) -> Shot:
     raw_image_prompt = shot.image_prompt or ""
     raw_video_prompt = shot.final_video_prompt or ""
 
-    if shot.visual_elements.subject_and_clothing or shot.visual_elements.environment_and_props:
-        shot.image_prompt = _compose_image_prompt(shot)
-    elif raw_image_prompt:
+    # Preserve prompt fields generated by the storyboard LLM whenever available.
+    # Recent system-prompt updates intentionally shape image/video prompt wording,
+    # length, and language. Rebuilding them here would silently override those changes.
+    if raw_image_prompt:
         shot.image_prompt = _normalize_image_prompt(raw_image_prompt)
-
-    if shot.visual_elements.action_and_expression or shot.visual_elements.subject_and_clothing:
-        shot.final_video_prompt = _compose_video_prompt(shot)
+    elif shot.visual_elements.subject_and_clothing or shot.visual_elements.environment_and_props:
+        shot.image_prompt = _compose_image_prompt(shot)
     elif raw_video_prompt:
+        shot.image_prompt = _normalize_image_prompt(raw_video_prompt)
+
+    if raw_video_prompt:
         shot.final_video_prompt = _normalize_video_prompt(raw_video_prompt)
+    elif shot.visual_elements.action_and_expression or shot.visual_elements.subject_and_clothing:
+        shot.final_video_prompt = _compose_video_prompt(shot)
 
     if shot.last_frame_prompt:
         shot.last_frame_prompt = _normalize_image_prompt(shot.last_frame_prompt)
@@ -437,8 +517,6 @@ def _parse_shots(raw: str) -> List[Shot]:
         # 旧格式兼容：将扁平字段映射到新嵌套结构
         if "visual_prompt" in item and "final_video_prompt" not in item:
             item["final_video_prompt"] = item.pop("visual_prompt")
-        if not item.get("image_prompt") and item.get("final_video_prompt"):
-            item["image_prompt"] = item["final_video_prompt"]
         if "visual_description_zh" in item and "storyboard_description" not in item:
             item["storyboard_description"] = item.pop("visual_description_zh")
         if "camera_motion" in item and "camera_setup" not in item:
@@ -459,6 +537,7 @@ def _parse_shots(raw: str) -> List[Shot]:
             cs.setdefault("shot_size", item.pop("shot_size", "MS"))
             cs.setdefault("camera_angle", "Eye-level")
             cs.setdefault("movement", "Static")
+        item["camera_setup"]["movement"] = _normalize_camera_movement(item["camera_setup"].get("movement", "Static"))
         if "dialogue" in item and "audio_reference" not in item:
             dlg = item.pop("dialogue")
             item["audio_reference"] = {

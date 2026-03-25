@@ -188,7 +188,7 @@ class PipelineExecutor:
                 {
                     "shot_id": s.shot_id,
                     "image_url": image_map[s.shot_id]["image_url"],
-                    "final_video_prompt": s.final_video_prompt,
+                    "final_video_prompt": self._build_video_prompt(s, self.character_info),
                     "last_frame_url": image_map[s.shot_id].get("last_frame_url"),
                 }
                 for s in self.shots
@@ -278,6 +278,14 @@ class PipelineExecutor:
             )
         return prompts
 
+    @classmethod
+    def _build_video_prompt(cls, shot: Shot, character_info: Optional[dict]) -> str:
+        """构建视频阶段 prompt，保持与图片阶段一致的角色增强逻辑。"""
+        return cls._enhance_prompt_with_character(
+            shot.final_video_prompt,
+            character_info,
+        )
+
     async def _run_chained_strategy(
         self,
         voice: str,
@@ -340,7 +348,7 @@ class PipelineExecutor:
                     self.art_style,
                 )
             prompt_data["final_video_prompt"] = inject_art_style(
-                self._enhance_prompt_with_character(s.final_video_prompt, self.character_info),
+                self._build_video_prompt(s, self.character_info),
                 self.art_style,
             )
             shots_data.append(prompt_data)
@@ -453,7 +461,7 @@ class PipelineExecutor:
                 {
                     "shot_id": s.shot_id,
                     "image_url": image_map[s.shot_id]["image_url"],
-                    "final_video_prompt": s.final_video_prompt,
+                    "final_video_prompt": self._build_video_prompt(s, self.character_info),
                     "last_frame_url": image_map[s.shot_id].get("last_frame_url"),
                 }
                 for s in self.shots

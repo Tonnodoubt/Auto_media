@@ -28,6 +28,13 @@
               <span v-if="story.tone" class="tag">{{ story.tone }}</span>
               <span v-if="story.has_script" class="tag green">含剧本</span>
               <span v-if="story.has_character_images" class="tag purple">含人设</span>
+              <span
+                v-if="story.art_style"
+                class="tag art-style"
+                :title="story.art_style"
+              >
+                画风: {{ formatArtStyleTag(story.art_style) }}
+              </span>
             </div>
           </div>
           <div class="story-right">
@@ -88,6 +95,18 @@ const error = ref(null)
 const deleteTarget = ref(null)
 const deleting = ref(false)
 
+const ART_STYLE_PRESET_LABELS = new Map([
+  ['日系动漫风格，细腻线条，鲜艳色彩，二次元，高质量动漫插画', '日系动漫'],
+  ['写实摄影风格，电影级画质，自然光影，高清细节，真实质感', '写实摄影'],
+  ['中国传统水墨画风格，淡雅笔墨，古典意境，飘逸仙气，古风人物', '古风水墨'],
+  ['赛博朋克风格，霓虹光效，未来都市，蓝紫色调，机械感', '赛博朋克'],
+  ['欧式油画风格，厚重笔触，古典光影，文艺复兴质感，浓郁色彩', '油画风格'],
+  ['清新治愈插画风格，柔和配色，简洁线条，扁平化，温馨可爱', '清新插画'],
+  ['暗黑哥特风格，深沉暗调，神秘阴郁，黑红配色，奇幻美学', '暗黑哥特'],
+  ['像素艺术风格，复古8-bit游戏美学，像素点阵，鲜明对比色', '像素艺术'],
+  ['简笔画线稿风格，黑白线条，极简轮廓，手绘感，清晰流畅的单线描边，无填充或淡灰填充', '简笔线稿'],
+])
+
 onMounted(async () => {
   try {
     stories.value = await listStories()
@@ -102,6 +121,15 @@ function formatDate(dt) {
   if (!dt) return ''
   const d = new Date(dt)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+function formatArtStyleTag(artStyle) {
+  const normalized = typeof artStyle === 'string' ? artStyle.trim() : ''
+  if (!normalized) return ''
+  if (ART_STYLE_PRESET_LABELS.has(normalized)) {
+    return ART_STYLE_PRESET_LABELS.get(normalized)
+  }
+  return normalized.length > 4 ? `${normalized.slice(0, 4)}...` : normalized
 }
 
 async function loadStory(storyId) {
@@ -251,6 +279,13 @@ h1 {
   font-size: 12px;
   padding: 2px 8px;
   border-radius: 20px;
+}
+
+.tag.art-style {
+  max-width: min(100%, 260px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tag.green {
