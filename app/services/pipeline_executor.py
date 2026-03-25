@@ -280,7 +280,7 @@ class PipelineExecutor:
 
     @classmethod
     def _build_video_prompt(cls, shot: Shot, character_info: Optional[dict]) -> str:
-        """构建视频阶段 prompt，保持与图片阶段一致的角色增强逻辑。"""
+        """构建视频阶段 prompt, 保持与图片阶段一致的角色增强逻辑。"""
         return cls._enhance_prompt_with_character(
             shot.final_video_prompt,
             character_info,

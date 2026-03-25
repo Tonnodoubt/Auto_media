@@ -84,6 +84,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { listStories, getStory, deleteStory } from '../api/story.js'
 import { useStoryStore } from '../stores/story.js'
+import { ART_STYLE_PROMPT_TO_LABEL, ART_STYLE_TRUNCATE_LEN } from '../constants/artStylePresets.js'
 
 const router = useRouter()
 const store = useStoryStore()
@@ -94,18 +95,6 @@ const loadingStory = ref(false)
 const error = ref(null)
 const deleteTarget = ref(null)
 const deleting = ref(false)
-
-const ART_STYLE_PRESET_LABELS = new Map([
-  ['日系动漫风格，细腻线条，鲜艳色彩，二次元，高质量动漫插画', '日系动漫'],
-  ['写实摄影风格，电影级画质，自然光影，高清细节，真实质感', '写实摄影'],
-  ['中国传统水墨画风格，淡雅笔墨，古典意境，飘逸仙气，古风人物', '古风水墨'],
-  ['赛博朋克风格，霓虹光效，未来都市，蓝紫色调，机械感', '赛博朋克'],
-  ['欧式油画风格，厚重笔触，古典光影，文艺复兴质感，浓郁色彩', '油画风格'],
-  ['清新治愈插画风格，柔和配色，简洁线条，扁平化，温馨可爱', '清新插画'],
-  ['暗黑哥特风格，深沉暗调，神秘阴郁，黑红配色，奇幻美学', '暗黑哥特'],
-  ['像素艺术风格，复古8-bit游戏美学，像素点阵，鲜明对比色', '像素艺术'],
-  ['简笔画线稿风格，黑白线条，极简轮廓，手绘感，清晰流畅的单线描边，无填充或淡灰填充', '简笔线稿'],
-])
 
 onMounted(async () => {
   try {
@@ -126,10 +115,12 @@ function formatDate(dt) {
 function formatArtStyleTag(artStyle) {
   const normalized = typeof artStyle === 'string' ? artStyle.trim() : ''
   if (!normalized) return ''
-  if (ART_STYLE_PRESET_LABELS.has(normalized)) {
-    return ART_STYLE_PRESET_LABELS.get(normalized)
+  if (ART_STYLE_PROMPT_TO_LABEL.has(normalized)) {
+    return ART_STYLE_PROMPT_TO_LABEL.get(normalized)
   }
-  return normalized.length > 4 ? `${normalized.slice(0, 4)}...` : normalized
+  return normalized.length > ART_STYLE_TRUNCATE_LEN
+    ? `${normalized.slice(0, ART_STYLE_TRUNCATE_LEN)}...`
+    : normalized
 }
 
 async function loadStory(storyId) {
