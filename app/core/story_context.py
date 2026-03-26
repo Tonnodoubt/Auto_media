@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from app.core.api_keys import inject_art_style
-from app.core.story_assets import get_character_visual_dna
+from app.core.story_assets import get_character_design_prompt, get_character_visual_dna
 
 
 _CLOTHING_HINTS = (
@@ -39,6 +39,34 @@ _WARDROBE_CHANGE_HINTS = (
     "脱下",
     "更衣",
 )
+_VIEW_HINT_PATTERNS: dict[str, tuple[str, ...]] = {
+    "front": (
+        "front view",
+        "front-facing",
+        "facing camera",
+        "facing forward",
+        "frontal",
+        "正面",
+        "迎面",
+    ),
+    "side": (
+        "side view",
+        "side profile",
+        "profile view",
+        "in profile",
+        "侧面",
+        "侧身",
+    ),
+    "back": (
+        "back view",
+        "rear view",
+        "from behind",
+        "back-facing",
+        "背面",
+        "背影",
+        "背对",
+    ),
+}
 _PHYSICAL_HINTS = (
     "year-old",
     "young",
@@ -208,6 +236,7 @@ _GENRE_STYLE_RULES: dict[str, tuple[str, str, str]] = {
 
 @dataclass
 class CharacterLock:
+    name: str = ""
     body_features: str = ""
     default_clothing: str = ""
     negative_prompt: str = ""
@@ -354,6 +383,136 @@ def _guess_default_clothing(description: str) -> str:
     return sanitize_default_clothing("", fallback_description=description)
 
 
+_DESIGN_PROMPT_ANCHOR_BOUNDARY = (
+    r"(?:show front view"
+    r"|show the complete outfit"
+    r"|identity(?:_lock|\s+lock)(?:\s*:)?"
+    r"|style(?:_lock|\s+lock)(?:\s*:)?"
+    r"|visual\s+dna(?:\s*:)?"
+    r"|identity:"
+    r"|style:"
+    r"|treat the character description as non-negotiable identity constraints"
+    r"|follow this exact art style consistently across all three views"
+    r"|keep one unified rendering style across all three views)"
+)
+
+
+def _extract_design_prompt_description(design_prompt: str) -> str:
+    normalized = _collapse_spaces(design_prompt)
+    if not normalized:
+        return ""
+
+    match = re.search(
+        rf"character description:\s*(.+?)(?:(?:,\s*|;\s*)(?:{_DESIGN_PROMPT_ANCHOR_BOUNDARY})|$)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return _collapse_spaces(match.group(1))
+    return ""
+
+
+def _clean_design_prompt_anchor_source(design_prompt: str) -> str:
+    normalized = _collapse_spaces(design_prompt)
+    if not normalized:
+        return ""
+
+    cleanup_patterns = (
+        r"^Standard three-view character turnaround sheet for [^,，]+,\s*",
+        r"^Full-body character design sheet for [^,，]+,\s*",
+        r"\b(?:villain, sinister expression, dark presence|protagonist, determined expression, heroic bearing|supporting character, approachable expression)\b",
+        r"character description:\s*",
+        rf"(?:^|,\s*|;\s*)(?:{_DESIGN_PROMPT_ANCHOR_BOUNDARY}).*$",
+        r",?\s*show front view, side profile, and back view of the same character on one sheet\b",
+        r",?\s*show the complete outfit from head to toe\b",
+        r",?\s*full body in all three views\b",
+        r",?\s*neutral standing pose\b",
+        r",?\s*front-facing hero pose\b",
+        r",?\s*clear silhouette\b",
+        r",?\s*consistent facial features and costume details across views\b",
+        r",?\s*distinctive physical traits\b",
+        r",?\s*clean neutral backdrop\b",
+        r",?\s*professional character concept art\b",
+        r",?\s*production-ready character turnaround sheet\b",
+        r",?\s*production-ready character sheet\b",
+        r",?\s*costume construction details\b",
+        r",?\s*fabric texture\b",
+        r",?\s*accessories\b",
+        r",?\s*highly detailed\b",
+        r",?\s*photorealistic\b",
+    )
+    cleaned = normalized
+    for pattern in cleanup_patterns:
+        cleaned = re.sub(pattern, " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*,\s*", ", ", cleaned)
+    return _collapse_spaces(cleaned).strip(" ,.;:!?，。；：！？、")
+
+
+def build_character_reference_anchor(
+    character_images: Mapping[str, Any] | None,
+    name: str,
+    *,
+    character_id: str = "",
+    description: str = "",
+) -> str:
+    def _merge_visual_bits(*bits: str) -> str:
+        merged: list[str] = []
+        for bit in bits:
+            normalized_bit = _collapse_spaces(bit)
+            if not normalized_bit:
+                continue
+            lowered_bit = normalized_bit.lower()
+            if any(lowered_bit in existing.lower() or existing.lower() in lowered_bit for existing in merged):
+                continue
+            merged.append(normalized_bit)
+        return "; ".join(merged)
+
+    def _compose_fallback_description(*parts: str) -> str:
+        merged: list[str] = []
+        for part in parts:
+            normalized_part = _collapse_spaces(part)
+            if not normalized_part or normalized_part in merged:
+                continue
+            merged.append(normalized_part)
+        return "; ".join(merged)
+
+    normalized_description = _collapse_spaces(description)
+    visual_dna_body = sanitize_body_features(
+        get_character_visual_dna(character_images, character_id, name=name),
+        fallback_description=normalized_description,
+    )
+    design_prompt = get_character_design_prompt(character_images, character_id, name=name)
+    prompt_description = _extract_design_prompt_description(design_prompt)
+    prompt_anchor_source = _clean_design_prompt_anchor_source(design_prompt)
+    prompt_fallback_description = prompt_description or prompt_anchor_source or normalized_description
+    composed_prompt_fallback_description = _compose_fallback_description(
+        prompt_description or prompt_anchor_source,
+        normalized_description,
+    )
+    if visual_dna_body:
+        clothing = sanitize_default_clothing(
+            "",
+            fallback_description=composed_prompt_fallback_description,
+        )
+        merged = _merge_visual_bits(visual_dna_body, clothing)
+        if merged:
+            return merged
+
+    body = sanitize_body_features(
+        prompt_description,
+        fallback_description=composed_prompt_fallback_description,
+    )
+    clothing = sanitize_default_clothing(
+        "",
+        fallback_description=composed_prompt_fallback_description,
+    )
+    merged = _merge_visual_bits(body, clothing)
+    if merged:
+        return merged
+
+    return _trim_words(normalized_description, 24)
+
+
 def _build_scene_styles(story: Mapping[str, Any]) -> list[SceneStyle]:
     genre = _collapse_spaces(str(story.get("genre", "")))
     meta = dict(story.get("meta") or {})
@@ -404,13 +563,14 @@ def build_clean_character_section(character_locks: dict[str, CharacterLock], cha
 
     lines = ["## Character Reference (maintain exact physical consistency across all shots)"]
     for character in characters:
+        char_id = character.get("id", "")
         name = character.get("name", "")
         role = character.get("role", "")
         desc = character.get("description", "")
-        if not name:
+        if not char_id or not name:
             continue
 
-        lock = character_locks.get(name, CharacterLock())
+        lock = character_locks.get(char_id, CharacterLock(name=name))
         lines.append(f"- **{name}**（{role}）：{desc}")
 
         visual_bits = [bit for bit in (lock.body_features, lock.default_clothing) if bit]
@@ -430,25 +590,30 @@ def build_story_context(story: Mapping[str, Any]) -> StoryContext:
 
     character_locks: dict[str, CharacterLock] = {}
     for character in characters:
+        char_id = character.get("id", "")
         name = character.get("name", "")
-        if not name:
+        if not char_id or not name:
             continue
 
-        cached_entry = cached_appearance.get(name) or {}
+        cached_entry = cached_appearance.get(char_id) or {}
         description = _collapse_spaces(str(character.get("description", "")))
 
-        body = _collapse_spaces(str(cached_entry.get("body", ""))) if isinstance(cached_entry, dict) else ""
-        clothing = _collapse_spaces(str(cached_entry.get("clothing", ""))) if isinstance(cached_entry, dict) else ""
+        cached_body = _collapse_spaces(str(cached_entry.get("body", ""))) if isinstance(cached_entry, dict) else ""
+        cached_clothing = _collapse_spaces(str(cached_entry.get("clothing", ""))) if isinstance(cached_entry, dict) else ""
         negative_prompt = _collapse_spaces(str(cached_entry.get("negative_prompt", ""))) if isinstance(cached_entry, dict) else ""
 
-        body = sanitize_body_features(body, fallback_description=description)
-        clothing = sanitize_default_clothing(clothing, fallback_description=description)
+        body = sanitize_body_features(cached_body, fallback_description=description) if cached_body else ""
+        clothing = sanitize_default_clothing(cached_clothing, fallback_description=description) if cached_clothing else ""
         if not body:
-            body = sanitize_body_features(get_character_visual_dna(character_images, name), fallback_description=description) or _guess_body_features(description)
+            body = sanitize_body_features(
+                get_character_visual_dna(character_images, char_id, name=name),
+                fallback_description=description,
+            ) or _guess_body_features(description)
         if not clothing:
             clothing = _guess_default_clothing(description)
 
-        character_locks[name] = CharacterLock(
+        character_locks[char_id] = CharacterLock(
+            name=name,
             body_features=body,
             default_clothing=clothing,
             negative_prompt=negative_prompt,
@@ -612,6 +777,81 @@ def should_inject_clothing_for(name: str, shot: ShotLike) -> bool:
     )
 
 
+def infer_shot_view_hint(name: str, shot: ShotLike) -> str:
+    if not character_appears_in_shot(name, shot):
+        return ""
+
+    normalized_name = _collapse_spaces(name)
+    structured_names = _shot_character_names(shot)
+    segments = [
+        str(_shot_field(shot, "storyboard_description", "")),
+        str(_shot_field(shot, "image_prompt", "")),
+        str(_shot_field(shot, "final_video_prompt", "")),
+        str(_shot_field(shot, "last_frame_prompt", "")),
+        _get_visual_field(shot, "subject_and_clothing"),
+        _get_visual_field(shot, "action_and_expression"),
+    ]
+    escaped_name = re.escape(normalized_name)
+    patterns = [
+        re.compile(r"\b" + escaped_name + r"\b", flags=re.IGNORECASE),
+        re.compile(escaped_name, flags=re.IGNORECASE),
+    ]
+    contexts: list[str] = []
+    for segment in segments:
+        normalized_segment = _collapse_spaces(str(segment))
+        if not normalized_segment:
+            continue
+        lowered_segment = normalized_segment.lower()
+        if _safe_name_match(name, normalized_segment):
+            local_contexts: list[str] = []
+            for pattern in patterns:
+                for match in pattern.finditer(normalized_segment):
+                    start = max(0, match.start() - 80)
+                    end = min(len(normalized_segment), match.end() + 80)
+                    local_contexts.append(lowered_segment[start:end])
+                if local_contexts:
+                    break
+            contexts.extend(local_contexts or [lowered_segment])
+
+    is_structured_single_character_shot = (
+        len(structured_names) == 1
+        and structured_names[0].casefold() == normalized_name.casefold()
+    )
+    if is_structured_single_character_shot:
+        fallback_parts = [
+            _get_visual_field(shot, "action_and_expression"),
+            _get_visual_field(shot, "subject_and_clothing"),
+        ]
+        if not any(_collapse_spaces(part) for part in fallback_parts):
+            fallback_parts.extend(
+                [
+                    str(_shot_field(shot, "storyboard_description", "")),
+                    str(_shot_field(shot, "image_prompt", "")),
+                ]
+            )
+        fallback_context = _collapse_spaces(" ".join(str(part) for part in fallback_parts))
+        if fallback_context:
+            contexts.append(fallback_context.lower())
+
+    scores = {"front": 0, "side": 0, "back": 0}
+    for context in contexts:
+        for label, hints in _VIEW_HINT_PATTERNS.items():
+            if any(hint in context for hint in hints):
+                scores[label] += 1
+
+    if not any(scores.values()):
+        return ""
+
+    for label in ("back", "side", "front"):
+        if scores[label] == max(scores.values()) and scores[label] > 0:
+            return {
+                "front": "match the shot's front view",
+                "side": "match the shot's side profile",
+                "back": "match the shot's back view",
+            }[label]
+    return ""
+
+
 def _join_natural_phrases(items: list[str], lang: str) -> str:
     if not items:
         return ""
@@ -647,7 +887,10 @@ def _format_character_anchor(name: str, lock: CharacterLock, *, lang: str, inclu
 
 def _appearance_prefix(shot: ShotLike, ctx: StoryContext, include_clothing: bool = True) -> str:
     appearance_lines: list[str] = []
-    for name, lock in ctx.character_locks.items():
+    for _, lock in ctx.character_locks.items():
+        name = lock.name
+        if not name:
+            continue
         if not character_appears_in_shot(name, shot):
             continue
         merged = _format_character_anchor(
@@ -725,7 +968,10 @@ def build_negative_prompt(shot: ShotLike, ctx: StoryContext | None) -> str:
         negatives.append(shot_negative_prompt)
     if ctx.global_negative_prompt:
         negatives.append(ctx.global_negative_prompt)
-    for name, lock in ctx.character_locks.items():
+    for _, lock in ctx.character_locks.items():
+        name = lock.name
+        if not name:
+            continue
         if character_appears_in_shot(name, shot) and lock.negative_prompt:
             negatives.append(lock.negative_prompt)
     normalized_terms: list[str] = []

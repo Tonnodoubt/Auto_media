@@ -14,7 +14,7 @@
         告诉我你想怎么修改大纲，比如：<br>「把第3集改成主角失忆」
       </div>
       <div v-for="(msg, i) in messages" :key="i" :class="['bubble', msg.role]">
-        <div class="bubble-text" v-html="msg.text.replace(/\n/g, '<br>')" />
+        <div class="bubble-text">{{ msg.text }}</div>
         <button
           v-if="msg.role === 'ai' && msg.refine"
           class="apply-btn"
@@ -25,7 +25,7 @@
         </button>
       </div>
       <div v-if="streaming" class="bubble ai">
-        <div class="bubble-text streaming">{{ streamingText }}<span class="cursor">|</span></div>
+        <div class="bubble-text streaming">{{ streamingDisplayText }}<span class="cursor">|</span></div>
       </div>
     </div>
 
@@ -45,9 +45,10 @@
 </template>
 
 <script setup>
-import { ref, watch, nextTick, onUnmounted } from 'vue'
+import { ref, watch, nextTick, onUnmounted, computed } from 'vue'
 import { useStoryStore } from '../stores/story.js'
 import { streamChat, refineStory } from '../api/story.js'
+import { extractRefinePayload, stripRefineMarker } from '../utils/storyChat.js'
 
 defineProps({ show: Boolean })
 defineEmits(['close'])
@@ -62,6 +63,7 @@ const streaming = ref(false)
 const streamingText = ref('')
 const error = ref('')
 const historyEl = ref(null)
+const streamingDisplayText = computed(() => stripRefineMarker(streamingText.value))
 
 async function scrollToBottom() {
   await nextTick()
@@ -79,14 +81,6 @@ async function send() {
 
   messages.value = [...messages.value, { role: 'user', text }]
 
-  // 把当前大纲上下文拼入消息
-  const outlineCtx = JSON.stringify({
-    meta: store.meta,
-    characters: store.characters,
-    outline: store.outline,
-  }, null, 2)
-  const fullMessage = `当前大纲：\n${outlineCtx}\n\n用户要求：${text}\n\n请理解用户意图，给出具体的修改建议（说明哪集/哪个角色改成什么），并在回复末尾用 JSON 块标注修改内容，格式：\n\`\`\`refine\n{"change_type":"episode"|"character","change_summary":"..."}\n\`\`\``
-
   streaming.value = true
   streamingText.value = ''
 
@@ -95,28 +89,26 @@ async function send() {
 
   await streamChat(
     store.storyId,
-    fullMessage,
+    {
+      message: text,
+      mode: 'outline',
+      context: {
+        meta: store.meta,
+        characters: store.characters,
+        outline: store.outline,
+      },
+    },
     (chunk) => { streamingText.value += chunk },
     () => {
       streaming.value = false
       const fullText = streamingText.value
       streamingText.value = ''
-
-      // 尝试提取 refine JSON
-      const refineMatch = fullText.match(/```refine\s*([\s\S]*?)```/)
-      let refineData = null
-      let displayText = fullText
-      if (refineMatch) {
-        try {
-          refineData = JSON.parse(refineMatch[1].trim())
-          displayText = fullText.replace(/```refine[\s\S]*?```/, '').trim()
-        } catch {}
-      }
+      const { displayText, refine } = extractRefinePayload(fullText)
 
       messages.value = [...messages.value, {
         role: 'ai',
         text: displayText,
-        refine: refineData,
+        refine,
         applied: false,
       }]
     },
@@ -212,6 +204,7 @@ async function applyRefine(msg) {
   border-radius: 14px;
   font-size: 13px;
   line-height: 1.6;
+  white-space: pre-wrap;
 }
 .bubble.user .bubble-text { background: #6c63ff; color: #fff; border-bottom-right-radius: 4px; }
 .bubble.ai .bubble-text { background: #f5f5f7; color: #333; border-bottom-left-radius: 4px; }

@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "black-forest-labs/FLUX.1-schnell"
 IMAGE_SIZE = "1280x720"
 CHARACTER_SIZE = "1024x1024"
+CHARACTER_NEGATIVE_PROMPT = (
+    "text, captions, labels, watermark, logo, speech bubble, poster, signboard, "
+    "extra props, unrelated objects, foreground obstruction, hands covering face, "
+    "cropped body, close-up portrait, half body, missing feet, missing limbs, duplicate person, inconsistent outfit, "
+    "inconsistent costume color, inconsistent costume material, inconsistent hairstyle, inconsistent facial features, "
+    "style drift, mixed art styles, mixed media rendering, generic fashion model face, glamour beauty makeup, "
+    "dramatic action pose, cinematic environment background"
+)
 
 # 火山方舟要求最少 3,686,400 像素（SiliconFlow 无此限制）
 ARK_IMAGE_SIZE = "2560x1440"
@@ -208,9 +216,8 @@ async def generate_character_image(
     image_base_url: str = "",
     art_style: str = "",
 ) -> dict:
-    """Generate character design image. Returns { character_name, image_path, image_url, prompt }."""
-    prompt = build_character_prompt(character_name, role, description)
-    prompt = inject_art_style(prompt, art_style)
+    """Generate a standard three-view character sheet. Returns { character_name, image_path, image_url, prompt }."""
+    prompt = build_character_prompt(character_name, role, description, art_style=art_style)
     base_url = image_base_url or settings.siliconflow_base_url
     if image_base_url and not image_api_key:
         raise HTTPException(status_code=400, detail="提供自定义 image_base_url 时必须同时提供 image_api_key")
@@ -218,12 +225,36 @@ async def generate_character_image(
     size = ARK_CHARACTER_SIZE if _is_ark(base_url) else CHARACTER_SIZE
 
     async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(
-            f"{base_url}/images/generations",
-            headers={"Authorization": f"Bearer {image_api_key}"},
-            json={"model": model, "prompt": prompt, "n": 1, "size": size, "response_format": "url"},
-        )
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "n": 1,
+            "size": size,
+            "response_format": "url",
+            "negative_prompt": CHARACTER_NEGATIVE_PROMPT,
+        }
+
+        async def _submit(request_payload: dict) -> httpx.Response:
+            return await client.post(
+                f"{base_url}/images/generations",
+                headers={"Authorization": f"Bearer {image_api_key}"},
+                json=request_payload,
+            )
+
+        resp = await _submit(payload)
         print(f"[CHARACTER IMAGE] status={resp.status_code} key={mask_key(image_api_key)} base={base_url} for {character_name}")
+        if not resp.is_success and resp.status_code in (400, 422):
+            logger.warning(
+                "Character image provider rejected negative_prompt; retrying without it. character=%s status=%s key=%s provider_rejection=1 response_bytes=%s",
+                character_name,
+                resp.status_code,
+                mask_key(image_api_key),
+                len(resp.content or b""),
+            )
+            retry_payload = dict(payload)
+            retry_payload.pop("negative_prompt", None)
+            resp = await _submit(retry_payload)
+            print(f"[CHARACTER IMAGE][RETRY_NO_NEGATIVE] status={resp.status_code} key={mask_key(image_api_key)} base={base_url} for {character_name}")
         if not resp.is_success:
             raise RuntimeError(f"角色图生成 API 错误 {resp.status_code}: {resp.text[:500]}")
         image_url = _extract_image_url(resp)

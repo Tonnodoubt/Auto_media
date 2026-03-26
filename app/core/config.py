@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -41,6 +42,18 @@ class Settings(BaseSettings):
     # Security: whether to DNS-resolve user-supplied base URLs and reject private IPs
     # Set to false in dev environments where foreign domains may not resolve
     validate_base_url_dns: bool = False
+
+    @field_validator("debug", mode="before")
+    @classmethod
+    def _normalize_debug(cls, value):
+        if isinstance(value, bool):
+            return value
+        normalized = str(value or "").strip().lower()
+        if normalized in {"release", "prod", "production", "off"}:
+            return False
+        if normalized in {"debug", "dev", "development", "on"}:
+            return True
+        return value
 
     class Config:
         env_file = ".env"

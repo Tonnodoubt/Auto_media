@@ -358,7 +358,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSettingsStore } from '../stores/settings.js'
 import { useStoryStore } from '../stores/story.js'
-import { getHeaders } from '../api/story.js'
+import { getHeaders, getPipelineStatus } from '../api/story.js'
 import StepIndicator from '../components/StepIndicator.vue'
 import ApiKeyModal from '../components/ApiKeyModal.vue'
 
@@ -479,8 +479,13 @@ function buildPipelineQuery(params = {}) {
   return query ? `?${query}` : ''
 }
 
-function updateShotsFromGeneratedFiles(generatedFiles = {}) {
+function updateShotsFromGeneratedFiles(generatedFiles = {}, { replaceStoryboard = false } = {}) {
   if (!generatedFiles || typeof generatedFiles !== 'object') return
+
+  const storyboardShots = generatedFiles.storyboard?.shots
+  if (Array.isArray(storyboardShots) && (replaceStoryboard || shots.value.length === 0)) {
+    storyStore.setShots(storyboardShots)
+  }
 
   const updateShot = (shotId, updater) => {
     const shot = shots.value.find(s => s.shot_id === shotId)
@@ -549,6 +554,32 @@ async function pollManualPipeline({ projectId, pipelineId, storyId, isDone, time
   }
 
   throw new Error('批量任务等待超时')
+}
+
+async function restoreLatestPipelineState() {
+  const projectId = manualProjectId.value || storyStore.storyId || ''
+  const storyId = manualStoryId.value || storyStore.storyId || projectId
+  if (!projectId) {
+    if (storyId) {
+      console.warn('Skip restoring pipeline state because projectId is missing', { storyId })
+    }
+    return
+  }
+
+  try {
+    const state = await getPipelineStatus(projectId, {
+      pipelineId: manualPipelineId.value,
+      storyId,
+    })
+    rememberManualPipelineContext({
+      projectId: projectId || state.project_id || state.story_id || '',
+      pipelineId: state.pipeline_id || manualPipelineId.value,
+      storyId: state.story_id || storyId,
+    })
+    updateShotsFromGeneratedFiles(state.generated_files, { replaceStoryboard: true })
+  } catch (err) {
+    console.warn('Failed to restore latest pipeline state:', err)
+  }
 }
 
 // 计算属性
@@ -1313,12 +1344,14 @@ async function concatAllVideos() {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   loadVoices()
   rememberManualPipelineContext({
     projectId: storyStore.storyId || manualProjectId.value || '',
     storyId: storyStore.storyId || manualStoryId.value || '',
   })
+
+  await restoreLatestPipelineState()
 
   // 恢复持久化的 shots 时重置 loading 状态（防止刷新前正在生成导致状态卡住）
   storyStore.shots.forEach(s => {

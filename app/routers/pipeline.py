@@ -53,6 +53,14 @@ def _default_pipeline_record(*, project_id: str, story_id: str | None = None) ->
     }
 
 
+def _serialize_shot(shot) -> dict:
+    if hasattr(shot, "model_dump"):
+        return shot.model_dump(mode="json")
+    if hasattr(shot, "dict"):
+        return shot.dict()
+    return dict(shot)
+
+
 def _normalize_optional_id(value: str | None) -> str | None:
     if value is None or not isinstance(value, str):
         return None
@@ -338,6 +346,15 @@ async def generate_storyboard(
         {
             "progress": 30,
             "current_step": "Storyboard ready",
+            "generated_files": {
+                "storyboard": {
+                    "shots": [_serialize_shot(shot) for shot in shots],
+                    "usage": {
+                        "prompt_tokens": usage.get("prompt_tokens", 0),
+                        "completion_tokens": usage.get("completion_tokens", 0),
+                    },
+                },
+            },
         },
     )
 

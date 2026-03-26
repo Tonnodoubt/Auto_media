@@ -36,7 +36,7 @@
       </g>
 
       <!-- 节点 -->
-      <g v-for="(ch, i) in characters" :key="ch.name" class="node-group">
+      <g v-for="(ch, i) in characters" :key="ch.id || ch.name" class="node-group">
         <circle :cx="positions[i].x" :cy="positions[i].y" :r="NODE_R" class="node-circle" />
         <text :x="positions[i].x" :y="positions[i].y + 1" class="node-name">
           {{ truncate(ch.name, 4) }}
@@ -76,28 +76,57 @@ const positions = computed(() => {
   })
 })
 
+const validCharacterIds = computed(() => {
+  return new Set(
+    props.characters
+      .map(character => String(character?.id || '').trim())
+      .filter(Boolean)
+  )
+})
+
 const displayRelationships = computed(() => {
-  const rels = props.relationships
+  const rels = props.relationships.filter(rel => {
+    const sourceId = String(rel?.source_id || '').trim()
+    const targetId = String(rel?.target_id || '').trim()
+    if (!sourceId || !targetId) return false
+    return validCharacterIds.value.has(sourceId) && validCharacterIds.value.has(targetId)
+  })
   const seen = new Set()
+  const relNodeKey = rel => ({
+    source: rel.source_id,
+    target: rel.target_id,
+  })
   return rels.map(rel => {
-    const bidirectional = rels.some(r => r.source === rel.target && r.target === rel.source)
+    const current = relNodeKey(rel)
+    const bidirectional = rels.some(r => {
+      const candidate = relNodeKey(r)
+      return candidate.source === current.target && candidate.target === current.source
+    })
     return { ...rel, bidirectional }
   }).filter(rel => {
-    const key = [rel.source, rel.target].sort().join('\0')
+    const { source: left, target: right } = relNodeKey(rel)
+    const key = [left, right].sort().join('\0')
     if (seen.has(key)) return false
     seen.add(key)
     return true
   })
 })
 
-function pos(name) {
-  const i = props.characters.findIndex(c => c.name === name)
-  return i >= 0 ? positions.value[i] : { x: CX.value, y: CY.value }
+function pos(identity) {
+  const normalizedIdentity = String(identity || '').trim()
+  if (!validCharacterIds.value.has(normalizedIdentity)) {
+    return { x: CX.value, y: CY.value }
+  }
+  const idIndex = props.characters.findIndex(c => String(c?.id || '').trim() === normalizedIdentity)
+  if (idIndex >= 0) {
+    return positions.value[idIndex]
+  }
+  return { x: CX.value, y: CY.value }
 }
 
 function edgePos(rel) {
-  const s = pos(rel.source)
-  const t = pos(rel.target)
+  const s = pos(rel.source_id)
+  const t = pos(rel.target_id)
   const dx = t.x - s.x
   const dy = t.y - s.y
   const dist = Math.sqrt(dx * dx + dy * dy) || 1

@@ -16,10 +16,20 @@
         告诉我你想怎么修改这个角色，比如：<br>「让他更冷酷一些」
       </div>
       <div v-for="(msg, i) in messages" :key="i" :class="['bubble', msg.role]">
-        <div class="bubble-text" v-html="msg.text.replace(/\n/g, '<br>')" />
+        <template v-if="msg.role === 'ai' && getAiSections(msg).length">
+          <div class="bubble-text bubble-sections">
+            <div v-for="section in getAiSections(msg)" :key="section.key" class="section-block">
+              <div class="section-title">{{ section.title }}</div>
+              <div v-for="(item, idx) in section.items" :key="`${section.key}-${idx}`" class="section-item">
+                {{ item }}
+              </div>
+            </div>
+          </div>
+        </template>
+        <div v-else class="bubble-text">{{ msg.text }}</div>
       </div>
       <div v-if="streaming" class="bubble ai">
-        <div class="bubble-text streaming">{{ streamingText }}<span class="cursor">|</span></div>
+        <div class="bubble-text streaming">{{ streamingDisplayText }}<span class="cursor">|</span></div>
       </div>
     </div>
 
@@ -48,7 +58,9 @@
 <script setup>
 import { ref, watch, nextTick, computed } from 'vue'
 import { useStoryStore } from '../stores/story.js'
-import { streamChat, applyChatChanges } from '../api/story.js'
+import { streamChat, applyChatChanges, refineStory } from '../api/story.js'
+import { findCharacterByRef } from '../utils/character.js'
+import { normalizeChatText, parseCharacterChatSections } from '../utils/storyChat.js'
 
 const props = defineProps({ show: Boolean, character: Object })
 const emit = defineEmits(['close'])
@@ -63,6 +75,21 @@ const error = ref('')
 const historyEl = ref(null)
 
 const hasAiReply = computed(() => messages.value.some(m => m.role === 'ai'))
+const streamingDisplayText = computed(() => normalizeChatText(streamingText.value))
+
+function getAiSections(msg) {
+  return parseCharacterChatSections(msg?.text || '')
+}
+
+function buildCharacterRefineSummary(currentChar, previousDescription, nextDescription) {
+  const latestAiReply = [...messages.value].reverse().find(message => message.role === 'ai')
+  const storyImpactSection = getAiSections(latestAiReply).find(section => section.key === 'story_impact')
+  const storyImpactText = storyImpactSection?.items?.length
+    ? `；建议同步处理的局部剧情影响：${storyImpactSection.items.join('；')}`
+    : ''
+
+  return `角色「${currentChar.name}」描述从「${previousDescription}」改为「${nextDescription}」${storyImpactText}`
+}
 
 async function scrollToBottom() {
   await nextTick()
@@ -72,7 +99,7 @@ async function scrollToBottom() {
 watch(() => messages.value.length, scrollToBottom)
 watch(streamingText, scrollToBottom)
 
-watch(() => props.character?.name, () => {
+watch(() => props.character?.id || props.character?.name, () => {
   messages.value = []
   input.value = ''
   error.value = ''
@@ -85,19 +112,32 @@ async function send() {
   error.value = ''
   messages.value = [...messages.value, { role: 'user', text }]
 
-  const charCtx = `角色：${props.character.name}（${props.character.role}）\n描述：${props.character.description}`
-  const fullMessage = `${charCtx}\n\n用户要求：${text}\n\n请给出具体的修改建议。`
-
   streaming.value = true
   streamingText.value = ''
 
   await streamChat(
     store.storyId,
-    fullMessage,
+    {
+      message: text,
+      mode: 'character',
+      context: {
+        character: {
+          id: props.character.id,
+          name: props.character.name,
+          role: props.character.role,
+          description: props.character.description,
+        },
+        outline: store.outline,
+      },
+    },
     (chunk) => { streamingText.value += chunk },
     () => {
       streaming.value = false
-      messages.value = [...messages.value, { role: 'ai', text: streamingText.value }]
+      const aiText = normalizeChatText(streamingText.value)
+      messages.value = [...messages.value, {
+        role: 'ai',
+        text: aiText,
+      }]
       streamingText.value = ''
     },
     (msg) => {
@@ -110,24 +150,56 @@ async function send() {
 
 async function confirmApply() {
   if (!props.character || applying.value) return
+  if (!props.character.id) {
+    error.value = '角色 ID 缺失，无法安全应用修改，请重新生成或刷新后重试'
+    return
+  }
   applying.value = true
   error.value = ''
   try {
     // 从 store 取最新数据，避免 props 陈旧
-    const currentChar = store.characters.find(c => c.name === props.character.name) || props.character
+    const currentChar = findCharacterByRef(store.characters, props.character)
+    if (!currentChar?.id) {
+      error.value = '未找到带 ID 的最新角色数据，已阻止按名字误匹配'
+      return
+    }
     const res = await applyChatChanges(
       store.storyId,
       'character',
       messages.value,
-      { name: currentChar.name, role: currentChar.role, description: currentChar.description },
+      { id: currentChar.id, name: currentChar.name, role: currentChar.role, description: currentChar.description },
       store.characters,
       null
     )
-    if (!res || !res.description) {
-      error.value = '未能获取修改结果，请重试'
+    if (!res?.description) {
+      error.value = '未能获取角色描述修改结果，请重试'
       return
     }
-    store.updateCharacter(currentChar.name, res.description)
+    const previousDescription = currentChar.description
+    const nextDescription = res.description ?? currentChar.description
+    store.updateCharacter(currentChar.id, {
+      description: nextDescription,
+    })
+    if (nextDescription !== previousDescription) {
+      let refineRes = null
+      try {
+        refineRes = await refineStory(
+          store.storyId,
+          'character',
+          buildCharacterRefineSummary(currentChar, previousDescription, nextDescription)
+        )
+      } catch (refineError) {
+        console.error('[CharacterChatPanel] refineStory 失败:', refineError)
+        error.value = '角色描述已更新，但剧情联动失败，请重试'
+        return
+      }
+      if (!refineRes) {
+        console.error('[CharacterChatPanel] refineStory 返回空结果')
+        error.value = '角色描述已更新，但剧情联动失败，请重试'
+        return
+      }
+      store.applyRefine(refineRes)
+    }
     messages.value = []
     input.value = ''
     emit('close')
@@ -169,9 +241,20 @@ async function confirmApply() {
 .bubble { max-width: 90%; display: flex; flex-direction: column; gap: 6px; }
 .bubble.user { align-self: flex-end; }
 .bubble.ai { align-self: flex-start; }
-.bubble-text { padding: 10px 14px; border-radius: 14px; font-size: 13px; line-height: 1.6; }
+.bubble-text { padding: 10px 14px; border-radius: 14px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
 .bubble.user .bubble-text { background: #6c63ff; color: #fff; border-bottom-right-radius: 4px; }
 .bubble.ai .bubble-text { background: #f5f5f7; color: #333; border-bottom-left-radius: 4px; }
+.bubble-sections { display: flex; flex-direction: column; gap: 10px; }
+.section-block { display: flex; flex-direction: column; gap: 6px; }
+.section-title { font-size: 12px; font-weight: 700; color: #6c63ff; }
+.section-item { position: relative; padding-left: 12px; color: #444; }
+.section-item::before {
+  content: '•';
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: #8f86ff;
+}
 .streaming { color: #888; }
 .cursor { animation: blink 1s infinite; }
 @keyframes blink { 0%,100% { opacity: 1 } 50% { opacity: 0 } }

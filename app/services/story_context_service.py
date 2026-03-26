@@ -45,13 +45,14 @@ You extract stable visual anchors for image and video generation.
 
 Return strict JSON only in this shape:
 {
-  "characters": {
-    "Character Name": {
+  "characters": [
+    {
+      "id": "stable character id from input",
       "body": "immutable physical traits only, in concise English, max 18 words",
       "clothing": "default outfit only, in concise English, max 12 words",
       "negative_prompt": "optional contamination exclusions only, max 12 words"
     }
-  }
+  ]
 }
 
 Rules:
@@ -158,10 +159,10 @@ def _missing_appearance_cache_names(story: Mapping[str, Any]) -> set[str]:
     meta = dict(story.get("meta") or {})
     cached = dict(meta.get("character_appearance_cache") or {})
     return {
-        name
+        identifier
         for character in characters
-        for name in [character.get("name")]
-        if name and name not in cached
+        for identifier in [_collapse_spaces(str(character.get("id", ""))) or _collapse_spaces(str(character.get("name", "")))]
+        if identifier and identifier not in cached
     }
 
 
@@ -214,6 +215,7 @@ async def extract_character_appearance(
     llm = get_llm_provider(provider, model=model, api_key=api_key, base_url=base_url)
     character_payload = [
         {
+            "id": character.get("id", ""),
             "name": character.get("name", ""),
             "role": character.get("role", ""),
             "description": character.get("description", ""),
@@ -237,22 +239,30 @@ async def extract_character_appearance(
         enable_caching=True,
     )
     data = _parse_json(raw)
-    parsed = data.get("characters") or {}
+    parsed = data.get("characters") or []
     output: dict[str, dict[str, str]] = {}
-    if not isinstance(parsed, Mapping):
+    if not isinstance(parsed, list):
         return output
 
-    for character in characters:
-        name = character.get("name", "")
-        if not name:
+    parsed_by_id: dict[str, Mapping[str, Any]] = {}
+    for item in parsed:
+        if not isinstance(item, Mapping):
             continue
-        entry = parsed.get(name) or {}
+        item_id = _collapse_spaces(str(item.get("id", "")))
+        if item_id:
+            parsed_by_id[item_id] = item
+
+    for character in characters:
+        char_id = _collapse_spaces(str(character.get("id", "")))
+        if not char_id:
+            continue
+        entry = parsed_by_id.get(char_id) or {}
         if not isinstance(entry, Mapping):
             continue
         normalized_entry = _normalize_appearance_entry(str(character.get("description", "")), entry)
         if normalized_entry:
-            output[name] = normalized_entry
-    return {name: value for name, value in output.items() if any(value.values())}
+            output[char_id] = normalized_entry
+    return {identifier: value for identifier, value in output.items() if any(value.values())}
 
 
 async def extract_scene_style_cache(
@@ -320,11 +330,27 @@ async def _project_visual_dna(
     existing_images = dict(story.get("character_images") or {})
     updates: dict[str, dict[str, Any]] = {}
 
-    for name, appearance in appearance_cache.items():
+    characters_by_id = {
+        str(character.get("id", "")).strip(): character
+        for character in (story.get("characters") or [])
+        if str(character.get("id", "")).strip()
+    }
+    characters_by_name = {
+        _collapse_spaces(str(character.get("name", ""))): character
+        for character in (story.get("characters") or [])
+        if _collapse_spaces(str(character.get("name", "")))
+    }
+
+    for identifier, appearance in appearance_cache.items():
         body = _collapse_spaces(str(appearance.get("body", "")))
         if not body:
             continue
-        current = get_character_asset_entry(existing_images, name)
+        normalized_identifier = _collapse_spaces(str(identifier))
+        character = characters_by_id.get(normalized_identifier) or characters_by_name.get(normalized_identifier) or {}
+        char_id = _collapse_spaces(str(character.get("id", "")))
+        character_name = _collapse_spaces(str(character.get("name", "")))
+        lookup_id = char_id or normalized_identifier
+        current = get_character_asset_entry(existing_images, lookup_id, name=character_name or normalized_identifier)
         has_existing_asset = any(
             _collapse_spaces(str(current.get(field, "")))
             for field in ("image_url", "image_path", "design_prompt", "prompt", "visual_dna")
@@ -333,12 +359,15 @@ async def _project_visual_dna(
             continue
         if _collapse_spaces(str(current.get("visual_dna", ""))) == body:
             continue
-        updates[name] = build_character_asset_record(
+        target_key = char_id or normalized_identifier
+        updates[target_key] = build_character_asset_record(
             image_url=_collapse_spaces(str(current.get("image_url", ""))),
             image_path=_collapse_spaces(str(current.get("image_path", ""))),
-            prompt=get_character_design_prompt(existing_images, name),
+            prompt=get_character_design_prompt(existing_images, lookup_id, name=character_name or normalized_identifier),
             existing=current,
             visual_dna=body,
+            character_id=char_id,
+            character_name=character_name,
         )
 
     if updates:
@@ -370,7 +399,7 @@ async def prepare_story_context(
             if _needs_appearance_cache(story):
                 try:
                     appearance_cache = dict((story.get("meta") or {}).get("character_appearance_cache") or {})
-                    missing_names = _missing_appearance_cache_names(story)
+                    missing_identifiers = _missing_appearance_cache_names(story)
                     extracted = await extract_character_appearance(
                         story,
                         provider=provider,
@@ -379,9 +408,9 @@ async def prepare_story_context(
                         base_url=base_url,
                     )
                     extracted = {
-                        name: value
-                        for name, value in extracted.items()
-                        if name in missing_names and name not in appearance_cache
+                        identifier: value
+                        for identifier, value in extracted.items()
+                        if identifier in missing_identifiers and identifier not in appearance_cache
                     }
                     if extracted:
                         appearance_cache.update(extracted)

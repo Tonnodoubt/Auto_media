@@ -26,6 +26,7 @@ class GenerateOutlineRequest(BaseModel):
 
 
 class Character(BaseModel):
+    id: Optional[str] = None
     name: str
     role: str
     description: str
@@ -40,6 +41,8 @@ class OutlineScene(BaseModel):
 class Relationship(BaseModel):
     source: str
     target: str
+    source_id: Optional[str] = None
+    target_id: Optional[str] = None
     label: str
 
 
@@ -54,6 +57,8 @@ class GenerateOutlineResponse(BaseModel):
 class ChatRequest(BaseModel):
     story_id: str
     message: str
+    mode: Optional[Literal["generic", "character", "episode", "outline"]] = "generic"
+    context: Optional[dict] = None
 
 
 class GenerateScriptRequest(BaseModel):

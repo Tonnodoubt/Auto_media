@@ -16,10 +16,10 @@
         告诉我你想怎么修改这一集，比如：<br>「加入一个意外转折」
       </div>
       <div v-for="(msg, i) in messages" :key="i" :class="['bubble', msg.role]">
-        <div class="bubble-text" v-html="msg.text.replace(/\n/g, '<br>')" />
+        <div class="bubble-text">{{ msg.text }}</div>
       </div>
       <div v-if="streaming" class="bubble ai">
-        <div class="bubble-text streaming">{{ streamingText }}<span class="cursor">|</span></div>
+        <div class="bubble-text streaming">{{ streamingDisplayText }}<span class="cursor">|</span></div>
       </div>
     </div>
 
@@ -48,7 +48,8 @@
 <script setup>
 import { ref, watch, nextTick, computed } from 'vue'
 import { useStoryStore } from '../stores/story.js'
-import { streamChat, applyChatChanges } from '../api/story.js'
+import { streamChat, applyChatChanges, refineStory } from '../api/story.js'
+import { normalizeChatText } from '../utils/storyChat.js'
 
 const props = defineProps({ show: Boolean, episode: Object })
 const emit = defineEmits(['close'])
@@ -63,6 +64,7 @@ const error = ref('')
 const historyEl = ref(null)
 
 const hasAiReply = computed(() => messages.value.some(m => m.role === 'ai'))
+const streamingDisplayText = computed(() => normalizeChatText(streamingText.value))
 
 async function scrollToBottom() {
   await nextTick()
@@ -85,19 +87,27 @@ async function send() {
   error.value = ''
   messages.value = [...messages.value, { role: 'user', text }]
 
-  const epCtx = `第 ${props.episode.episode} 集「${props.episode.title}」\n摘要：${props.episode.summary}`
-  const fullMessage = `${epCtx}\n\n用户要求：${text}\n\n请给出具体的修改建议。`
-
   streaming.value = true
   streamingText.value = ''
 
   await streamChat(
     store.storyId,
-    fullMessage,
+    {
+      message: text,
+      mode: 'episode',
+      context: {
+        episode: {
+          episode: props.episode.episode,
+          title: props.episode.title,
+          summary: props.episode.summary,
+        },
+        outline: store.outline,
+      },
+    },
     (chunk) => { streamingText.value += chunk },
     () => {
       streaming.value = false
-      messages.value = [...messages.value, { role: 'ai', text: streamingText.value }]
+      messages.value = [...messages.value, { role: 'ai', text: normalizeChatText(streamingText.value) }]
       streamingText.value = ''
     },
     (msg) => {
@@ -127,11 +137,25 @@ async function confirmApply() {
       error.value = '未能获取修改结果，请重试'
       return
     }
+    const previousTitle = currentEp.title
+    const previousSummary = currentEp.summary
+    const nextTitle = res.title ?? currentEp.title
+    const nextSummary = res.summary ?? currentEp.summary
     store.updateOutlineEpisode(
       currentEp.episode,
-      res.title ?? currentEp.title,
-      res.summary ?? currentEp.summary
+      nextTitle,
+      nextSummary
     )
+    if (nextTitle !== previousTitle || nextSummary !== previousSummary) {
+      const refineRes = await refineStory(
+        store.storyId,
+        'episode',
+        `第${currentEp.episode}集标题从「${previousTitle}」改为「${nextTitle}」，剧情从「${previousSummary}」改为「${nextSummary}」`
+      )
+      if (refineRes) {
+        store.applyRefine(refineRes)
+      }
+    }
     messages.value = []
     input.value = ''
     emit('close')
@@ -172,7 +196,7 @@ async function confirmApply() {
 .bubble { max-width: 90%; display: flex; flex-direction: column; gap: 6px; }
 .bubble.user { align-self: flex-end; }
 .bubble.ai { align-self: flex-start; }
-.bubble-text { padding: 10px 14px; border-radius: 14px; font-size: 13px; line-height: 1.6; }
+.bubble-text { padding: 10px 14px; border-radius: 14px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
 .bubble.user .bubble-text { background: #6c63ff; color: #fff; border-bottom-right-radius: 4px; }
 .bubble.ai .bubble-text { background: #f5f5f7; color: #333; border-bottom-left-radius: 4px; }
 .streaming { color: #888; }

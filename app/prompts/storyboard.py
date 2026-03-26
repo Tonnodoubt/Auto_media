@@ -80,6 +80,8 @@ Your task: convert the provided Chinese Audio-Visual Script into a strict JSON a
 - ALWAYS include in `subject_and_clothing`: age, gender, ethnicity, hair (style + color + length), clothing (material + color + texture + condition), body type, distinguishing features.
 - If clean character reference text or Visual DNA is given, preserve those physical traits exactly in `subject_and_clothing`.
 - Do NOT blindly paste portrait/avatar/studio prompt wording into every field. Exclude studio backdrops, clean background, camera-test phrasing, and similar non-scene text.
+- If the script or clean character reference explicitly indicates an orientation/view cue for the character (for example: front view, side profile, back view, 正面, 侧面, 背面, 背影), preserve that cue in `subject_and_clothing` and, when relevant, in `image_prompt` / `final_video_prompt`.
+- Only preserve orientation cues when they are explicitly supported by the script or the provided character reference. DO NOT invent facing direction on your own.
 - When multiple characters appear, describe EACH one fully.
 - **Consistency check: Ensure clothing/appearance remains consistent across consecutive shots of the same scene (unless explicitly changed in script).**
 
@@ -651,6 +653,7 @@ USER_TEMPLATE = """Convert this Audio-Visual Script into physically-precise stor
     Sequential read: Makes no sense, no connection between shots
     ```
 - Make storyboard_description rich enough that an artist can sketch from it AND it should read smoothly when all descriptions are concatenated.
+- If a shot explicitly calls for a front / side / back facing character orientation, mention that cue clearly but briefly. Keep the cue physically observable and avoid over-constraining shots where orientation is not specified.
 
 **TEMPORAL CONTINUITY & SHOT TRANSITIONS (连贯性 + 过渡性):**
 - **Track state continuously:** If a character sits down in shot 3, they remain seated in shot 4 (unless they stand). Document position/posture/hand placement.

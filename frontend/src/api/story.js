@@ -1,5 +1,6 @@
 import { useSettingsStore } from '../stores/settings.js'
 import { useStoryStore } from '../stores/story.js'
+import { DEFAULT_ART_STYLE_PROMPT } from '../constants/artStylePresets.js'
 
 /**
  * 统一 Header 构建：
@@ -25,7 +26,7 @@ export function getHeaders() {
   if (settings.effectiveVideoProvider) headers['X-Video-Provider'] = settings.effectiveVideoProvider
   if (settings.effectiveVideoApiKey)  headers['X-Video-API-Key']  = settings.effectiveVideoApiKey
   if (settings.effectiveVideoBaseUrl) headers['X-Video-Base-URL'] = settings.effectiveVideoBaseUrl
-  if (story.artStyle) headers['X-Art-Style'] = encodeURIComponent(story.artStyle)
+  headers['X-Art-Style'] = encodeURIComponent((story.artStyle || DEFAULT_ART_STYLE_PROMPT).trim())
   return headers
 }
 
@@ -75,8 +76,12 @@ export async function startStoryboard(storyId, script, provider) {
   return res.json()
 }
 
-export async function getPipelineStatus(storyId) {
-  const res = await fetch(getPipelineUrl(`/${storyId}/status`), { headers: getHeaders() })
+export async function getPipelineStatus(projectId, { pipelineId = '', storyId = '' } = {}) {
+  const searchParams = new URLSearchParams()
+  if (pipelineId) searchParams.set('pipeline_id', pipelineId)
+  if (storyId) searchParams.set('story_id', storyId)
+  const query = searchParams.toString() ? `?${searchParams.toString()}` : ''
+  const res = await fetch(getPipelineUrl(`/${projectId}/status${query}`), { headers: getHeaders() })
   if (!res.ok) throw new Error(`请求失败 (${res.status})`)
   return res.json()
 }
@@ -158,13 +163,16 @@ export async function applyChatChanges(storyId, changeType, chatHistory, current
   return res.json()
 }
 
-export async function streamChat(storyId, message, onChunk, onDone, onError, signal) {
+export async function streamChat(storyId, messageOrPayload, onChunk, onDone, onError, signal) {
   let res
+  const payload = typeof messageOrPayload === 'string'
+    ? { story_id: storyId, message: messageOrPayload }
+    : { story_id: storyId, ...(messageOrPayload || {}) }
   try {
     res = await fetch(getUrl('/chat'), {
       method: 'POST',
       headers: getHeaders(),
-      body: JSON.stringify({ story_id: storyId, message }),
+      body: JSON.stringify(payload),
       signal,
     })
   } catch (e) {
@@ -262,6 +270,7 @@ export async function generateCharacterImage(storyId, character) {
     headers: getHeaders(),
     body: JSON.stringify({
       story_id: storyId,
+      character_id: character.id || null,
       character_name: character.name,
       role: character.role || '',
       description: character.description || '',

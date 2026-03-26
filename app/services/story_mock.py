@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.services import story_repository as repo
 
@@ -165,18 +165,51 @@ async def mock_generate_outline(story_id: str, selected_setting: str, db: AsyncS
             "characters": MOCK_OUTLINE["characters"],
             "relationships": MOCK_OUTLINE["relationships"],
             "outline": MOCK_OUTLINE["outline"],
+            "scenes": [],
         })
+        latest_story = await repo.get_story(db, story_id)
+        return {
+            "story_id": story_id,
+            "meta": latest_story.get("meta") or {},
+            "characters": latest_story.get("characters", []),
+            "relationships": latest_story.get("relationships", []),
+            "outline": latest_story.get("outline", []),
+        }
     return {"story_id": story_id, **MOCK_OUTLINE}
 
 
-async def mock_chat(story_id: str, message: str, db: AsyncSession = None) -> AsyncGenerator[str, None]:
+async def mock_chat(
+    story_id: str,
+    message: str,
+    db: AsyncSession = None,
+    mode: str = "generic",
+    context: Optional[dict] = None,
+) -> AsyncGenerator[str, None]:
     if db:
         story = await repo.get_story(db, story_id)
     else:
         story = {}
-    genre = story.get("genre", "现代")
-    tone = story.get("tone", "热血")
-    reply = f"根据你的想法「{message}」，结合{genre}风格和{tone}基调，建议将故事设定为：{message}，并加入情感冲突与成长弧线，使故事更具张力。"
+    context = context or {}
+    if mode == "character":
+        reply = (
+            "当前角色修改：强化人物性格与经历细节，保留姓名和主配角标签。\n"
+            "对剧情的影响：基本不影响主线，仅让后续行为动机更清晰。"
+        )
+    elif mode == "episode":
+        reply = (
+            "当前剧情修改：把用户要求落实到本集冲突和转折中。\n"
+            "对后续剧情的影响：后续集数按新的因果链顺延推进。"
+        )
+    elif mode == "outline":
+        reply = (
+            "当前大纲修改：按用户要求调整对应集数与关键事件。\n"
+            "联动影响：相关人物动机和后续冲突会同步收紧。\n"
+            "REFINE_JSON:{\"change_type\":\"episode\",\"change_summary\":\"按用户要求调整对应集数与关键事件，并同步后续推进\"}"
+        )
+    else:
+        genre = story.get("genre", "现代")
+        tone = story.get("tone", "热血")
+        reply = f"建议按你的想法推进，保留{genre}风格与{tone}基调，并把修改落实为更清晰的冲突。"
     for char in reply:
         await asyncio.sleep(0.04)
         yield char

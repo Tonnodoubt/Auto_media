@@ -5,8 +5,7 @@
       <span class="header-left">
         <span class="icon">🎨</span>
         <span class="label">画风设定</span>
-        <span v-if="store.artStyle" class="style-badge">{{ confirmedPresetName || '自定义' }}</span>
-        <span v-else class="style-badge empty">未设置</span>
+        <span class="style-badge" :class="{ empty: !store.artStyle }">{{ confirmedPresetName || '写实摄影（默认）' }}</span>
       </span>
       <span class="chevron" :class="{ open: expanded }">›</span>
     </button>
@@ -39,7 +38,7 @@
         <span v-if="saveError" class="error-hint">{{ saveError }}</span>
         <button
           class="confirm-btn"
-          :disabled="localStyle === store.artStyle"
+          :disabled="localStyle === (store.artStyle || DEFAULT_ART_STYLE_PROMPT)"
           @click="confirmStyle"
         >确认</button>
       </div>
@@ -51,7 +50,7 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { useStoryStore } from '../stores/story.js'
 import { patchStory } from '../api/story.js'
-import { ART_STYLE_PRESETS } from '../constants/artStylePresets.js'
+import { ART_STYLE_PRESETS, DEFAULT_ART_STYLE_PRESET, DEFAULT_ART_STYLE_PROMPT } from '../constants/artStylePresets.js'
 
 const store = useStoryStore()
 const PRESETS = ART_STYLE_PRESETS
@@ -64,23 +63,21 @@ const saveError = ref('')
 
 /** 已确认保存的 preset 名（根据 store 中的值） */
 const confirmedPresetName = computed(() => {
-  const foundPreset = PRESETS.find(preset => preset.prompt === store.artStyle)
+  const foundPreset = PRESETS.find(preset => preset.prompt === (store.artStyle || DEFAULT_ART_STYLE_PROMPT))
   return foundPreset ? foundPreset.name : null
 })
 
 onMounted(() => {
-  localStyle.value = store.artStyle || ''
-  if (store.artStyle) {
-    const match = PRESETS.find(p => p.prompt === store.artStyle)
-    if (match) selectedPresetId.value = match.id
-  }
+  localStyle.value = store.artStyle || DEFAULT_ART_STYLE_PROMPT
+  const match = PRESETS.find(p => p.prompt === localStyle.value)
+  selectedPresetId.value = match ? match.id : DEFAULT_ART_STYLE_PRESET?.id || null
 })
 
 /** 点击预设：只更新本地状态，不写入 store */
 function selectPreset(preset) {
   if (selectedPresetId.value === preset.id) {
-    selectedPresetId.value = null
-    localStyle.value = ''
+    selectedPresetId.value = DEFAULT_ART_STYLE_PRESET?.id || null
+    localStyle.value = DEFAULT_ART_STYLE_PROMPT
   } else {
     selectedPresetId.value = preset.id
     localStyle.value = preset.prompt
@@ -103,8 +100,8 @@ async function clearStyle() {
     expanded: expanded.value,
   }
   saveError.value = ''
-  localStyle.value = ''
-  selectedPresetId.value = null
+  localStyle.value = DEFAULT_ART_STYLE_PROMPT
+  selectedPresetId.value = DEFAULT_ART_STYLE_PRESET?.id || null
   store.setArtStyle('')
   if (store.storyId) {
     try {
@@ -157,10 +154,11 @@ async function confirmStyle() {
 }
 
 watch(() => store.artStyle, (val) => {
-  if (val !== localStyle.value) {
-    localStyle.value = val
-    const match = PRESETS.find(p => p.prompt === val)
-    selectedPresetId.value = match ? match.id : null
+  const effectiveStyle = val || DEFAULT_ART_STYLE_PROMPT
+  if (effectiveStyle !== localStyle.value) {
+    localStyle.value = effectiveStyle
+    const match = PRESETS.find(p => p.prompt === effectiveStyle)
+    selectedPresetId.value = match ? match.id : DEFAULT_ART_STYLE_PRESET?.id || null
   }
 })
 </script>

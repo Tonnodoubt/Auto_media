@@ -10,6 +10,9 @@ export const ART_STYLE_PRESETS = [
   { id: 'sketch', name: '简笔线稿', icon: '✏️', prompt: '简笔画线稿风格，黑白线条，极简轮廓，手绘感，清晰流畅的单线描边，无填充或淡灰填充' },
 ]
 
+export const DEFAULT_ART_STYLE_PRESET = ART_STYLE_PRESETS.find(({ id }) => id === 'realistic') || ART_STYLE_PRESETS[0]
+export const DEFAULT_ART_STYLE_PROMPT = DEFAULT_ART_STYLE_PRESET.prompt
+
 export const ART_STYLE_PROMPT_TO_LABEL = new Map(
   ART_STYLE_PRESETS.map(({ prompt, name }) => [prompt, name]),
 )

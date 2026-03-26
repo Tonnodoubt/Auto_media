@@ -58,7 +58,7 @@ def inject_art_style(prompt: str, art_style: str) -> str:
 ### 3.2 人设图
 
 - `app/routers/character.py` 读取 `get_art_style(request)`
-- `app/services/image.py` 在 `generate_character_image()` 内将画风追加到角色肖像 prompt
+- `app/services/image.py` 在 `generate_character_image()` 内将画风追加到标准三视图角色设定图 prompt
 
 ### 3.3 手动图片 / 视频接口
 
@@ -109,6 +109,6 @@ def _build_generation_prompt(self, shot: Shot) -> str:
 ## 5. 仍需注意的边界
 
 - 当前修复只解决“画风字段传递”和“自动链路 prompt 不一致”问题。
-- `build_character_section()` 把肖像 prompt 传给分镜 LLM 的污染问题仍然存在。
-- `_enhance_prompt_with_character()` 仍然是运行时直接拼接肖像 prompt，尚未替换成更干净的 `StoryContext` / `Visual DNA` 方案。
+- 无 `StoryContext` 的 fallback 链路现在已改为注入清洗后的角色参考锚点，不再直接拼接原始三视图角色设定图 prompt。
+- 主链路仍应优先依赖 `StoryContext` / `Visual DNA`，不要重新把原始角色设定图 prompt 挂回运行时注入点。
 - `negative_prompt`、角色外貌结构化缓存、场景风格缓存仍属于后续一致性引擎设计范围，见 `docs/digital-asset-library-design.md`。

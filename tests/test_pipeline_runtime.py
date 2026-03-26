@@ -45,6 +45,196 @@ class PipelineRuntimeHelperTests(unittest.TestCase):
         paths = {route.path for route in app.router.routes}
         self.assertNotIn("/api/v1/pipeline/{project_id}/stitch", paths)
 
+    def test_legacy_character_prompt_enhancement_uses_clean_anchor(self):
+        prompt = PipelineExecutor._enhance_prompt_with_character(
+            "Medium shot. Li Ming pauses at the doorway.",
+            {
+                "characters": [
+                    {
+                        "name": "Li Ming",
+                        "description": "young man, short black hair, wearing a dark blue robe.",
+                    }
+                ],
+                "character_images": {
+                    "Li Ming": {
+                        "design_prompt": (
+                            "Standard three-view character turnaround sheet for Li Ming, protagonist, determined expression, heroic bearing, "
+                            "character description: young man, short black hair, wearing a dark blue robe, "
+                            "show front view, side profile, and back view of the same character on one sheet, "
+                            "full body in all three views, neutral standing pose, clear silhouette, "
+                            "consistent facial features and costume details across views, clean neutral backdrop, "
+                            "production-ready character turnaround sheet, costume construction details, fabric texture, "
+                            "accessories, highly detailed, photorealistic"
+                        )
+                    }
+                },
+            },
+        )
+
+        self.assertIn("[Character Li Ming: young man, short black hair, wearing a dark blue robe]", prompt)
+        self.assertNotIn("front view", prompt)
+        self.assertNotIn("turnaround sheet", prompt)
+
+    def test_legacy_character_prompt_enhancement_adds_view_hint_when_shot_mentions_profile(self):
+        prompt = PipelineExecutor._enhance_prompt_with_character(
+            "Medium shot. Side view of Li Ming pausing at the doorway.",
+            {
+                "characters": [
+                    {
+                        "name": "Li Ming",
+                        "description": "young man, short black hair, wearing a dark blue robe.",
+                    }
+                ],
+                "character_images": {
+                    "Li Ming": {
+                        "design_prompt": (
+                            "Standard three-view character turnaround sheet for Li Ming, protagonist, determined expression, heroic bearing, "
+                            "character description: young man, short black hair, wearing a dark blue robe, "
+                            "show front view, side profile, and back view of the same character on one sheet, "
+                            "full body in all three views, neutral standing pose, clear silhouette, "
+                            "consistent facial features and costume details across views, clean neutral backdrop, "
+                            "production-ready character turnaround sheet, costume construction details, fabric texture, "
+                            "accessories, highly detailed, photorealistic"
+                        )
+                    }
+                },
+            },
+        )
+
+        self.assertIn("match the shot's side profile", prompt)
+        self.assertNotIn("front view", prompt)
+        self.assertNotIn("back view of the same character", prompt)
+
+    def test_legacy_character_prompt_enhancement_ignores_other_character_view_hint(self):
+        prompt = PipelineExecutor._enhance_prompt_with_character(
+            "Medium shot. Li Ming pauses at the doorway while Boss Zhao stands behind him.",
+            {
+                "characters": [
+                    {
+                        "name": "Li Ming",
+                        "description": "young man, short black hair, wearing a dark blue robe.",
+                    }
+                ],
+                "character_images": {
+                    "Li Ming": {
+                        "design_prompt": (
+                            "Standard three-view character turnaround sheet for Li Ming, protagonist, determined expression, heroic bearing, "
+                            "character description: young man, short black hair, wearing a dark blue robe, "
+                            "show front view, side profile, and back view of the same character on one sheet, "
+                            "full body in all three views, neutral standing pose, clear silhouette, "
+                            "consistent facial features and costume details across views, clean neutral backdrop, "
+                            "production-ready character turnaround sheet, costume construction details, fabric texture, "
+                            "accessories, highly detailed, photorealistic"
+                        )
+                    }
+                },
+            },
+            {
+                "storyboard_description": "Li Ming pauses at the doorway while Boss Zhao watches from the back.",
+                "image_prompt": "Medium shot. Li Ming pauses at the doorway.",
+                "final_video_prompt": "Medium shot. Static camera. Li Ming looks toward the room.",
+                "visual_elements": {
+                    "action_and_expression": "Boss Zhao is seen from behind in the background.",
+                },
+            },
+        )
+
+        self.assertNotIn("match the shot's back view", prompt)
+
+    def test_legacy_character_prompt_enhancement_uses_structured_single_character_view_hint(self):
+        prompt = PipelineExecutor._enhance_prompt_with_character(
+            "Medium shot. Li Ming pauses at the doorway.",
+            {
+                "characters": [
+                    {
+                        "name": "Li Ming",
+                        "description": "young man, short black hair, wearing a dark blue robe.",
+                    }
+                ],
+                "character_images": {
+                    "Li Ming": {
+                        "design_prompt": (
+                            "Standard three-view character turnaround sheet for Li Ming, protagonist, determined expression, heroic bearing, "
+                            "character description: young man, short black hair, wearing a dark blue robe, "
+                            "show front view, side profile, and back view of the same character on one sheet, "
+                            "full body in all three views, neutral standing pose, clear silhouette, "
+                            "consistent facial features and costume details across views, clean neutral backdrop, "
+                            "production-ready character turnaround sheet, costume construction details, fabric texture, "
+                            "accessories, highly detailed, photorealistic"
+                        )
+                    }
+                },
+            },
+            {
+                "characters": [{"name": "Li Ming"}],
+                "storyboard_description": "A solitary figure pauses at the doorway.",
+                "visual_elements": {
+                    "subject_and_clothing": "young man in a dark blue robe at the doorway",
+                    "action_and_expression": "背影站立，微微侧头",
+                },
+            },
+        )
+
+        self.assertIn("match the shot's back view", prompt)
+        self.assertNotIn("front view", prompt)
+
+    def test_legacy_character_prompt_enhancement_builds_richer_fallback_shot_when_shot_missing(self):
+        visual_prompt = "Side profile of Li Ming turning toward the doorway."
+        captured_shot = {}
+
+        def fake_infer_shot_view_hint(name, shot):
+            captured_shot.update(shot)
+            return ""
+
+        with (
+            patch("app.services.pipeline_executor.build_character_reference_anchor", return_value="young man, short black hair"),
+            patch("app.services.pipeline_executor.infer_shot_view_hint", side_effect=fake_infer_shot_view_hint),
+        ):
+            prompt = PipelineExecutor._enhance_prompt_with_character(
+                visual_prompt,
+                {
+                    "characters": [
+                        {
+                            "name": "Li Ming",
+                            "description": "young man, short black hair, wearing a dark blue robe.",
+                        }
+                    ],
+                    "character_images": {
+                        "Li Ming": {
+                            "design_prompt": "Character turnaround prompt for Li Ming",
+                        }
+                    },
+                },
+            )
+
+        self.assertIn("[Character Li Ming: young man, short black hair]", prompt)
+        self.assertEqual(captured_shot["storyboard_description"], visual_prompt)
+        self.assertEqual(captured_shot["image_prompt"], visual_prompt)
+        self.assertEqual(captured_shot["final_video_prompt"], visual_prompt)
+        self.assertEqual(captured_shot["last_frame_prompt"], visual_prompt)
+        self.assertEqual(captured_shot["visual_elements"]["subject_and_clothing"], visual_prompt)
+        self.assertEqual(captured_shot["visual_elements"]["action_and_expression"], visual_prompt)
+
+    def test_legacy_character_prompt_enhancement_still_uses_description_without_character_assets(self):
+        prompt = PipelineExecutor._enhance_prompt_with_character(
+            "Medium shot. Li Ming pauses at the doorway.",
+            {
+                "characters": [
+                    {
+                        "id": "char_li_ming",
+                        "name": "Li Ming",
+                        "description": "young man, short black hair, wearing a dark blue robe.",
+                    }
+                ],
+                "character_images": {},
+            },
+        )
+
+        self.assertIn("[Character Li Ming:", prompt)
+        self.assertIn("young man", prompt)
+        self.assertIn("short black hair", prompt)
+        self.assertIn("dark blue robe", prompt)
+
 
 class PipelineStatusLookupTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

@@ -10,8 +10,7 @@ from app.schemas.pipeline import GenerationStrategy, PipelineStatus
 from app.services import tts, image, video, ffmpeg
 from app.services.storyboard import parse_script_to_storyboard
 from app.services import story_repository as repo
-from app.core.story_assets import get_character_design_prompt
-from app.core.story_context import StoryContext, build_generation_payload
+from app.core.story_context import StoryContext, build_character_reference_anchor, build_generation_payload, infer_shot_view_hint
 from app.core.api_keys import inject_art_style
 from app.core.pipeline_runtime import (
     build_runtime_strategy_metadata,
@@ -264,10 +263,10 @@ class PipelineExecutor:
         )
 
     @staticmethod
-    def _enhance_prompt_with_character(visual_prompt: str, character_info: Optional[dict]) -> str:
+    def _enhance_prompt_with_character(visual_prompt: str, character_info: Optional[dict], shot: Optional[dict | Shot] = None) -> str:
         """
         角色 prompt 增强：检查 visual_prompt 中是否提及角色名，
-        如果匹配到，将角色设定图提示词拼接到 visual_prompt 尾部。
+        如果匹配到，将提炼后的角色外貌锚点与轻量视角提示拼接到 visual_prompt 尾部。
 
         Args:
             visual_prompt: 原始视觉提示词
@@ -282,22 +281,38 @@ class PipelineExecutor:
         characters = character_info.get("characters", [])
         character_images = character_info.get("character_images", {})
 
-        if not characters or not character_images:
+        if not characters:
             return visual_prompt
 
         additions = []
         for char in characters:
+            char_id = char.get("id", "")
             char_name = char.get("name", "")
             if not char_name:
                 continue
             # 检查角色名是否出现在 visual_prompt 中（不区分大小写）
             if char_name.lower() not in visual_prompt.lower():
                 continue
-            # Legacy fallback: prefer the modern design prompt, then fall back to the
-            # compatibility prompt field kept in character_images.
-            design_prompt = get_character_design_prompt(character_images, char_name)
-            if design_prompt:
-                additions.append(f"[Character {char_name}: {design_prompt}]")
+            reference_anchor = build_character_reference_anchor(
+                character_images,
+                char_name,
+                character_id=char_id,
+                description=str(char.get("description", "")),
+            )
+            if reference_anchor:
+                effective_shot = shot or {
+                    "storyboard_description": visual_prompt,
+                    "image_prompt": visual_prompt,
+                    "final_video_prompt": visual_prompt,
+                    "last_frame_prompt": visual_prompt,
+                    "visual_elements": {
+                        "subject_and_clothing": visual_prompt,
+                        "action_and_expression": visual_prompt,
+                    },
+                }
+                view_hint = infer_shot_view_hint(char_name, effective_shot)
+                suffix = f"; {view_hint}" if view_hint else ""
+                additions.append(f"[Character {char_name}: {reference_anchor}{suffix}]")
 
         if not additions:
             return visual_prompt
@@ -311,12 +326,14 @@ class PipelineExecutor:
             "image_prompt": cls._enhance_prompt_with_character(
                 shot.image_prompt or shot.final_video_prompt,
                 character_info,
+                shot,
             ),
         }
         if shot.last_frame_prompt:
             prompts["last_frame_prompt"] = cls._enhance_prompt_with_character(
                 shot.last_frame_prompt,
                 character_info,
+                shot,
             )
         return prompts
 
@@ -326,6 +343,7 @@ class PipelineExecutor:
         return cls._enhance_prompt_with_character(
             shot.final_video_prompt,
             character_info,
+            shot,
         )
 
     def _build_generation_payload(self, shot: Shot) -> dict:

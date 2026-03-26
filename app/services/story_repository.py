@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, text
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.exc import OperationalError
+from app.core.story_identity import normalize_story_record
 from app.models.story import Story, Pipeline
 from app.schemas.pipeline import PipelineStatus
 
@@ -23,6 +24,7 @@ async def save_story(db: AsyncSession, story_id: str, data: dict) -> None:
 
     # 合并数据
     merged = {**existing, **data, "id": story_id}
+    merged = normalize_story_record(merged, existing_story=existing)
 
     # 使用 SQLite 的 INSERT OR REPLACE
     stmt = insert(Story).values(**merged)
@@ -49,7 +51,7 @@ async def get_story(db: AsyncSession, story_id: str) -> dict:
         return {}
 
     # 将 SQLAlchemy 模型转换为字典
-    return {
+    return normalize_story_record({
         "id": story.id,
         "idea": story.idea,
         "genre": story.genre,
@@ -66,7 +68,7 @@ async def get_story(db: AsyncSession, story_id: str) -> dict:
         "art_style": story.art_style or "",
         "created_at": story.created_at,
         "updated_at": story.updated_at,
-    }
+    })
 
 
 async def list_stories(db: AsyncSession, limit: int = 50) -> List[dict]:

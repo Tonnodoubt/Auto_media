@@ -4,7 +4,7 @@
 >
 > 目标：在同一个剧本的流水线执行过程中，自动保证所有镜头在画风、场景氛围、人物外貌上的视觉一致性。无需新增用户界面，纯后端实现。
 >
-> 当前边界：自动/手动统一 `StoryContext`、脏外貌缓存清洗、自然语言角色锚点、`negative_prompt` 修复、角色图转向 full-body character sheet 已落地；DSPy 反馈回路、场景图片资产层、按整体背景分组的场景分镜、场景图辅助视频生成仍是后续计划，本文仅预留接口与数据边界，不代表已实现。
+> 当前边界：自动/手动统一 `StoryContext`、脏外貌缓存清洗、自然语言角色锚点、`negative_prompt` 修复、角色图转向 standard three-view character sheet 已落地；DSPy 反馈回路、场景图片资产层、按整体背景分组的场景分镜、场景图辅助视频生成仍是后续计划，本文仅预留接口与数据边界，不代表已实现。
 
 ---
 
@@ -79,10 +79,10 @@
 |------|------|------|
 | 画风漂移 | 所有镜头统一追加 `art_style`，缺少场景级补充风格 | 宗门、山巅、战场的环境气质不够分化 |
 | 场景漂移 | `final_video_prompt` 由分镜 LLM 逐镜头自由生成 | 同一地点在连续镜头中背景词不稳定 |
-| 上游人物污染 | `build_character_section()` 直接把肖像 prompt 传给分镜 LLM | `studio lighting`、`clean background` 被写进场景镜头 |
-| 下游人物污染 | `_enhance_prompt_with_character()` 再次把 portrait prompt 拼到镜头 prompt 末尾 | 污染词二次注入，且格式不利于图片/视频 API |
+| 上游人物污染 | 无 `StoryContext` 时若直接透传角色设定图 prompt | `clean background`、三视图版式要求等非场景词被写进镜头 |
+| 下游人物污染 | legacy fallback 若直接拼原始 character sheet prompt | 污染词二次注入，且格式不利于图片/视频 API |
 | Prompt 职责回退风险 | 当前 `image_prompt` / `final_video_prompt` / `last_frame_prompt` 已经分工明确，若一致性层回退成单一 prompt 重建，会破坏字段职责 | 图片首帧变成动态描述，视频动作提示又被静态环境段落冲淡 |
-| 服装漂移 | 肖像 prompt 中的默认服装被所有镜头无条件继承 | 剧情明确换装时仍保留初始服装 |
+| 服装漂移 | 角色设定图 prompt 中的默认服装被所有镜头无条件继承 | 剧情明确换装时仍保留初始服装 |
 | 多角色混融 | 多角色同框时外貌词简单拼接 | 角色特征串扰 |
 | 手动链路分叉 | 手动页面实际同时存在 `/pipeline/*` 与 `/image/*`、`/video/*` 两套素材链路 | 若后续只改其中一套，自动/手动仍会继续分叉 |
 
@@ -90,17 +90,18 @@
 
 ```text
 build_character_prompt()                  # app/prompts/character.py
-  -> 生成肖像 prompt（含 clean background / studio lighting）
-  -> 写入 story.character_images[name]["prompt"]
+  -> 生成标准三视图角色设定图 prompt（含 clean background / 三视图版式要求）
+  -> 写入 story.character_images[character_id]["design_prompt"]，并兼容写入 ["prompt"]
+  -> 读取时仍兼容 legacy story.character_images[name]，加载时应尽量映射回 character_id
 
 build_character_section()                # app/prompts/character.py
-  -> 将 portrait prompt 拼进 Character Reference
+  -> 将清洗后的角色参考锚点拼进 Character Reference
   -> parse_script_to_storyboard() 传给分镜 LLM
 
 storyboard.SYSTEM_PROMPT / Law 2.5 + 3   # app/prompts/storyboard.py
   -> LLM 同时生成 image_prompt / final_video_prompt / last_frame_prompt
   -> 仍要求外观提示词 verbatim embed
-  -> 三类 prompt 都可能被 portrait prompt 污染
+  -> 若无清洗层，三类 prompt 都可能被 character sheet prompt 污染
 
 _postprocess_shot()                      # app/services/storyboard.py
   -> 优先保留分镜 LLM 已生成的三类 prompt
@@ -108,11 +109,11 @@ _postprocess_shot()                      # app/services/storyboard.py
   -> 这意味着运行期一致性方案必须做“分字段增强”，不能退回单一 prompt 重组
 
 _enhance_prompt_with_character()         # app/services/pipeline_executor.py
-  -> 再把 portrait prompt 拼到 image_prompt / final_video_prompt / last_frame_prompt 尾部
-  -> 当前图片与视频已分字段输入，污染问题仍在，但分字段链路已成立
+  -> legacy fallback 中只拼接清洗后的角色参考锚点
+  -> 当前图片与视频已分字段输入，主链路优先复用 StoryContext
 ```
 
-一致性引擎必须同时修复上游 `build_character_section()` 和下游 `_enhance_prompt_with_character()` 两个入口。
+一致性引擎仍需继续收敛这些 legacy 入口，但当前代码已避免把原始三视图 prompt 直接回灌到 fallback 注入链路。
 
 ---
 
@@ -201,7 +202,7 @@ class StoryContext:
 | `base_art_style` | `Story.art_style` | 现有逻辑保留 |
 | `scene_styles` | `Story.genre` + `Story.selected_setting` | `selected_setting` 才是当前 world summary 实际落点 |
 | `character_locks` | `meta.character_appearance_cache` 优先，其次 `character_images.visual_dna`，最后 `characters.description` | 兼容新旧链路 |
-| `clean_character_section` | 运行期动态生成 | 不再透传 portrait prompt |
+| `clean_character_section` | 运行期动态生成 | 不再透传原始 character sheet prompt |
 
 ### 4.2 `world_summary` 的修正规则
 
@@ -275,7 +276,7 @@ Description: {description}
 
 ```json
 Story.meta["character_appearance_cache"] = {
-  "黎明": {
+  "char_liming": {
     "body": "young male, silver-white hair, ice blue eyes, slender build",
     "clothing": "white hanfu with blue cloud embroidery"
   }
@@ -285,7 +286,7 @@ Story.meta["character_appearance_cache"] = {
 同时兼容回填：
 
 ```json
-Story.character_images["黎明"]["visual_dna"] = "young male, silver-white hair, ice blue eyes, slender build"
+Story.character_images["char_liming"]["visual_dna"] = "young male, silver-white hair, ice blue eyes, slender build"
 ```
 
 这样可以兼顾：
@@ -298,13 +299,13 @@ Story.character_images["黎明"]["visual_dna"] = "young male, silver-white hair,
 
 - `character_appearance_cache` 是运行期主缓存
 - `visual_dna` 是兼容投影字段，不再是唯一真相源
-- 当结构化缓存生成成功后，建议同步回填 `character_images[name]["visual_dna"]`
+- 当结构化缓存生成成功后，建议同步回填 `character_images[character_id]["visual_dna"]`
 
 ### 5.3 旧 `visual_dna` 的清理与投影策略
 
 为避免前端、人设图链路和运行期缓存出现“双真相”，建议明确如下口径：
 
-1. 一旦 `character_appearance_cache[name]` 存在，它就是唯一主数据源
+1. 一旦 `character_appearance_cache[character_id]` 存在，它就是唯一主数据源
 2. `visual_dna` 只保留为兼容投影字段，应由结构化缓存单向覆盖
 3. 若发现 `visual_dna` 与结构化缓存冲突，应以结构化缓存为准
 
@@ -318,8 +319,8 @@ Story.character_images["黎明"]["visual_dna"] = "young male, silver-white hair,
 
 `build_story_context()` 中对每个角色的读取顺序应为：
 
-1. `meta.character_appearance_cache[name]`
-2. `character_images[name].visual_dna`
+1. `meta.character_appearance_cache[character_id]`
+2. `character_images[character_id].visual_dna`
 3. `characters[].description`
 
 如果命中第 2 层，仅能直接作为 `body_features` 使用；`default_clothing` 仍应为空或再次提取。
@@ -593,7 +594,7 @@ for attempt in range(max_retries + 1):
 
 ## 八、上游修复：干净版 Character Section
 
-`build_character_section()` 不能再把 portrait prompt 直接传给分镜 LLM。
+`build_character_section()` 不能再把原始 character sheet prompt 直接传给分镜 LLM。
 
 替代方式：
 
@@ -1075,7 +1076,7 @@ Phase 1 的补充要求：
 ### Phase 2：增强能力
 
 13. 增加 `extract_character_appearance()` LLM 提取
-14. 回填 `character_images[name]["visual_dna"]`
+14. 回填 `character_images[character_id]["visual_dna"]`
 15. 可选新增 `Shot.characters_in_shot`
 16. 可选新增 `extract_scene_styles_from_world_summary()`
 
@@ -1100,7 +1101,7 @@ Phase 1 的补充要求：
 | `inject_art_style()` | 保留为兜底工具；主链路由 `build_generation_payload()` 分字段组装 |
 | `_enhance_prompt_with_character()` | 废弃但短期保留签名，避免外部调用报错 |
 | `build_character_section()` | 保留旧函数作为无 `StoryContext` 时兜底 |
-| `character_images[name]["visual_dna"]` | 作为兼容字段继续支持，但不再是唯一数据源 |
+| `character_images[character_id]["visual_dna"]` | 作为兼容字段继续支持，但不再是唯一数据源；读取时仍兼容 legacy `character_images[name]` |
 | Prompt Caching | 仅对支持的 provider 启用；不支持时自动忽略，不影响主流程 |
 | 无 `story_id` 的旧流程 | `StoryContext` 为 `None` 时退回原逻辑，不阻断旧接口 |
 
@@ -1112,7 +1113,7 @@ Phase 1 的补充要求：
 
 1. 运行期结构化缓存放在 `Story.meta["character_appearance_cache"]`
 2. world summary 读取 `Story.selected_setting`
-3. `character_images[name]["visual_dna"]` 作为兼容投影字段保留
+3. `character_images[character_id]["visual_dna"]` 作为兼容投影字段保留；legacy `character_images[name]` 仅保留读取兼容
 4. 保持 `image_prompt` / `final_video_prompt` / `last_frame_prompt` 三字段分工，不回退成单一 prompt
 5. 自动与手动链路同时接入 `StoryContext`
 6. 缓存写入与失效通过专用 helper 管理，不直接裸写 `meta`

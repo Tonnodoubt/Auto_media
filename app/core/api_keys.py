@@ -16,6 +16,8 @@ from urllib.parse import urlparse, unquote
 from fastapi import HTTPException, Request
 from app.core.config import settings as _cfg
 
+DEFAULT_ART_STYLE = "写实摄影风格，电影级画质，自然光影，高清细节，真实质感"
+
 
 @dataclass
 class ApiKeyBundle:
@@ -243,7 +245,8 @@ def llm_config_dep(request: Request) -> dict:
 def get_art_style(request: Request) -> str:
     """从 X-Art-Style Header 读取并 URL 解码画风提示词。"""
     raw = request.headers.get("X-Art-Style", "")
-    return unquote(raw).strip()
+    normalized = unquote(raw).strip()
+    return normalized or DEFAULT_ART_STYLE
 
 
 def inject_art_style(prompt: str, art_style: str) -> str:

@@ -74,9 +74,10 @@ async function submit() {
   if (!settings.useMock && !settings.llmApiKey) { showKeyModal.value = true; return }
   loading.value = true
   error.value = ''
+  const inputIdea = idea.value.trim()
   try {
-    store.setInput(idea.value, '', '')
-    const result = await worldBuildingStart(idea.value)
+    const result = await worldBuildingStart(inputIdea)
+    store.startNewStory(inputIdea)
     store.setWorldBuildingStart(result)
     store.setStep(2)
     router.push('/step2')

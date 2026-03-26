@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.database import Base
 from app.core.story_assets import build_character_asset_record, get_character_design_prompt, get_character_visual_dna
-from app.core.story_context import _GENRE_STYLE_RULES, build_generation_payload, build_story_context, character_appears_in_shot
+from app.core.story_context import _GENRE_STYLE_RULES, build_generation_payload, build_story_context, character_appears_in_shot, infer_shot_view_hint
 from app.models.story import Story
 from app.schemas.storyboard import AudioReference, CameraSetup, Shot, VisualElements
 from app.services import story_context_service
@@ -23,15 +23,18 @@ class StoryContextTests(unittest.TestCase):
             "selected_setting": "江南水乡，临河茶馆，细雨薄雾，木窗与灯笼营造出潮湿古镇气息。",
             "characters": [
                 {
+                    "id": "char_li_ming",
                     "name": "李明",
                     "role": "主角",
                     "description": "25岁青年男子，黑色短发，身形清瘦，穿着深蓝长衫，神情沉稳。",
                 }
             ],
             "character_images": {
-                "李明": {
+                "char_li_ming": {
                     "prompt": "Character portrait of 李明, clean background, studio lighting, dramatic portrait",
                     "visual_dna": "25-year-old man, short black hair, slim build",
+                    "character_id": "char_li_ming",
+                    "character_name": "李明",
                 }
             },
             "meta": {
@@ -80,6 +83,7 @@ class StoryContextTests(unittest.TestCase):
         story = {
             "characters": [
                 {
+                    "id": "char_aiwen",
                     "name": "艾文",
                     "role": "主角",
                     "description": "年轻男性，黑色短发，身形清瘦，穿着深蓝长袍。性格孤僻但内心善良，拥有解开时间循环秘密的能力。",
@@ -87,7 +91,7 @@ class StoryContextTests(unittest.TestCase):
             ],
             "meta": {
                 "character_appearance_cache": {
-                    "艾文": {
+                    "char_aiwen": {
                         "body": "年轻男性，天才魔法师，孤僻善良，解开时间循环秘密",
                         "clothing": "深蓝长袍",
                     }
@@ -110,8 +114,8 @@ class StoryContextTests(unittest.TestCase):
     def test_multi_character_anchor_uses_natural_phrase(self):
         story = {
             "characters": [
-                {"name": "Li Ming", "role": "lead", "description": "25-year-old man, short black hair, slim build, wearing a dark blue robe."},
-                {"name": "Boss Zhao", "role": "support", "description": "40-year-old heavyset man, moustache, wearing a brown brocade robe."},
+                {"id": "char_li_ming", "name": "Li Ming", "role": "lead", "description": "25-year-old man, short black hair, slim build, wearing a dark blue robe."},
+                {"id": "char_boss_zhao", "name": "Boss Zhao", "role": "support", "description": "40-year-old heavyset man, moustache, wearing a brown brocade robe."},
             ]
         }
         shot = {
@@ -129,13 +133,13 @@ class StoryContextTests(unittest.TestCase):
     def test_character_matching_avoids_substring_false_positive(self):
         story = {
             "characters": [
-                {"name": "Ann", "role": "support", "description": "short hair"},
-                {"name": "Anna", "role": "lead", "description": "long hair"},
+                {"id": "char_ann", "name": "Ann", "role": "support", "description": "short hair"},
+                {"id": "char_anna", "name": "Anna", "role": "lead", "description": "long hair"},
             ],
             "meta": {
                 "character_appearance_cache": {
-                    "Ann": {"negative_prompt": "ann-only"},
-                    "Anna": {"negative_prompt": "anna-only"},
+                    "char_ann": {"negative_prompt": "ann-only"},
+                    "char_anna": {"negative_prompt": "anna-only"},
                 }
             },
         }
@@ -158,6 +162,27 @@ class StoryContextTests(unittest.TestCase):
         }
         self.assertTrue(character_appears_in_shot("Li Ming", shot))
         self.assertFalse(character_appears_in_shot("Li", shot))
+
+    def test_infer_shot_view_hint_ignores_generic_profile_phrases(self):
+        shot = {
+            "storyboard_description": "Li Ming keeps a low profile while moving through the market.",
+            "image_prompt": "Medium shot. Li Ming keeps a low profile in the crowd.",
+        }
+
+        self.assertEqual(infer_shot_view_hint("Li Ming", shot), "")
+
+    def test_infer_shot_view_hint_uses_structured_single_character_fields_even_with_existing_contexts(self):
+        shot = {
+            "characters": [{"name": "Li Ming"}],
+            "storyboard_description": "Li Ming pauses at the doorway.",
+            "image_prompt": "Medium shot. Li Ming pauses at the doorway.",
+            "visual_elements": {
+                "subject_and_clothing": "young man in a dark blue robe",
+                "action_and_expression": "seen from behind while turning toward the doorway",
+            },
+        }
+
+        self.assertEqual(infer_shot_view_hint("Li Ming", shot), "match the shot's back view")
 
     def test_genre_fallback_style_still_applies_when_scene_cache_keywords_do_not_match(self):
         story = {
@@ -186,8 +211,8 @@ class StoryContextTests(unittest.TestCase):
     def test_clothing_change_hint_only_applies_to_segments_mentioning_same_character(self):
         story = {
             "characters": [
-                {"name": "Li Ming", "role": "lead", "description": "young man, short black hair. wearing a dark blue robe."},
-                {"name": "Boss Zhao", "role": "support", "description": "middle-aged man, moustache, wearing a brown robe."},
+                {"id": "char_li_ming", "name": "Li Ming", "role": "lead", "description": "young man, short black hair. wearing a dark blue robe."},
+                {"id": "char_boss_zhao", "name": "Boss Zhao", "role": "support", "description": "middle-aged man, moustache, wearing a brown robe."},
             ]
         }
         shot = {
@@ -238,8 +263,8 @@ class ParseStoryboardOverrideTests(unittest.IsolatedAsyncioTestCase):
                 "【环境】茶馆门口\n【画面】李明推门进入。",
                 provider="openai",
                 character_info={
-                    "characters": [{"name": "李明", "role": "主角", "description": "青年男子"}],
-                    "character_images": {"李明": {"prompt": "Character portrait, studio lighting"}},
+                    "characters": [{"id": "char_li_ming", "name": "李明", "role": "主角", "description": "青年男子"}],
+                    "character_images": {"char_li_ming": {"prompt": "Character portrait, studio lighting", "character_id": "char_li_ming", "character_name": "李明"}},
                 },
                 character_section_override="## Character Reference\n- 李明：Visual DNA only",
             )
@@ -273,6 +298,7 @@ class StoryContextPreparationTests(unittest.IsolatedAsyncioTestCase):
                     "selected_setting": "江南古镇，临河茶馆，木窗灯笼，细雨薄雾。",
                     "characters": [
                         {
+                            "id": "char_li_ming",
                             "name": "李明",
                             "role": "主角",
                             "description": "25岁青年男子，黑色短发，身形清瘦，穿着深蓝长衫。",
@@ -288,13 +314,14 @@ class StoryContextPreparationTests(unittest.IsolatedAsyncioTestCase):
                         return (
                             """
                             {
-                              "characters": {
-                                "李明": {
+                              "characters": [
+                                {
+                                  "id": "char_li_ming",
                                   "body": "young man, short black hair, slim build",
                                   "clothing": "dark blue robe",
                                   "negative_prompt": "modern clothing"
                                 }
-                              }
+                              ]
                             }
                             """.strip(),
                             {"prompt_tokens": 120, "completion_tokens": 40},
@@ -327,7 +354,7 @@ class StoryContextPreparationTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertIsNotNone(ctx)
             self.assertEqual(
-                story["meta"]["character_appearance_cache"]["李明"]["body"],
+                story["meta"]["character_appearance_cache"][story["characters"][0]["id"]]["body"],
                 "young man, short black hair, slim build",
             )
             self.assertEqual(story.get("character_images", {}), {})
@@ -357,16 +384,19 @@ class StoryContextPreparationTests(unittest.IsolatedAsyncioTestCase):
                     "selected_setting": "江南古镇，临河茶馆。",
                     "characters": [
                         {
+                            "id": "char_li_ming",
                             "name": "李明",
                             "role": "主角",
                             "description": "25岁青年男子，黑色短发，身形清瘦，穿着深蓝长衫。",
                         }
                     ],
                     "character_images": {
-                        "李明": build_character_asset_record(
+                        "char_li_ming": build_character_asset_record(
                             image_url="/media/characters/li_ming.png",
                             image_path="media/characters/li_ming.png",
-                            prompt="Full-body character design sheet for 李明",
+                            prompt="Standard three-view character turnaround sheet for 李明",
+                            character_id="char_li_ming",
+                            character_name="李明",
                         )
                     },
                     "meta": {},
@@ -377,7 +407,7 @@ class StoryContextPreparationTests(unittest.IsolatedAsyncioTestCase):
                 async def complete_messages_with_usage(self, messages, system: str = "", temperature: float = 0.3, **kwargs):
                     if "stable visual anchors" in system:
                         return (
-                            '{"characters":{"李明":{"body":"young man, short black hair, slim build","clothing":"dark blue robe"}}}',
+                            '{"characters":[{"id":"char_li_ming","body":"young man, short black hair, slim build","clothing":"dark blue robe"}]}',
                             {"prompt_tokens": 12, "completion_tokens": 5},
                         )
                     return (
@@ -396,7 +426,7 @@ class StoryContextPreparationTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertEqual(
-                story["character_images"]["李明"]["visual_dna"],
+                story["character_images"]["char_li_ming"]["visual_dna"],
                 "young man, short black hair, slim build",
             )
 
@@ -412,32 +442,38 @@ class StoryContextPreparationTests(unittest.IsolatedAsyncioTestCase):
                     "selected_setting": "江南古镇，临河茶馆。",
                     "characters": [
                         {
+                            "id": "char_li_ming",
                             "name": "李明",
                             "role": "主角",
                             "description": "25岁青年男子，黑色短发，身形清瘦，穿着深蓝长衫。",
                         },
                         {
+                            "id": "char_a_yue",
                             "name": "阿月",
                             "role": "配角",
                             "description": "20岁年轻女子，长发，穿着浅青色襦裙。",
                         },
                     ],
                     "character_images": {
-                        "李明": build_character_asset_record(
+                        "char_li_ming": build_character_asset_record(
                             image_url="/media/characters/li_ming.png",
                             image_path="media/characters/li_ming.png",
-                            prompt="Full-body character design sheet for 李明",
+                            prompt="Standard three-view character turnaround sheet for 李明",
                             existing={"visual_dna": "young man, short black hair, slim build"},
+                            character_id="char_li_ming",
+                            character_name="李明",
                         ),
-                        "阿月": build_character_asset_record(
+                        "char_a_yue": build_character_asset_record(
                             image_url="/media/characters/a_yue.png",
                             image_path="media/characters/a_yue.png",
-                            prompt="Full-body character design sheet for 阿月",
+                            prompt="Standard three-view character turnaround sheet for 阿月",
+                            character_id="char_a_yue",
+                            character_name="阿月",
                         ),
                     },
                     "meta": {
                         "character_appearance_cache": {
-                            "李明": {
+                            "char_li_ming": {
                                 "body": "young man, short black hair, slim build",
                                 "clothing": "dark blue robe",
                                 "negative_prompt": "modern clothing",
@@ -453,17 +489,19 @@ class StoryContextPreparationTests(unittest.IsolatedAsyncioTestCase):
                         return (
                             """
                             {
-                              "characters": {
-                                "李明": {
+                              "characters": [
+                                {
+                                  "id": "char_li_ming",
                                   "body": "tall young man, loose black hair",
                                   "clothing": "light robe",
                                   "negative_prompt": "armor"
                                 },
-                                "阿月": {
+                                {
+                                  "id": "char_a_yue",
                                   "body": "young woman, long black hair, slim build",
                                   "clothing": "light cyan ruqun"
                                 }
-                              }
+                              ]
                             }
                             """.strip(),
                             {"prompt_tokens": 20, "completion_tokens": 8},
@@ -484,23 +522,23 @@ class StoryContextPreparationTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertEqual(
-                story["meta"]["character_appearance_cache"]["李明"]["body"],
+                story["meta"]["character_appearance_cache"]["char_li_ming"]["body"],
                 "young man, short black hair, slim build",
             )
             self.assertEqual(
-                story["meta"]["character_appearance_cache"]["李明"]["clothing"],
+                story["meta"]["character_appearance_cache"]["char_li_ming"]["clothing"],
                 "dark blue robe",
             )
             self.assertEqual(
-                story["meta"]["character_appearance_cache"]["阿月"]["body"],
+                story["meta"]["character_appearance_cache"]["char_a_yue"]["body"],
                 "young woman, long black hair, slim build",
             )
             self.assertEqual(
-                story["character_images"]["李明"]["visual_dna"],
+                story["character_images"]["char_li_ming"]["visual_dna"],
                 "young man, short black hair, slim build",
             )
             self.assertEqual(
-                story["character_images"]["阿月"]["visual_dna"],
+                story["character_images"]["char_a_yue"]["visual_dna"],
                 "young woman, long black hair, slim build",
             )
 
@@ -516,6 +554,7 @@ class StoryContextPreparationTests(unittest.IsolatedAsyncioTestCase):
                     "selected_setting": "江南古镇，石桥，细雨。",
                     "characters": [
                         {
+                            "id": "char_li_ming",
                             "name": "李明",
                             "role": "主角",
                             "description": "25岁青年男子，黑色短发，穿着深蓝长衫。",
@@ -529,7 +568,7 @@ class StoryContextPreparationTests(unittest.IsolatedAsyncioTestCase):
                 async def complete_messages_with_usage(self, messages, system: str = "", temperature: float = 0.3, **kwargs):
                     if "stable visual anchors" in system:
                         return (
-                            '{"characters":{"李明":{"body":"young man, short black hair","clothing":"dark blue robe"}}}',
+                            '{"characters":[{"id":"char_li_ming","body":"young man, short black hair","clothing":"dark blue robe"}]}',
                             {"prompt_tokens": 10, "completion_tokens": 5},
                         )
                     return (
@@ -587,21 +626,21 @@ class StoryAssetHelperTests(unittest.TestCase):
         record = build_character_asset_record(
             image_url="/media/characters/li_ming.png",
             image_path="media/characters/li_ming.png",
-            prompt="Full-body character design sheet for Li Ming",
+            prompt="Standard three-view character turnaround sheet for Li Ming",
             existing={"visual_dna": "young man, short black hair"},
         )
 
-        self.assertEqual(record["prompt"], "Full-body character design sheet for Li Ming")
-        self.assertEqual(record["design_prompt"], "Full-body character design sheet for Li Ming")
+        self.assertEqual(record["prompt"], "Standard three-view character turnaround sheet for Li Ming")
+        self.assertEqual(record["design_prompt"], "Standard three-view character turnaround sheet for Li Ming")
         self.assertEqual(record["asset_kind"], "character_sheet")
-        self.assertEqual(record["framing"], "full_body")
+        self.assertEqual(record["framing"], "three_view")
         self.assertEqual(record["visual_dna"], "young man, short black hair")
 
     def test_character_asset_record_ignores_whitespace_visual_dna_updates(self):
         record = build_character_asset_record(
             image_url="/media/characters/li_ming.png",
             image_path="media/characters/li_ming.png",
-            prompt="Full-body character design sheet for Li Ming",
+            prompt="Standard three-view character turnaround sheet for Li Ming",
             existing={"visual_dna": "young man, short black hair"},
             visual_dna="   ",
         )
@@ -619,6 +658,25 @@ class StoryAssetHelperTests(unittest.TestCase):
 
         self.assertEqual(get_character_design_prompt(character_images, "Li Ming"), "new design prompt")
         self.assertEqual(get_character_visual_dna(character_images, "Li Ming"), "young man, short black hair")
+
+    def test_character_asset_getters_accept_legacy_name_key_when_loading_by_id(self):
+        character_images = {
+            "Li Ming": {
+                "prompt": "legacy prompt",
+                "design_prompt": "legacy design prompt",
+                "visual_dna": "young man, short black hair",
+                "character_name": "Li Ming",
+            }
+        }
+
+        self.assertEqual(
+            get_character_design_prompt(character_images, "char_li_ming", name="Li Ming"),
+            "legacy design prompt",
+        )
+        self.assertEqual(
+            get_character_visual_dna(character_images, "char_li_ming", name="Li Ming"),
+            "young man, short black hair",
+        )
 
 
 class StoryRepositoryHelperTests(unittest.IsolatedAsyncioTestCase):

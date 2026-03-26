@@ -41,10 +41,12 @@
         开始生成剧本 ✨
       </button>
 
+      <div v-if="error && !started" class="error-tip" role="alert" aria-live="assertive">{{ error }}</div>
+
       <div v-if="started" class="script-section">
         <h2>剧本</h2>
         <SceneStream :scenes="store.scenes" :streaming="streaming" />
-        <div v-if="error" class="error-tip">{{ error }}</div>
+        <div v-if="error" class="error-tip" role="alert" aria-live="assertive">{{ error }}</div>
       </div>
 
       <div v-if="done" class="btn-row">
@@ -64,7 +66,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import StepIndicator from '../components/StepIndicator.vue'
 import OutlinePreview from '../components/OutlinePreview.vue'
@@ -81,24 +83,17 @@ import { streamScript } from '../api/story.js'
 const router = useRouter()
 const store = useStoryStore()
 const settings = useSettingsStore()
-const started = ref(false)
 const streaming = ref(false)
-const done = ref(false)
 const error = ref('')
 const chatOpen = ref(false)
 const showKeyModal = ref(false)
 const keyModalType = ref('missing')
 const keyModalMsg = ref('')
+const done = computed(() => store.step3Done && store.scenes.length > 0)
+const started = computed(() => streaming.value || done.value || store.scenes.length > 0)
 
 let scriptAbortController = null
 onUnmounted(() => { scriptAbortController?.abort() })
-
-onMounted(() => {
-  if (store.step3Done) {
-    started.value = true
-    done.value = true
-  }
-})
 
 function isAuthError(msg) {
   return /401|403|invalid|incorrect|unauthorized|api.?key/i.test(msg)
@@ -107,17 +102,26 @@ function isAuthError(msg) {
 async function startGenerate() {
   if (!settings.useMock && !settings.effectiveLlmApiKey) { showKeyModal.value = true; return }
   scriptAbortController?.abort()
-  scriptAbortController = new AbortController()
-  started.value = true
+  const controller = new AbortController()
+  scriptAbortController = controller
   streaming.value = true
   error.value = ''
   store.resetScenes()
-  await streamScript(
-    store.storyId,
-    (scene) => store.addScene(scene),
-    () => { streaming.value = false; done.value = true; store.step3Done = true; store.setStep(4) },
-    (msg) => {
-      streaming.value = false
+  try {
+    await streamScript(
+      store.storyId,
+      (scene) => store.addScene(scene),
+      () => {
+      if (!store.scenes.length) {
+        store.step3Done = false
+        error.value = '未生成有效剧本内容，请重试'
+        return
+      }
+      store.step3Done = true
+      store.setStep(4)
+    },
+      (msg) => {
+      store.step3Done = false
       if (isAuthError(msg)) {
         keyModalType.value = 'invalid'
         keyModalMsg.value = 'API Key 无效或已过期，请检查后重新设置。'
@@ -126,8 +130,14 @@ async function startGenerate() {
         error.value = msg || '生成失败，请重试'
       }
     },
-    scriptAbortController.signal
-  )
+      controller.signal
+    )
+  } finally {
+    streaming.value = false
+    if (scriptAbortController === controller) {
+      scriptAbortController = null
+    }
+  }
 }
 </script>
 
