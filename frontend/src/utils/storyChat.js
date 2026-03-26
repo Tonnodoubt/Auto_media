@@ -59,7 +59,7 @@ function splitSectionItems(text) {
   const items = String(text || '')
     .split(/[；;]+/)
     .flatMap(item => item.replace(/\s+(?=\d+[.)．]\s*)/g, '\n').split('\n'))
-    .map(item => item.replace(/^[、\-•\d.\s]+/, '').trim())
+    .map(item => item.replace(/^[、\-•\d.)．\s]+/, '').trim())
     .filter(Boolean)
 
   const deduped = []
@@ -99,13 +99,6 @@ function extractLabeledSection(text, label, nextLabels = []) {
 
   const contentStart = start + label.length
   let contentEnd = normalized.length
-
-  if (!nextLabels.length) {
-    const nextLineBreak = normalized.indexOf('\n', contentStart)
-    if (nextLineBreak !== -1) {
-      contentEnd = nextLineBreak
-    }
-  }
 
   for (const nextLabel of nextLabels) {
     const nextIndex = normalized.indexOf(nextLabel, contentStart)

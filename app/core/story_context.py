@@ -383,13 +383,27 @@ def _guess_default_clothing(description: str) -> str:
     return sanitize_default_clothing("", fallback_description=description)
 
 
+_DESIGN_PROMPT_ANCHOR_BOUNDARY = (
+    r"(?:show front view"
+    r"|show the complete outfit"
+    r"|identity(?:_lock|\s+lock)(?:\s*:)?"
+    r"|style(?:_lock|\s+lock)(?:\s*:)?"
+    r"|visual\s+dna(?:\s*:)?"
+    r"|identity:"
+    r"|style:"
+    r"|treat the character description as non-negotiable identity constraints"
+    r"|follow this exact art style consistently across all three views"
+    r"|keep one unified rendering style across all three views)"
+)
+
+
 def _extract_design_prompt_description(design_prompt: str) -> str:
     normalized = _collapse_spaces(design_prompt)
     if not normalized:
         return ""
 
     match = re.search(
-        r"character description:\s*(.+?)(?:,\s*(?:show front view|show the complete outfit)\b|$)",
+        rf"character description:\s*(.+?)(?:(?:,\s*|;\s*)(?:{_DESIGN_PROMPT_ANCHOR_BOUNDARY})|$)",
         normalized,
         flags=re.IGNORECASE,
     )
@@ -408,6 +422,7 @@ def _clean_design_prompt_anchor_source(design_prompt: str) -> str:
         r"^Full-body character design sheet for [^,，]+,\s*",
         r"\b(?:villain, sinister expression, dark presence|protagonist, determined expression, heroic bearing|supporting character, approachable expression)\b",
         r"character description:\s*",
+        rf"(?:^|,\s*|;\s*)(?:{_DESIGN_PROMPT_ANCHOR_BOUNDARY}).*$",
         r",?\s*show front view, side profile, and back view of the same character on one sheet\b",
         r",?\s*show the complete outfit from head to toe\b",
         r",?\s*full body in all three views\b",
@@ -452,6 +467,15 @@ def build_character_reference_anchor(
             merged.append(normalized_bit)
         return "; ".join(merged)
 
+    def _compose_fallback_description(*parts: str) -> str:
+        merged: list[str] = []
+        for part in parts:
+            normalized_part = _collapse_spaces(part)
+            if not normalized_part or normalized_part in merged:
+                continue
+            merged.append(normalized_part)
+        return "; ".join(merged)
+
     normalized_description = _collapse_spaces(description)
     visual_dna_body = sanitize_body_features(
         get_character_visual_dna(character_images, character_id, name=name),
@@ -461,6 +485,10 @@ def build_character_reference_anchor(
     prompt_description = _extract_design_prompt_description(design_prompt)
     prompt_anchor_source = _clean_design_prompt_anchor_source(design_prompt)
     prompt_fallback_description = prompt_description or prompt_anchor_source or normalized_description
+    composed_prompt_fallback_description = _compose_fallback_description(
+        prompt_description or prompt_anchor_source,
+        normalized_description,
+    )
     if visual_dna_body:
         clothing = sanitize_default_clothing(
             "",
@@ -472,11 +500,11 @@ def build_character_reference_anchor(
 
     body = sanitize_body_features(
         prompt_description,
-        fallback_description=prompt_fallback_description,
+        fallback_description=composed_prompt_fallback_description,
     )
     clothing = sanitize_default_clothing(
         "",
-        fallback_description=prompt_fallback_description,
+        fallback_description=composed_prompt_fallback_description,
     )
     merged = _merge_visual_bits(body, clothing)
     if merged:

@@ -90,7 +90,7 @@ const showKeyModal = ref(false)
 const keyModalType = ref('missing')
 const keyModalMsg = ref('')
 const done = computed(() => store.step3Done && store.scenes.length > 0)
-const started = computed(() => streaming.value || done.value)
+const started = computed(() => streaming.value || done.value || store.scenes.length > 0)
 
 let scriptAbortController = null
 onUnmounted(() => { scriptAbortController?.abort() })
