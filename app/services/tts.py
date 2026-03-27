@@ -6,6 +6,7 @@ from pathlib import Path
 import edge_tts
 
 import re
+from app.services.ffmpeg import resolve_media_binary
 
 # Output directory for audio files
 AUDIO_DIR = Path("media/audio")
@@ -92,8 +93,9 @@ async def generate_tts_batch(
 async def _get_audio_duration(path: Path) -> float:
     """Get audio duration in seconds using ffprobe if available, else estimate."""
     try:
+        ffprobe_bin = resolve_media_binary("ffprobe")
         proc = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "error",
+            ffprobe_bin, "-v", "error",
             "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1",
             str(path),

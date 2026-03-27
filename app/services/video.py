@@ -12,7 +12,6 @@ import httpx
 
 from app.core.api_keys import inject_art_style
 from app.services.video_providers.factory import get_video_provider
-from app.services.ffmpeg import extract_last_frame
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +20,7 @@ VIDEO_DIR.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_MODEL = "wan2.6-i2v-flash"
 DEFAULT_PROVIDER = "dashscope"
+DUAL_FRAME_PROVIDERS = {"doubao"}
 
 
 def _versioned_media_name(stem: str, suffix: str) -> str:
@@ -135,6 +135,39 @@ async def generate_video(
     }
 
 
+def supports_dual_frame_provider(provider: str) -> bool:
+    return (provider or "").strip().lower() in DUAL_FRAME_PROVIDERS
+
+
+async def generate_transition_video(
+    *,
+    transition_id: str,
+    first_frame_url: str,
+    last_frame_url: str,
+    prompt: str,
+    model: str = DEFAULT_MODEL,
+    video_api_key: str = "",
+    video_base_url: str = "",
+    video_provider: str = DEFAULT_PROVIDER,
+    negative_prompt: str = "",
+) -> dict:
+    if not supports_dual_frame_provider(video_provider):
+        raise ValueError(f"provider {video_provider or DEFAULT_PROVIDER} does not support dual-frame transitions")
+    if not first_frame_url or not last_frame_url:
+        raise ValueError("transition video requires both first_frame_url and last_frame_url")
+    return await generate_video(
+        image_url=first_frame_url,
+        prompt=prompt,
+        shot_id=transition_id,
+        model=model,
+        video_api_key=video_api_key,
+        video_base_url=video_base_url,
+        video_provider=video_provider,
+        last_frame_url=last_frame_url,
+        negative_prompt=negative_prompt,
+    )
+
+
 async def generate_videos_batch(
     shots: list[dict],
     base_url: str,
@@ -148,7 +181,7 @@ async def generate_videos_batch(
     Generate videos for all shots concurrently.
 
     Each shot must have: shot_id, image_url (relative), final_video_prompt.
-    Optional: last_frame_url (relative) - 如果提供，启用双帧过渡模式。
+    Phase 4 mainline: always use single-frame I2V for normal storyboard shots.
 
     base_url: server base URL to convert relative image_url to absolute.
     """
@@ -161,7 +194,7 @@ async def generate_videos_batch(
             video_api_key=video_api_key,
             video_base_url=video_base_url,
             video_provider=video_provider,
-            last_frame_url=f"{base_url}{shot['last_frame_url']}" if shot.get("last_frame_url") else "",
+            last_frame_url="",
             negative_prompt=shot.get("negative_prompt", ""),
         )
         for shot in shots
@@ -198,8 +231,9 @@ async def generate_videos_chained(
     on_progress: Optional[Callable] = None,
 ) -> list[dict]:
     """
-    链式视频生成：同一场景内串行（首帧独立生图 → 图到视频 → 提取最后一帧 → 下一帧），
-    不同场景之间并行。
+    Phase 4:
+    按场景分组执行，但主镜头统一走单首帧 I2V。
+    不再提取上一镜头尾帧，也不再把 last-frame 传给下一镜头。
 
     Args:
         shots: 镜头列表，每个 dict 需含 shot_id, final_video_prompt，可选 image_prompt
@@ -217,8 +251,6 @@ async def generate_videos_chained(
 
     async def _process_scene(scene_key: str, scene_shots: list[dict]) -> list[dict]:
         results = []
-        prev_frame_path: Optional[str] = None
-
         for idx, shot in enumerate(scene_shots):
             shot_id = shot["shot_id"]
             image_prompt = shot.get("image_prompt") or shot.get("visual_prompt") or shot.get("final_video_prompt", "")
@@ -227,29 +259,17 @@ async def generate_videos_chained(
             if on_progress:
                 await on_progress(scene_key, idx, len(scene_shots), shot_id)
 
-            # 生成参考图：首帧独立生图，后续帧使用上一镜头的最后一帧
-            if prev_frame_path is None:
-                # 场景首帧：独立生图
-                img_result = await generate_image(
-                    visual_prompt=image_prompt,
-                    shot_id=shot_id,
-                    model=image_model,
-                    image_api_key=image_api_key,
-                    image_base_url=image_base_url,
-                    negative_prompt=shot.get("negative_prompt", ""),
-                )
-                image_url_for_video = f"{base_url}{img_result['image_url']}"
-                local_image_url = img_result["image_url"]
-            else:
-                # 后续帧：使用上一镜头最后一帧作为参考
-                # prev_frame_path 是上一镜头的 lastframe 文件路径
-                lastframe_name = Path(prev_frame_path).name
-                image_url_for_video = f"{base_url}/media/images/{lastframe_name}"
-                # 复制最后一帧为当前 shot 的图片（用于结果展示）
-                from shutil import copy2
-                lastframe_as_shot = Path("media/images") / f"{shot_id}.png"
-                copy2(prev_frame_path, lastframe_as_shot)
-                local_image_url = f"/media/images/{shot_id}.png"
+            img_result = await generate_image(
+                visual_prompt=image_prompt,
+                shot_id=shot_id,
+                model=image_model,
+                image_api_key=image_api_key,
+                image_base_url=image_base_url,
+                negative_prompt=shot.get("negative_prompt", ""),
+                reference_images=shot.get("reference_images"),
+            )
+            image_url_for_video = f"{base_url}{img_result['image_url']}"
+            local_image_url = img_result["image_url"]
 
             # 图到视频
             video_result = await generate_video(
@@ -262,15 +282,6 @@ async def generate_videos_chained(
                 video_provider=video_provider,
                 negative_prompt=shot.get("negative_prompt", ""),
             )
-
-            # 提取最后一帧供下一镜头使用
-            try:
-                prev_frame_path = await extract_last_frame(
-                    video_result["video_path"], shot_id
-                )
-            except (FileNotFoundError, RuntimeError) as exc:
-                logger.warning("提取最后一帧失败 (%s)，下一镜头将独立生图: %s", shot_id, exc)
-                prev_frame_path = None
 
             results.append({
                 "shot_id": shot_id,

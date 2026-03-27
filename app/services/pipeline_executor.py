@@ -40,6 +40,7 @@ class PipelineExecutor:
         self.character_info: Optional[dict] = None
         self.art_style: str = ""
         self.story_context: Optional[StoryContext] = None
+        self.story: Optional[dict] = None
         self.strategy: GenerationStrategy = GenerationStrategy.SEPARATED
         self.runtime_strategy_metadata: dict[str, object] = {}
 
@@ -71,9 +72,10 @@ class PipelineExecutor:
         self.strategy = strategy
         self.runtime_strategy_metadata = build_runtime_strategy_metadata(strategy)
         self.story_context = None
+        self.story = None
         effective_story_id = (story_id or self.story_id or "").strip()
         if effective_story_id:
-            _, self.story_context = await prepare_story_context(
+            self.story, self.story_context = await prepare_story_context(
                 self.db,
                 effective_story_id,
                 provider=provider,
@@ -228,7 +230,6 @@ class PipelineExecutor:
                     "shot_id": shot.shot_id,
                     "image_url": image_map[shot.shot_id]["image_url"],
                     "final_video_prompt": payload["final_video_prompt"],
-                    "last_frame_url": image_map[shot.shot_id].get("last_frame_url"),
                     "negative_prompt": payload.get("negative_prompt", ""),
                 }
             )
@@ -304,7 +305,6 @@ class PipelineExecutor:
                     "storyboard_description": visual_prompt,
                     "image_prompt": visual_prompt,
                     "final_video_prompt": visual_prompt,
-                    "last_frame_prompt": visual_prompt,
                     "visual_elements": {
                         "subject_and_clothing": visual_prompt,
                         "action_and_expression": visual_prompt,
@@ -320,7 +320,7 @@ class PipelineExecutor:
 
     @classmethod
     def _build_image_prompts(cls, shot: Shot, character_info: Optional[dict]) -> dict:
-        """构建静态首帧/尾帧提示词，并统一注入角色外观增强。"""
+        """构建静态首帧提示词，并统一注入角色外观增强。"""
         prompts = {
             "shot_id": shot.shot_id,
             "image_prompt": cls._enhance_prompt_with_character(
@@ -329,12 +329,6 @@ class PipelineExecutor:
                 shot,
             ),
         }
-        if shot.last_frame_prompt:
-            prompts["last_frame_prompt"] = cls._enhance_prompt_with_character(
-                shot.last_frame_prompt,
-                character_info,
-                shot,
-            )
         return prompts
 
     @classmethod
@@ -347,19 +341,19 @@ class PipelineExecutor:
         )
 
     def _build_generation_payload(self, shot: Shot) -> dict:
-        payload = build_generation_payload(shot, self.story_context, art_style=self.art_style)
-        if self.story_context:
+        payload = build_generation_payload(
+            shot,
+            self.story_context,
+            art_style=self.art_style,
+            story=self.story,
+        )
+        if self.story_context or self.story:
             return payload
 
         # Fallback for legacy no-story-id flows. Keep the old enhancement path available
         # until all entry points consistently pass through StoryContext.
         legacy_payload = self._build_image_prompts(shot, self.character_info)
         legacy_payload["image_prompt"] = inject_art_style(legacy_payload["image_prompt"], self.art_style)
-        if legacy_payload.get("last_frame_prompt"):
-            legacy_payload["last_frame_prompt"] = inject_art_style(
-                legacy_payload["last_frame_prompt"],
-                self.art_style,
-            )
         legacy_payload["final_video_prompt"] = inject_art_style(
             self._build_video_prompt(shot, self.character_info),
             self.art_style,
@@ -379,9 +373,9 @@ class PipelineExecutor:
         video_provider: str = "dashscope",
     ):
         """
-        策略 C: 链式
-        TTS → 场景内链式帧传递（首帧独立生图 → 图到视频 → 提取最后一帧 → 下一帧）
-        不同场景之间并行，同一场景内串行
+        策略 C: 按场景分组执行
+        TTS -> 首帧生图 -> 单首帧 I2V
+        保留场景维度的执行节奏，但不再做尾帧传递
         """
         total = len(self.shots)
 
@@ -540,7 +534,6 @@ class PipelineExecutor:
                     "shot_id": shot.shot_id,
                     "image_url": image_map[shot.shot_id]["image_url"],
                     "final_video_prompt": payload["final_video_prompt"],
-                    "last_frame_url": image_map[shot.shot_id].get("last_frame_url"),
                     "negative_prompt": payload.get("negative_prompt", ""),
                 }
             )

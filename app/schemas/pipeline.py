@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Literal
 from enum import Enum
 
 
@@ -104,6 +104,39 @@ class AutoGenerateResponse(BaseModel):
     message: str
     strategy: GenerationStrategy
     note: Optional[str] = None
+
+
+class TransitionGenerateRequest(BaseModel):
+    pipeline_id: str
+    story_id: Optional[str] = None
+    from_shot_id: str
+    to_shot_id: str
+    transition_prompt: Optional[str] = None
+    duration_seconds: int = 2
+    model: Optional[str] = None
+
+
+class TransitionFrameSource(BaseModel):
+    shot_id: str
+    video_url: str
+    frame_role: Literal["from_last", "to_first"]
+    extracted_image_url: str
+
+
+class TransitionResult(BaseModel):
+    transition_id: str
+    from_shot_id: str
+    to_shot_id: str
+    prompt: Optional[str] = None
+    duration_seconds: int = 2
+    video_url: str
+    first_frame_source: TransitionFrameSource
+    last_frame_source: TransitionFrameSource
+
+
+class TimelineItem(BaseModel):
+    item_type: Literal["shot", "transition"]
+    item_id: str
 
 
 class ConcatRequest(BaseModel):

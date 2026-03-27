@@ -512,13 +512,62 @@ def _postprocess_shot(shot: Shot) -> Shot:
         else:
             raise ValueError(f"shot {shot.shot_id} has no image prompt available")
 
-    if shot.last_frame_prompt:
-        shot.last_frame_prompt = _normalize_image_prompt(shot.last_frame_prompt)
+    # Phase 4: main storyboard shots now use single-frame I2V only.
+    # Keep transition data out of the core shot payload to avoid dual-frame pollution.
+    shot.last_frame_prompt = None
+    shot.last_frame_url = None
 
     return shot
 
 
-def _parse_shots(raw: str) -> List[Shot]:
+def _extract_scene_index_from_shot_id(shot_id: str) -> int | None:
+    match = re.match(r"scene(\d+)_shot\d+$", _collapse_spaces(shot_id), flags=re.IGNORECASE)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _build_scene_mapping(script: str) -> dict[int, str]:
+    current_episode = 1
+    scene_index = 0
+    mapping: dict[int, str] = {}
+    for raw_line in (script or "").splitlines():
+        line = _collapse_spaces(raw_line)
+        if not line:
+            continue
+        episode_match = re.search(r"第\s*(\d+)\s*集", line)
+        if episode_match:
+            current_episode = int(episode_match.group(1))
+            continue
+        scene_match = re.search(r"(?:【\s*场景\s*(\d+)\s*】|^##\s*场景\s*(\d+)\s*$)", line)
+        if not scene_match:
+            continue
+        scene_index += 1
+        scene_number = int(scene_match.group(1) or scene_match.group(2))
+        mapping[scene_index] = f"ep{current_episode:02d}_scene{scene_number:02d}"
+    return mapping
+
+
+def _build_scene_mapping_section(script: str) -> str:
+    scene_mapping = _build_scene_mapping(script)
+    if not scene_mapping:
+        return (
+            "SCENE SOURCE MAP:\n"
+            "- If the script excerpt contains only one episode, infer `source_scene_key` as epXX_sceneYY.\n"
+            "- If scene origin is ambiguous, keep `source_scene_key` consistent with the shot's best source scene.\n"
+        )
+    lines = [
+        "SCENE SOURCE MAP:",
+        "- Use the exact mapping below.",
+        "- `shot_id` must use this map's scene order: scene1, scene2, scene3...",
+        "- `source_scene_key` must copy the mapped key exactly for every shot.",
+    ]
+    for scene_index, source_scene_key in scene_mapping.items():
+        lines.append(f"- scene{scene_index} -> {source_scene_key}")
+    return "\n".join(lines)
+
+
+def _parse_shots(raw: str, *, scene_mapping: Optional[dict[int, str]] = None) -> List[Shot]:
     """解析 LLM 输出为 Shot 列表，兼容新旧两种 JSON 格式。"""
     cleaned = re.sub(r"```(?:json)?|```", "", raw).strip()
     data = json.loads(cleaned)
@@ -575,6 +624,13 @@ def _parse_shots(raw: str) -> List[Shot]:
             ve.setdefault("lighting_and_color", "")
         if "scene_intensity" not in item:
             item["scene_intensity"] = "low"
+        shot_scene_index = _extract_scene_index_from_shot_id(str(item.get("shot_id", "")))
+        if shot_scene_index is not None:
+            mapped_scene_key = (scene_mapping or {}).get(shot_scene_index)
+            if mapped_scene_key:
+                item["source_scene_key"] = mapped_scene_key
+            elif "source_scene_key" not in item or not _collapse_spaces(item.get("source_scene_key", "")):
+                item["source_scene_key"] = f"scene{shot_scene_index}"
         # 清理旧格式残留的顶层字段，避免 Pydantic 报错
         for old_key in ("shot_size", "camera_motion", "dialogue",
                         "visual_prompt", "visual_description_zh"):
@@ -608,6 +664,8 @@ async def parse_script_to_storyboard(
         tuple: (list of Shot objects, usage dict with prompt_tokens and completion_tokens)
     """
     character_section = character_section_override or build_character_section(character_info)
+    scene_mapping = _build_scene_mapping(script)
+    scene_mapping_section = _build_scene_mapping_section(script)
     llm = get_llm_provider(provider, model=model, api_key=api_key, base_url=base_url)
     try:
         raw, usage = await llm.complete_messages_with_usage(
@@ -617,6 +675,7 @@ async def parse_script_to_storyboard(
                     "role": "user",
                     "content": USER_TEMPLATE.format(
                         character_section=character_section,
+                        scene_mapping_section=scene_mapping_section,
                         script="[SCRIPT PROVIDED IN THE NEXT MESSAGE]",
                     ),
                     "cacheable": True,
@@ -642,5 +701,5 @@ async def parse_script_to_storyboard(
             f"Storyboard LLM request failed (provider={provider}, model={model or '(default)'}, "
             f"base_url={resolved_base_url}): {exc}"
         ) from exc
-    shots = _parse_shots(raw)
+    shots = _parse_shots(raw, scene_mapping=scene_mapping)
     return shots, usage

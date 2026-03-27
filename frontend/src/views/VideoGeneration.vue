@@ -14,7 +14,7 @@
             <h3>从 Step4 导入的剧本</h3>
           </div>
           <div class="header-right">
-            <span class="scene-count">已选择 {{ selectedCount }}/{{ totalScenes }} 个场景</span>
+            <span class="scene-count">已选择 {{ selectedCount }}/{{ totalScenes }} 个场景 · 环境图组 {{ readyEpisodeReferenceCount }}/{{ storyStore.scenes.length }}</span>
           </div>
         </div>
 
@@ -47,6 +47,60 @@
               <span class="ep-badge">第 {{ ep.episode }} 集</span>
               <span class="ep-title">{{ ep.title }}</span>
               <span class="ep-count">{{ getEpisodeSelectedCount(ep.episode) }}/{{ ep.scenes.length }}</span>
+            </div>
+
+            <div class="episode-key-art-panel">
+              <div class="episode-key-art-top">
+                <div>
+                  <div class="episode-key-art-title">本集共享环境图组</div>
+                  <div class="episode-key-art-subtitle">同集相似场景共用一组图，每组只生成一张主场景参考图，差异大的场景会额外拆组</div>
+                </div>
+                <span class="episode-key-art-status" :class="getEpisodeReferenceStatus(ep.episode)">
+                  {{ formatSceneReferenceStatus(getEpisodeReferenceStatus(ep.episode)) }}
+                </span>
+              </div>
+              <div v-if="getEpisodeReferenceGroups(ep.episode).length" class="episode-key-art-group-list">
+                <div
+                  v-for="group in getEpisodeReferenceGroups(ep.episode)"
+                  :key="group.environment_pack_key"
+                  class="episode-key-art-group"
+                >
+                  <div class="episode-key-art-group-top">
+                    <div class="episode-key-art-group-title">{{ group.group_label || '环境组' }}</div>
+                    <div class="episode-key-art-group-copy">
+                      覆盖场景：{{ formatSceneNumbers(group.affected_scene_numbers) }} · {{ group.summary_environment || '主环境' }}
+                    </div>
+                  </div>
+                  <div class="episode-key-art-grid">
+                    <div
+                      class="episode-key-art-card"
+                    >
+                      <img
+                        v-if="group.variants?.scene?.image_url"
+                        :src="getMediaUrl(group.variants.scene.image_url)"
+                        class="episode-key-art-image"
+                      />
+                      <div v-else class="episode-key-art-placeholder">Scene Reference</div>
+                      <div class="episode-key-art-label">主场景参考图</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div v-else class="episode-key-art-empty">
+                还没有生成环境组。点击下方按钮后，会按本集场景环境自动拆成 1 组或多组。
+              </div>
+              <div class="episode-key-art-actions">
+                <button
+                  class="episode-key-art-btn"
+                  :disabled="getEpisodeReferenceStatus(ep.episode) === 'loading'"
+                  @click.stop="generateEpisodeReference(ep)"
+                >
+                  {{ getEpisodeReferenceGroups(ep.episode).length ? '重新生成本集环境图组' : '生成本集环境图组' }}
+                </button>
+                <span v-if="getEpisodeReferenceError(ep.episode)" class="episode-key-art-error">
+                  {{ getEpisodeReferenceError(ep.episode) }}
+                </span>
+              </div>
             </div>
 
             <!-- 场景列表 -->
@@ -89,6 +143,12 @@
                   <div class="scene-row">
                     <span class="scene-tag">【画面】</span>
                     <span class="scene-text">{{ scene.visual }}</span>
+                  </div>
+                  <div class="scene-reference-usage">
+                    <span class="scene-reference-usage-label">环境图组</span>
+                    <span class="scene-reference-usage-value">
+                      {{ getSceneReferenceGroupLabel(ep.episode, scene.scene_number) }} · {{ formatSceneReferenceStatus(getSceneReferenceAsset(ep.episode, scene.scene_number).status) }}
+                    </span>
                   </div>
 
                   <!-- 台词 -->
@@ -230,7 +290,7 @@
           </div>
         </div>
         <div class="transition-note">
-          过渡视频能力当前仅展示前端 UI。这里先预留相邻镜头之间的插槽和状态文案，暂不调用后端接口，也不会改变现有生成与导出逻辑。
+          过渡视频现已接入后端。双帧只用于 transition，本页会从相邻两个主镜头视频中抽取对应帧，不影响普通主镜头生成链路。
         </div>
         <div class="shots-grid">
           <template v-for="item in storyboardFlowItems" :key="item.key">
@@ -288,8 +348,8 @@
                   <span class="transition-kicker">Transition Slot</span>
                   <div class="transition-title-row">
                     <div class="transition-title">过渡视频</div>
-                    <span class="transition-status-badge" :class="{ ready: item.ready }">
-                      {{ item.ready ? 'Ready' : 'Pending' }}
+                    <span class="transition-status-badge" :class="{ ready: item.ready || !!item.result?.video_url }">
+                      {{ item.loading ? 'Generating' : (item.result?.video_url ? 'Generated' : (item.ready ? 'Ready' : 'Pending')) }}
                     </span>
                   </div>
                 </div>
@@ -297,10 +357,10 @@
               </div>
               <div class="transition-preview-strip">
                 <div class="transition-frame">
-                  <div class="transition-frame-label">前镜尾部</div>
+                  <div class="transition-frame-label">前镜参考帧</div>
                   <img
-                    v-if="item.fromShot.last_frame_url || item.fromShot.image_url"
-                    :src="getMediaUrl(item.fromShot.last_frame_url || item.fromShot.image_url)"
+                    v-if="item.result?.first_frame_source?.extracted_image_url || item.fromShot.image_url"
+                    :src="getMediaUrl(item.result?.first_frame_source?.extracted_image_url || item.fromShot.image_url)"
                     class="transition-frame-image"
                   />
                   <div v-else class="transition-frame-placeholder">等待首帧素材</div>
@@ -312,30 +372,43 @@
                 <div class="transition-frame">
                   <div class="transition-frame-label">后镜首部</div>
                   <img
-                    v-if="item.toShot.image_url"
-                    :src="getMediaUrl(item.toShot.image_url)"
+                    v-if="item.result?.last_frame_source?.extracted_image_url || item.toShot.image_url"
+                    :src="getMediaUrl(item.result?.last_frame_source?.extracted_image_url || item.toShot.image_url)"
                     class="transition-frame-image"
                   />
                   <div v-else class="transition-frame-placeholder">等待目标首帧</div>
                 </div>
               </div>
+              <video
+                v-if="item.result?.video_url"
+                :src="getMediaUrl(item.result.video_url)"
+                controls
+                class="shot-video"
+              ></video>
               <p class="transition-copy">
-                {{ item.ready
-                  ? '前后镜头素材已就绪，可在这里插入过渡片段。当前仅展示 UI，不会真正发起生成。'
-                  : '等待前后镜头至少生成出图片或视频后，再进入可生成状态。当前仅保留界面占位。'
+                {{ item.result?.video_url
+                  ? '过渡视频已生成。当前会严格使用前镜最后一帧和后镜第一帧，避免主题漂移。'
+                  : item.ready
+                    ? '前后镜头视频已就绪，可以生成过渡片段。后端会只读取这两个相邻视频的对应帧。'
+                    : '等待前后镜头视频都准备好后，再进入可生成状态。'
                 }}
               </p>
               <div class="transition-meta">
                 <span class="transition-chip">建议时长 1-2s</span>
                 <span class="transition-pill" :class="{ active: !!item.fromShot.video_url }">前镜视频</span>
-                <span class="transition-pill" :class="{ active: !!(item.toShot.video_url || item.toShot.image_url) }">后镜首帧</span>
+                <span class="transition-pill" :class="{ active: !!item.toShot.video_url }">后镜视频</span>
               </div>
               <div class="transition-action-row">
-                <button class="transition-btn" :class="{ disabled: !item.ready }" @click="previewTransitionSlot(item)">
-                  {{ item.ready ? '生成过渡视频（UI预留）' : '过渡视频待就绪' }}
+                <button
+                  class="transition-btn"
+                  :class="{ disabled: !item.ready || item.loading }"
+                  :disabled="!item.ready || item.loading"
+                  @click="previewTransitionSlot(item)"
+                >
+                  {{ item.loading ? '生成中...' : (item.result?.video_url ? '重新生成过渡视频' : (item.ready ? '生成过渡视频' : '过渡视频待就绪')) }}
                 </button>
                 <span class="transition-hint">
-                  {{ item.ready ? '下一步可接后端生成接口' : '先补齐两侧素材' }}
+                  {{ item.result?.video_url ? '已接入后端，可重新生成覆盖当前结果' : (item.ready ? '将从两侧视频中抽取对应帧' : '先补齐两侧视频') }}
                 </span>
               </div>
             </div>
@@ -358,7 +431,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSettingsStore } from '../stores/settings.js'
 import { useStoryStore } from '../stores/story.js'
-import { getHeaders, getPipelineStatus } from '../api/story.js'
+import { generateEpisodeSceneReference, generatePipelineTransition, getHeaders, getPipelineStatus } from '../api/story.js'
 import StepIndicator from '../components/StepIndicator.vue'
 import ApiKeyModal from '../components/ApiKeyModal.vue'
 
@@ -404,12 +477,32 @@ onUnmounted(() => {
 
 // 视频拼接
 const concatLoading = ref(false)
-const concatVideoUrl = ref('')
+const concatVideoUrl = ref(storyStore.storyboardFinalVideoUrl || storyStore.meta?.storyboard_generation?.final_video_url || '')
 const manualProjectId = ref(storyStore.manualProjectId || storyStore.storyId || '')
 const manualPipelineId = ref(storyStore.manualPipelineId || '')
 const manualStoryId = ref(storyStore.manualStoryId || storyStore.storyId || '')
+const transitionLoadingMap = ref({})
 
 const hasAnyVideo = computed(() => shots.value.some(s => s.video_url))
+const transitionResults = computed(() => {
+  const generatedFiles = storyStore.meta?.storyboard_generation?.generated_files
+  return generatedFiles?.transitions && typeof generatedFiles.transitions === 'object'
+    ? generatedFiles.transitions
+    : {}
+})
+const transitionTimeline = computed(() => {
+  const generatedFiles = storyStore.meta?.storyboard_generation?.generated_files
+  return Array.isArray(generatedFiles?.timeline) ? generatedFiles.timeline : []
+})
+
+function buildTransitionId(fromShotId, toShotId) {
+  return `transition_${fromShotId}__${toShotId}`
+}
+
+function effectivePipelineId() {
+  return manualPipelineId.value || storyStore.meta?.storyboard_generation?.pipeline_id || ''
+}
+
 const storyboardFlowItems = computed(() => {
   const items = []
   for (let i = 0; i < shots.value.length; i += 1) {
@@ -422,13 +515,18 @@ const storyboardFlowItems = computed(() => {
 
     const nextShot = shots.value[i + 1]
     if (!nextShot) continue
+    const transitionId = buildTransitionId(shot.shot_id, nextShot.shot_id)
+    const result = transitionResults.value[transitionId] || null
 
     items.push({
       type: 'transition',
       key: `transition-${shot.shot_id}-${nextShot.shot_id}`,
+      transitionId,
       fromShot: shot,
       toShot: nextShot,
-      ready: !!shot.video_url && !!(nextShot.video_url || nextShot.image_url),
+      result,
+      loading: !!transitionLoadingMap.value[transitionId],
+      ready: !!shot.video_url && !!nextShot.video_url,
     })
   }
   return items
@@ -503,7 +601,6 @@ function updateShotsFromGeneratedFiles(generatedFiles = {}, { replaceStoryboard 
   Object.values(generatedFiles.images || {}).forEach(result => {
     updateShot(result.shot_id, shot => {
       shot.image_url = result.image_url
-      shot.last_frame_url = result.last_frame_url || null
     })
   })
 
@@ -515,7 +612,19 @@ function updateShotsFromGeneratedFiles(generatedFiles = {}, { replaceStoryboard 
 
   if (generatedFiles.final_video_url) {
     concatVideoUrl.value = generatedFiles.final_video_url
+    storyStore.setStoryboardFinalVideoUrl(generatedFiles.final_video_url)
   }
+
+  storyStore.syncStoryboardGenerationMeta({
+    generatedFiles,
+  })
+  storyStore.syncStoryboardGenerationMeta({
+    shots: shots.value,
+    finalVideoUrl: concatVideoUrl.value,
+    projectId: manualProjectId.value || storyStore.storyId || '',
+    pipelineId: manualPipelineId.value || '',
+    storyId: manualStoryId.value || storyStore.storyId || '',
+  })
 }
 
 async function pollManualPipeline({ projectId, pipelineId, storyId, isDone, timeoutMs = 180000, intervalMs = 1200 }) {
@@ -586,6 +695,13 @@ async function restoreLatestPipelineState() {
 const hasStoryData = computed(() => {
   return storyStore.scenes && storyStore.scenes.length > 0
 })
+const readyEpisodeReferenceCount = computed(() =>
+  storyStore.scenes.filter(episode =>
+    (episode.scenes || []).some(scene =>
+      storyStore.sceneReferenceAssets?.[storyStore.getSceneKey(episode.episode, scene.scene_number)]?.status === 'ready'
+    )
+  ).length
+)
 
 const hasManualScript = computed(() => {
   return !!(pastedScript.value.trim() || uploadedScript.value.trim())
@@ -607,6 +723,70 @@ const totalScenes = computed(() => {
 })
 
 const totalDuration = computed(() => shots.value.reduce((sum, s) => sum + s.estimated_duration, 0))
+function getSceneReferenceAsset(episode, sceneNumber) {
+  return storyStore.sceneReferenceAssets?.[storyStore.getSceneKey(episode, sceneNumber)] || {
+    status: 'idle',
+    variants: {},
+    error: '',
+  }
+}
+
+function getEpisodeReferenceSceneNumber(episode) {
+  const episodeData = storyStore.scenes.find(item => item.episode === episode)
+  return episodeData?.scenes?.[0]?.scene_number || 1
+}
+
+function getEpisodeReferenceGroups(episode) {
+  return storyStore.getEpisodeSceneReferenceGroups(episode)
+}
+
+function getEpisodeReferenceStatus(episode) {
+  const groups = getEpisodeReferenceGroups(episode)
+  if (groups.some(group => group.status === 'loading')) return 'loading'
+  if (groups.some(group => group.status === 'failed')) return 'failed'
+  if (groups.length > 0 && groups.every(group => group.status === 'ready')) return 'ready'
+  return getSceneReferenceAsset(episode, getEpisodeReferenceSceneNumber(episode)).status || 'idle'
+}
+
+function getEpisodeReferenceError(episode) {
+  return getEpisodeReferenceGroups(episode).find(group => group.error)?.error || ''
+}
+
+function getSceneReferenceGroupLabel(episode, sceneNumber) {
+  const asset = getSceneReferenceAsset(episode, sceneNumber)
+  if (!asset.environment_pack_key) return '待匹配环境组'
+  const sceneNumbers = Array.isArray(asset.affected_scene_numbers)
+    ? asset.affected_scene_numbers.map(number => String(number).padStart(2, '0')).join(' / ')
+    : '--'
+  return `${asset.group_label || asset.environment_pack_key} · 场景 ${sceneNumbers}`
+}
+
+function formatSceneNumbers(numbers = []) {
+  return numbers.length ? numbers.map(number => String(number).padStart(2, '0')).join(' / ') : '--'
+}
+
+function formatSceneReferenceStatus(status) {
+  return {
+    idle: '未生成',
+    loading: '生成中',
+    ready: '已就绪',
+    failed: '失败',
+    stale: '需刷新',
+  }[status] || '未生成'
+}
+
+async function generateEpisodeReference(episode) {
+  const seedScene = episode?.scenes?.[0]
+  if (!seedScene) return
+  storyStore.setEpisodeSceneReferenceStatus(episode.episode, 'loading', '')
+  try {
+    const forceRegenerate = storyStore.getEpisodeSceneReferenceGroups(episode.episode).length > 0
+    const result = await generateEpisodeSceneReference(storyStore.storyId, episode.episode, { forceRegenerate })
+    storyStore.applyEpisodeSceneReferenceAsset(result)
+  } catch (error) {
+    storyStore.setEpisodeSceneReferenceStatus(episode.episode, 'failed', error.message || '环境图生成失败')
+  }
+}
 
 // 场景选择相关函数
 function initSelectedScenes() {
@@ -953,7 +1133,7 @@ function getBackendUrl() {
 
 function getMediaUrl(path) {
   if (!path) return ''
-  if (path.startsWith('http')) return path
+  if (path.startsWith('http') || path.startsWith('data:')) return path
   return `${getBackendUrl()}${path}`
 }
 
@@ -983,12 +1163,65 @@ function hasSpeechAudio(shot) {
 }
 
 function previewTransitionSlot(item) {
+  return generateTransitionForSlot(item)
+}
+
+async function generateTransitionForSlot(item) {
   if (!item?.fromShot || !item?.toShot) return
-  if (item.ready) {
-    transitionMessage.value = `过渡视频 UI 已预留：${item.fromShot.shot_id} -> ${item.toShot.shot_id}。当前版本仅展示前端界面，后端生成接口暂未接入。`
+  if (!item.ready) {
+    const missing = []
+    if (!item.fromShot.video_url) missing.push(item.fromShot.shot_id)
+    if (!item.toShot.video_url) missing.push(item.toShot.shot_id)
+    transitionMessage.value = `过渡槽位尚未就绪：请先为 ${missing.join(' 和 ')} 生成视频。`
     return
   }
-  transitionMessage.value = `过渡槽位尚未就绪：请先为 ${item.fromShot.shot_id} 生成视频，并为 ${item.toShot.shot_id} 生成图片或视频。`
+
+  const pipelineId = effectivePipelineId()
+  if (!pipelineId) {
+    error.value = '当前还没有可用的 pipeline_id，请先完成分镜解析。'
+    return
+  }
+
+  const transitionId = item.transitionId || buildTransitionId(item.fromShot.shot_id, item.toShot.shot_id)
+  transitionLoadingMap.value = {
+    ...transitionLoadingMap.value,
+    [transitionId]: true,
+  }
+  error.value = ''
+  transitionMessage.value = ''
+
+  try {
+    const projectId = resolveManualProjectId()
+    const result = await generatePipelineTransition(projectId, {
+      pipeline_id: pipelineId,
+      story_id: effectiveStoryId(),
+      from_shot_id: item.fromShot.shot_id,
+      to_shot_id: item.toShot.shot_id,
+      transition_prompt: item.toShot.transition_from_previous || '',
+      duration_seconds: 2,
+      ...(settings.effectiveVideoModel ? { model: settings.effectiveVideoModel } : {}),
+    })
+
+    const state = await getPipelineStatus(projectId, {
+      pipelineId,
+      storyId: effectiveStoryId(),
+    })
+    rememberManualPipelineContext({
+      projectId,
+      pipelineId: state.pipeline_id || pipelineId,
+      storyId: state.story_id || effectiveStoryId(),
+    })
+    updateShotsFromGeneratedFiles(state.generated_files)
+    transitionMessage.value = `过渡视频已生成：${result.from_shot_id} -> ${result.to_shot_id}`
+  } catch (err) {
+    console.error('Transition generation failed:', err)
+    error.value = '过渡视频生成失败：' + (err.message || '请求失败')
+  } finally {
+    transitionLoadingMap.value = {
+      ...transitionLoadingMap.value,
+      [transitionId]: false,
+    }
+  }
 }
 
 async function generateOneTTS(shotId) {
@@ -999,10 +1232,16 @@ async function generateOneTTS(shotId) {
 
   shot.ttsLoading = true
   try {
-    const res = await fetch(`${getBackendUrl()}/api/v1/tts/${generateUniqueId()}/generate`, {
+    const projectId = resolveManualProjectId()
+    const res = await fetch(`${getBackendUrl()}/api/v1/tts/${projectId}/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...getHeaders() },
-      body: JSON.stringify({ shots: [shot], voice: selectedVoice.value })
+      body: JSON.stringify({
+        shots: [shot],
+        voice: selectedVoice.value,
+        story_id: effectiveStoryId(),
+        pipeline_id: effectivePipelineId() || undefined,
+      })
     })
     if (!res.ok) {
       const errData = await res.json().catch(() => null)
@@ -1012,6 +1251,7 @@ async function generateOneTTS(shotId) {
     const r = results[0]
     shot.audio_url = r.audio_url
     shot.audio_duration = r.duration_seconds
+    storyStore.syncStoryboardGenerationMeta({ shots: shots.value })
   } catch (err) {
     if (!isMounted.value) return
     console.error('TTS failed:', err)
@@ -1101,12 +1341,14 @@ async function generateOneImage(shotId) {
 
   shot.imageLoading = true
   try {
-    const res = await fetch(`${getBackendUrl()}/api/v1/image/${generateUniqueId()}/generate`, {
+    const projectId = resolveManualProjectId()
+    const res = await fetch(`${getBackendUrl()}/api/v1/image/${projectId}/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...getHeaders() },
       body: JSON.stringify({
         shots: [shot],
         story_id: effectiveStoryId(),
+        pipeline_id: effectivePipelineId() || undefined,
         ...(settings.effectiveImageModel ? { model: settings.effectiveImageModel } : {}),
       })
     })
@@ -1117,7 +1359,7 @@ async function generateOneImage(shotId) {
     const results = await res.json()
     const r = results[0]
     shot.image_url = r.image_url
-    shot.last_frame_url = r.last_frame_url || null
+    storyStore.syncStoryboardGenerationMeta({ shots: shots.value })
   } catch (err) {
     if (!isMounted.value) return
     console.error('Image generation failed:', err)
@@ -1205,12 +1447,14 @@ async function generateOneVideo(shotId) {
 
   shot.videoLoading = true
   try {
-    const res = await fetch(`${getBackendUrl()}/api/v1/video/${generateUniqueId()}/generate`, {
+    const projectId = resolveManualProjectId()
+    const res = await fetch(`${getBackendUrl()}/api/v1/video/${projectId}/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...getHeaders() },
       body: JSON.stringify({
         shots: [shot],
         story_id: effectiveStoryId(),
+        pipeline_id: effectivePipelineId() || undefined,
         ...(settings.effectiveVideoModel ? { model: settings.effectiveVideoModel } : {}),
       })
     })
@@ -1221,6 +1465,7 @@ async function generateOneVideo(shotId) {
     const results = await res.json()
     const r = results[0]
     shot.video_url = r.video_url
+    storyStore.syncStoryboardGenerationMeta({ shots: shots.value })
   } catch (err) {
     if (!isMounted.value) return
     console.error('Video generation failed:', err)
@@ -1299,11 +1544,34 @@ async function generateAllVideos() {
 }
 
 async function concatAllVideos() {
-  const shotsWithVideo = shots.value
-    .filter(s => s.video_url)
-    .sort((a, b) => a.shot_id.localeCompare(b.shot_id))
+  const shotMap = Object.fromEntries(shots.value.filter(s => s?.shot_id).map(s => [s.shot_id, s]))
+  const orderedVideoUrls = []
 
-  if (shotsWithVideo.length === 0) return
+  if (transitionTimeline.value.length > 0) {
+    transitionTimeline.value.forEach(item => {
+      if (item?.item_type === 'shot') {
+        const videoUrl = shotMap[item.item_id]?.video_url
+        if (videoUrl) orderedVideoUrls.push(videoUrl)
+        return
+      }
+      if (item?.item_type === 'transition') {
+        const videoUrl = transitionResults.value[item.item_id]?.video_url
+        if (videoUrl) orderedVideoUrls.push(videoUrl)
+      }
+    })
+  } else {
+    storyboardFlowItems.value.forEach(item => {
+      if (item.type === 'shot' && item.shot?.video_url) {
+        orderedVideoUrls.push(item.shot.video_url)
+        return
+      }
+      if (item.type === 'transition' && item.result?.video_url) {
+        orderedVideoUrls.push(item.result.video_url)
+      }
+    })
+  }
+
+  if (orderedVideoUrls.length === 0) return
 
   concatLoading.value = true
   concatVideoUrl.value = ''
@@ -1322,7 +1590,7 @@ async function concatAllVideos() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...getHeaders() },
       body: JSON.stringify({
-        video_urls: shotsWithVideo.map(s => s.video_url)
+        video_urls: orderedVideoUrls
       })
     })
     if (!res.ok) {
@@ -1336,6 +1604,7 @@ async function concatAllVideos() {
       storyId: data.story_id || fallbackStoryId,
     })
     concatVideoUrl.value = data.video_url
+    storyStore.setStoryboardFinalVideoUrl(data.video_url)
   } catch (err) {
     console.error('Concat failed:', err)
     error.value = '视频拼接失败：' + (err.message || '请求失败')
@@ -1346,9 +1615,11 @@ async function concatAllVideos() {
 
 onMounted(async () => {
   loadVoices()
+  storyStore.ensureSceneReferenceAssets()
+  concatVideoUrl.value = storyStore.storyboardFinalVideoUrl || storyStore.meta?.storyboard_generation?.final_video_url || ''
   rememberManualPipelineContext({
-    projectId: storyStore.storyId || manualProjectId.value || '',
-    storyId: storyStore.storyId || manualStoryId.value || '',
+    projectId: manualProjectId.value || storyStore.storyId || '',
+    storyId: manualStoryId.value || storyStore.storyId || '',
   })
 
   await restoreLatestPipelineState()
@@ -1358,6 +1629,13 @@ onMounted(async () => {
     s.ttsLoading = false
     s.imageLoading = false
     s.videoLoading = false
+  })
+  storyStore.syncStoryboardGenerationMeta({
+    shots: storyStore.shots,
+    finalVideoUrl: concatVideoUrl.value,
+    projectId: manualProjectId.value || storyStore.storyId || '',
+    pipelineId: manualPipelineId.value || '',
+    storyId: manualStoryId.value || storyStore.storyId || '',
   })
 
   // 初始化场景选择
@@ -1627,6 +1905,191 @@ h1 {
 
 .scene-text {
   color: #333;
+}
+
+.episode-key-art-panel {
+  margin: 12px 16px 0;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid #ebe6ff;
+  background: linear-gradient(180deg, #fcfbff 0%, #f6f3ff 100%);
+}
+
+.episode-key-art-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.episode-key-art-title {
+  color: #2d2844;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.episode-key-art-subtitle {
+  color: #7f789c;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.episode-key-art-status {
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.episode-key-art-status.idle {
+  background: #f2efff;
+  color: #7566ce;
+}
+
+.episode-key-art-status.loading {
+  background: #fff3d9;
+  color: #9b6c00;
+}
+
+.episode-key-art-status.ready {
+  background: #e8f8ec;
+  color: #217849;
+}
+
+.episode-key-art-status.failed {
+  background: #ffe7e7;
+  color: #c03d3d;
+}
+
+.episode-key-art-status.stale {
+  background: #eef1ff;
+  color: #5465c5;
+}
+
+.episode-key-art-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.episode-key-art-group-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.episode-key-art-group {
+  border-radius: 10px;
+  border: 1px solid #ddd7ff;
+  background: rgba(255, 255, 255, 0.78);
+  padding: 10px;
+}
+
+.episode-key-art-group-top {
+  margin-bottom: 10px;
+}
+
+.episode-key-art-group-title {
+  color: #2d2844;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.episode-key-art-group-copy {
+  color: #7f789c;
+  font-size: 12px;
+  margin-top: 3px;
+}
+
+.episode-key-art-card {
+  overflow: hidden;
+  border-radius: 10px;
+  border: 1px solid #dfd9ff;
+  background: #fff;
+}
+
+.episode-key-art-image,
+.episode-key-art-placeholder {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  display: block;
+}
+
+.episode-key-art-image {
+  object-fit: cover;
+}
+
+.episode-key-art-placeholder {
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at top left, rgba(108, 99, 255, 0.15), transparent 38%),
+    linear-gradient(135deg, #f6f0ff 0%, #fbf9ff 100%);
+  color: #9389c3;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.episode-key-art-label {
+  padding: 8px 10px 10px;
+  color: #4a4566;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.episode-key-art-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.episode-key-art-btn {
+  border: none;
+  border-radius: 8px;
+  padding: 9px 14px;
+  background: #6c63ff;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.episode-key-art-btn:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.episode-key-art-error {
+  color: #c03d3d;
+  font-size: 12px;
+}
+
+.episode-key-art-empty {
+  color: #7f789c;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.scene-reference-usage {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.scene-reference-usage-label {
+  color: #6c63ff;
+  font-weight: 700;
+}
+
+.scene-reference-usage-value {
+  color: #6d6787;
 }
 
 .audio-lines {
@@ -2423,6 +2886,16 @@ button:disabled {
 }
 
 @media (max-width: 720px) {
+  .episode-key-art-top,
+  .episode-key-art-actions {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .episode-key-art-grid {
+    grid-template-columns: 1fr;
+  }
+
   .transition-slot-top {
     flex-direction: column;
   }

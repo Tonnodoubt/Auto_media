@@ -1,10 +1,44 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping
 
 
 def _normalize_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def extract_scene_index_from_shot_id(shot_id: str) -> int | None:
+    match = re.match(r"scene(\d+)_shot\d+$", _normalize_text(shot_id), flags=re.IGNORECASE)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def extract_scene_number_from_source_scene_key(source_scene_key: str) -> int | None:
+    normalized = _normalize_text(source_scene_key)
+    if not normalized:
+        return None
+    exact_match = re.match(r"ep\d+_scene(\d+)$", normalized, flags=re.IGNORECASE)
+    if exact_match:
+        return int(exact_match.group(1))
+    alias_match = re.match(r"scene(\d+)$", normalized, flags=re.IGNORECASE)
+    if alias_match:
+        return int(alias_match.group(1))
+    return None
+
+
+def _is_usable_scene_reference_asset(asset: Mapping[str, Any]) -> bool:
+    status = _normalize_text(asset.get("status", ""))
+    if status and status != "ready":
+        return False
+    variants = asset.get("variants")
+    if not isinstance(variants, Mapping):
+        return False
+    scene_variant = variants.get("scene")
+    if not isinstance(scene_variant, Mapping):
+        return False
+    return bool(_normalize_text(scene_variant.get("image_url", "")) or _normalize_text(scene_variant.get("image_path", "")))
 
 
 def get_character_asset_entry(
@@ -88,3 +122,45 @@ def build_character_asset_record(
     if normalized_visual_dna:
         record["visual_dna"] = normalized_visual_dna
     return record
+
+
+def get_scene_reference_asset(
+    story_or_meta: Mapping[str, Any] | None,
+    source_scene_key: str = "",
+    *,
+    shot_id: str = "",
+) -> dict[str, Any]:
+    if not isinstance(story_or_meta, Mapping):
+        return {}
+
+    meta = story_or_meta.get("meta") if isinstance(story_or_meta.get("meta"), Mapping) else story_or_meta
+    if not isinstance(meta, Mapping):
+        return {}
+
+    assets = meta.get("scene_reference_assets")
+    if not isinstance(assets, Mapping):
+        return {}
+
+    normalized_key = _normalize_text(source_scene_key)
+    if normalized_key:
+        exact = assets.get(normalized_key)
+        if isinstance(exact, Mapping) and _is_usable_scene_reference_asset(exact):
+            return dict(exact)
+
+    scene_number = extract_scene_number_from_source_scene_key(normalized_key)
+    if scene_number is None:
+        scene_number = extract_scene_index_from_shot_id(shot_id)
+    if scene_number is None:
+        return {}
+
+    suffix = f"_scene{scene_number:02d}"
+    matches = [
+        dict(asset)
+        for key, asset in assets.items()
+        if isinstance(asset, Mapping)
+        and _normalize_text(key).lower().endswith(suffix.lower())
+        and _is_usable_scene_reference_asset(asset)
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return {}

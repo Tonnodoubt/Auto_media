@@ -3,7 +3,10 @@ FFmpeg 音视频合成服务 — 将无声视频与 TTS 音频合并为有声 MP
 """
 import asyncio
 import logging
+import os
+import shutil
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional
 
@@ -11,41 +14,61 @@ logger = logging.getLogger(__name__)
 
 VIDEO_DIR = Path("media/videos")
 IMAGE_DIR = Path("media/images")
+_COMMON_BINARY_DIRS = (
+    Path("/opt/homebrew/bin"),
+    Path("/usr/local/bin"),
+    Path("/opt/local/bin"),
+    Path.home() / ".local/bin",
+)
 
 
-async def extract_last_frame(video_path: str, shot_id: str) -> str:
-    """
-    从视频末尾提取最后一帧，保存为 PNG 图片。
+@lru_cache(maxsize=None)
+def resolve_media_binary(binary_name: str) -> str:
+    """解析 ffmpeg / ffprobe 可执行文件路径。"""
+    env_name = f"{binary_name.upper()}_PATH"
+    configured = os.getenv(env_name, "").strip()
+    if configured:
+        configured_path = Path(configured).expanduser()
+        if configured_path.exists():
+            return str(configured_path)
+        resolved_configured = shutil.which(configured)
+        if resolved_configured:
+            return resolved_configured
+        raise RuntimeError(f"环境变量 {env_name} 指向的 {binary_name} 不存在: {configured}")
 
-    用于链式视频生成：将当前镜头的最后一帧作为下一镜头的参考图。
+    resolved = shutil.which(binary_name)
+    if resolved:
+        return resolved
 
-    Args:
-        video_path: 视频文件本地路径
-        shot_id: 镜头 ID，用于生成输出文件名
+    for directory in _COMMON_BINARY_DIRS:
+        candidate = directory / binary_name
+        if candidate.exists():
+            return str(candidate)
 
-    Returns:
-        输出图片的本地文件路径
-    Raises:
-        FileNotFoundError: 视频文件不存在
-        RuntimeError: ffmpeg 执行失败
-    """
+    raise RuntimeError(
+        f"未找到 {binary_name} 可执行文件，请先安装 FFmpeg，或通过环境变量 {env_name} 指定路径。"
+    )
+
+
+async def _extract_frame(video_path: str, output_path: str, *frame_args: str) -> str:
+    """从视频中提取单帧。"""
     video = Path(video_path)
     if not video.exists():
         raise FileNotFoundError(f"视频文件不存在: {video_path}")
 
     IMAGE_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = str(IMAGE_DIR / f"{shot_id}_lastframe.png")
+    ffmpeg_bin = resolve_media_binary("ffmpeg")
 
     cmd = [
-        "ffmpeg", "-y",
-        "-sseof", "-0.1",
+        ffmpeg_bin, "-y",
+        *frame_args,
         "-i", str(video),
         "-frames:v", "1",
         "-q:v", "2",
         output_path,
     ]
 
-    logger.info("FFmpeg 提取最后一帧: %s -> %s", video_path, output_path)
+    logger.info("FFmpeg 提取单帧: %s -> %s", video_path, output_path)
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -59,8 +82,47 @@ async def extract_last_frame(video_path: str, shot_id: str) -> str:
         logger.error("FFmpeg 提取帧失败 (code %d): %s", proc.returncode, err_msg)
         raise RuntimeError(f"FFmpeg 提取帧失败: {err_msg}")
 
-    logger.info("FFmpeg 提取最后一帧完成: %s", output_path)
+    logger.info("FFmpeg 提取单帧完成: %s", output_path)
     return output_path
+
+
+async def extract_last_frame(video_path: str, shot_id: str, output_name: str | None = None) -> str:
+    """
+    从视频末尾提取最后一帧，保存为 PNG 图片。
+
+    用于链式视频生成：将当前镜头的最后一帧作为下一镜头的参考图。
+
+    Args:
+        video_path: 视频文件本地路径
+        shot_id: 镜头 ID，用于生成输出文件名
+        output_name: 可选输出文件名，用于 transition 定向命名
+
+    Returns:
+        输出图片的本地文件路径
+    Raises:
+        FileNotFoundError: 视频文件不存在
+        RuntimeError: ffmpeg 执行失败
+    """
+    output_filename = output_name or f"{shot_id}_lastframe.png"
+    output_path = str(IMAGE_DIR / output_filename)
+    return await _extract_frame(video_path, output_path, "-sseof", "-0.1")
+
+
+async def extract_first_frame(video_path: str, shot_id: str, output_name: str | None = None) -> str:
+    """
+    从视频开头提取第一帧，保存为 PNG 图片。
+
+    Args:
+        video_path: 视频文件本地路径
+        shot_id: 镜头 ID，用于生成输出文件名
+        output_name: 可选输出文件名，用于 transition 定向命名
+
+    Returns:
+        输出图片的本地文件路径
+    """
+    output_filename = output_name or f"{shot_id}_firstframe.png"
+    output_path = str(IMAGE_DIR / output_filename)
+    return await _extract_frame(video_path, output_path)
 
 
 async def stitch_audio_video(
@@ -88,9 +150,10 @@ async def stitch_audio_video(
         raise FileNotFoundError(f"音频文件不存在: {audio_path}")
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    ffmpeg_bin = resolve_media_binary("ffmpeg")
 
     cmd = [
-        "ffmpeg", "-y",
+        ffmpeg_bin, "-y",
         "-i", str(video),
         "-i", str(audio),
         "-c:v", "copy",
@@ -194,6 +257,7 @@ async def concat_videos(
             raise FileNotFoundError(f"视频文件不存在: {p}")
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    ffmpeg_bin = resolve_media_binary("ffmpeg")
 
     # 生成临时 concat list 文件
     with tempfile.NamedTemporaryFile(
@@ -206,7 +270,7 @@ async def concat_videos(
         concat_list_path = tmp.name
 
     cmd = [
-        "ffmpeg", "-y",
+        ffmpeg_bin, "-y",
         "-f", "concat",
         "-safe", "0",
         "-i", concat_list_path,

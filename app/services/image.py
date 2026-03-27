@@ -1,10 +1,14 @@
 import asyncio
+import base64
 import hashlib
 import logging
+import mimetypes
 import re
 import time
 import httpx
 from pathlib import Path
+from typing import Any, Optional
+from urllib.parse import urlparse
 from fastapi import HTTPException
 
 from app.core.config import settings
@@ -16,6 +20,9 @@ IMAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 CHARACTER_DIR = Path("media/characters")
 CHARACTER_DIR.mkdir(parents=True, exist_ok=True)
+
+EPISODE_DIR = Path("media/episodes")
+EPISODE_DIR.mkdir(parents=True, exist_ok=True)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +73,66 @@ def _extract_image_url(resp) -> str:
     )
 
 
+def _data_url_from_bytes(content: bytes, name: str = "", content_type: str = "") -> str:
+    mime = (
+        (content_type or "").split(";")[0].strip()
+        or mimetypes.guess_type(name)[0]
+        or "image/png"
+    )
+    encoded = base64.b64encode(content).decode()
+    return f"data:{mime};base64,{encoded}"
+
+
+async def _resolve_reference_image_value(reference: Any, client: httpx.AsyncClient) -> str:
+    if isinstance(reference, str):
+        image_url = reference.strip()
+        image_path = ""
+    elif isinstance(reference, dict):
+        image_url = str(reference.get("image_url", "")).strip()
+        image_path = str(reference.get("image_path", "")).strip()
+    else:
+        return ""
+
+    if image_path:
+        local_path = Path(image_path)
+        if local_path.exists():
+            return _data_url_from_bytes(local_path.read_bytes(), name=local_path.name)
+
+    if image_url.startswith("data:"):
+        return image_url
+
+    if image_url.startswith("/"):
+        relative_path = Path(image_url.lstrip("/"))
+        if relative_path.exists():
+            return _data_url_from_bytes(relative_path.read_bytes(), name=relative_path.name)
+        return ""
+
+    parsed = urlparse(image_url)
+    if parsed.scheme in ("http", "https"):
+        host = parsed.hostname or ""
+        is_local = (
+            host in ("localhost", "127.0.0.1", "0.0.0.0")
+            or host.startswith("192.168.")
+            or host.startswith("10.")
+        )
+        if is_local:
+            resp = await client.get(image_url)
+            resp.raise_for_status()
+            return _data_url_from_bytes(
+                resp.content,
+                name=parsed.path,
+                content_type=resp.headers.get("content-type", ""),
+            )
+        return image_url
+
+    if image_url:
+        local_path = Path(image_url)
+        if local_path.exists():
+            return _data_url_from_bytes(local_path.read_bytes(), name=local_path.name)
+
+    return ""
+
+
 async def generate_image(
     visual_prompt: str,
     shot_id: str,
@@ -73,6 +140,9 @@ async def generate_image(
     image_api_key: str = "",
     image_base_url: str = "",
     negative_prompt: str = "",
+    reference_images: Optional[list[Any]] = None,
+    output_dir: Optional[Path] = None,
+    url_prefix: str = "/media/images",
 ) -> dict:
     """Generate image for a single shot. Returns { shot_id, image_path, image_url }."""
     base_url = image_base_url or settings.siliconflow_base_url
@@ -84,6 +154,22 @@ async def generate_image(
         payload = {"model": model, "prompt": visual_prompt, "n": 1, "size": size, "response_format": "url"}
         if negative_prompt:
             payload["negative_prompt"] = negative_prompt
+        resolved_reference_images: list[str] = []
+        resolved_reference_strengths: list[float] = []
+        for reference in reference_images or []:
+            resolved = await _resolve_reference_image_value(reference, client)
+            if not resolved:
+                continue
+            resolved_reference_images.append(resolved)
+            if isinstance(reference, dict) and reference.get("weight") is not None:
+                try:
+                    resolved_reference_strengths.append(float(reference["weight"]))
+                except (TypeError, ValueError):
+                    pass
+        if resolved_reference_images:
+            payload["reference_images"] = resolved_reference_images
+            if len(resolved_reference_strengths) == len(resolved_reference_images):
+                payload["reference_strengths"] = resolved_reference_strengths
 
         async def _submit(request_payload: dict) -> httpx.Response:
             return await client.post(
@@ -92,7 +178,8 @@ async def generate_image(
                 json=request_payload,
             )
 
-        resp = await _submit(payload)
+        effective_payload = dict(payload)
+        resp = await _submit(effective_payload)
         print(f"[IMAGE] status={resp.status_code} key={mask_key(image_api_key)} base={base_url}")
         if not resp.is_success and negative_prompt and resp.status_code in (400, 422):
             logger.warning(
@@ -102,12 +189,32 @@ async def generate_image(
                 mask_key(image_api_key),
                 len(resp.content or b""),
             )
-            retry_payload = dict(payload)
-            retry_payload.pop("negative_prompt", None)
-            resp = await _submit(retry_payload)
+            effective_payload = dict(effective_payload)
+            effective_payload.pop("negative_prompt", None)
+            resp = await _submit(effective_payload)
             print(f"[IMAGE][RETRY_NO_NEGATIVE] status={resp.status_code} key={mask_key(image_api_key)} base={base_url}")
             logger.warning(
                 "Image provider retry without negative_prompt finished. shot_id=%s status=%s key=%s provider_rejection=1 response_bytes=%s",
+                shot_id,
+                resp.status_code,
+                mask_key(image_api_key),
+                len(resp.content or b""),
+            )
+        if not resp.is_success and resolved_reference_images and resp.status_code in (400, 422):
+            logger.warning(
+                "Image provider rejected reference_images; retrying without them. shot_id=%s status=%s key=%s provider_rejection=1 response_bytes=%s",
+                shot_id,
+                resp.status_code,
+                mask_key(image_api_key),
+                len(resp.content or b""),
+            )
+            effective_payload = dict(effective_payload)
+            effective_payload.pop("reference_images", None)
+            effective_payload.pop("reference_strengths", None)
+            resp = await _submit(effective_payload)
+            print(f"[IMAGE][RETRY_NO_REFERENCE] status={resp.status_code} key={mask_key(image_api_key)} base={base_url}")
+            logger.warning(
+                "Image provider retry without reference_images finished. shot_id=%s status=%s key=%s provider_rejection=1 response_bytes=%s",
                 shot_id,
                 resp.status_code,
                 mask_key(image_api_key),
@@ -121,23 +228,26 @@ async def generate_image(
         img_resp = await client.get(image_url)
         img_resp.raise_for_status()
 
+    target_dir = output_dir or IMAGE_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+
     filename = _versioned_media_name(shot_id, ".png")
-    output_path = IMAGE_DIR / filename
+    output_path = target_dir / filename
     output_path.write_bytes(img_resp.content)
 
     return {
         "shot_id": shot_id,
         "image_path": str(output_path),
-        "image_url": f"/media/images/{filename}",
+        "image_url": f"{url_prefix.rstrip('/')}/{filename}",
     }
 
 
 async def generate_images_batch(shots: list[dict], model: str = DEFAULT_MODEL, image_api_key: str = "", image_base_url: str = "", art_style: str = "") -> list[dict]:
     """Generate images for all shots concurrently.
 
-    支持：
-    - 首帧图片（image_url）
-    - 尾帧图片（last_frame_url），如果 shot 中提供了 last_frame_prompt
+    Phase 4:
+    - 仅生成主镜头首帧图片（image_url）
+    - 不再为普通 shot 生成 last_frame_url
     """
     def _prompt(shot: dict) -> str:
         p = shot.get("image_prompt") or shot.get("visual_prompt") or shot.get("final_video_prompt", "")
@@ -145,65 +255,29 @@ async def generate_images_batch(shots: list[dict], model: str = DEFAULT_MODEL, i
             raise ValueError(f"shot {shot.get('shot_id', '?')} has no image_prompt / visual_prompt / final_video_prompt")
         return inject_art_style(p, art_style)
 
-    # 为每个shot生成图片的任务列表
-    tasks = []
-
-    for shot in shots:
-        shot_id = shot["shot_id"]
-
-        # 首帧图片
-        tasks.append(
-            generate_image(
-                _prompt(shot),
-                shot_id,
-                model,
-                image_api_key,
-                image_base_url,
-                shot.get("negative_prompt", ""),
-            )
+    tasks = [
+        generate_image(
+            _prompt(shot),
+            shot["shot_id"],
+            model,
+            image_api_key,
+            image_base_url,
+            shot.get("negative_prompt", ""),
+            shot.get("reference_images"),
         )
+        for shot in shots
+    ]
 
-        # 尾帧图片（如果提供了last_frame_prompt）
-        if shot.get("last_frame_prompt"):
-            tasks.append(
-                generate_image(
-                    inject_art_style(shot["last_frame_prompt"], art_style),
-                    f"{shot_id}_lastframe",
-                    model,
-                    image_api_key,
-                    image_base_url,
-                    shot.get("last_frame_negative_prompt") or shot.get("negative_prompt", ""),
-                )
-            )
-
-    # 并发执行所有图片生成任务
     results = await asyncio.gather(*tasks)
 
-    # 组织结果：每个shot包含image_url和可选的last_frame_url
-    output = []
-    task_idx = 0
-    for shot in shots:
-        shot_id = shot["shot_id"]
-
-        # 首帧结果
-        first_frame_result = results[task_idx]
-        task_idx += 1
-
-        result = {
-            "shot_id": shot_id,
-            "image_path": first_frame_result["image_path"],
-            "image_url": first_frame_result["image_url"],
+    return [
+        {
+            "shot_id": shot["shot_id"],
+            "image_path": result["image_path"],
+            "image_url": result["image_url"],
         }
-
-        # 尾帧结果（如果有）
-        if shot.get("last_frame_prompt"):
-            last_frame_result = results[task_idx]
-            task_idx += 1
-            result["last_frame_url"] = last_frame_result["image_url"]
-
-        output.append(result)
-
-    return output
+        for shot, result in zip(shots, results)
+    ]
 
 
 async def generate_character_image(

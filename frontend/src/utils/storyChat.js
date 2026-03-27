@@ -191,6 +191,11 @@ export function parseCharacterChatSections(text) {
     pushUniqueItems(normalizedCharacterChanges, [item.replace(/^当前角色修改：/, '').trim()])
   }
 
+  const filteredStoryImpact = normalizedStoryImpact.filter(item => {
+    if (!normalizedCharacterChanges.includes(item)) return true
+    return isStoryImpactItem(item)
+  })
+
   if (normalizedCharacterChanges.length) {
     sections.push({
       key: 'character_changes',
@@ -199,7 +204,7 @@ export function parseCharacterChatSections(text) {
     })
   }
 
-  const storyImpactItems = normalizedStoryImpact.filter(item => !isDefaultStoryImpactItem(item))
+  const storyImpactItems = filteredStoryImpact.filter(item => !isDefaultStoryImpactItem(item))
   if (storyImpactItems.length) {
     sections.push({
       key: 'story_impact',

@@ -11,10 +11,17 @@
           <span>{{ store.meta.episodes }} 集</span>
           <span>{{ store.characters.length }} 个角色</span>
           <span>{{ totalScenes }} 个场景</span>
+          <span>{{ readyEpisodeKeyArtCount }}/{{ store.scenes.length }} 集环境图组</span>
         </div>
       </div>
 
-      <SceneStream :scenes="store.scenes" :streaming="false" />
+      <SceneStream
+        :scenes="store.scenes"
+        :streaming="false"
+        :enable-scene-key-art="true"
+        :scene-reference-assets="store.sceneReferenceAssets"
+        @generate-scene-key-art="handleGenerateSceneKeyArt"
+      />
 
       <div class="export-section">
         <ExportPanel />
@@ -33,6 +40,7 @@ import { useRouter } from 'vue-router'
 import StepIndicator from '../components/StepIndicator.vue'
 import SceneStream from '../components/SceneStream.vue'
 import ExportPanel from '../components/ExportPanel.vue'
+import { generateEpisodeSceneReference } from '../api/story.js'
 import { useStoryStore } from '../stores/story.js'
 
 const router = useRouter()
@@ -40,11 +48,31 @@ const store = useStoryStore()
 
 onMounted(() => {
   if (!store.meta || !store.scenes.length) router.replace('/step1')
+  store.ensureSceneReferenceAssets()
 })
 
 const totalScenes = computed(() =>
   store.scenes.reduce((sum, s) => sum + s.scenes.length, 0)
 )
+
+const readyEpisodeKeyArtCount = computed(() =>
+  store.scenes.filter(episode =>
+    (episode.scenes || []).some(scene =>
+      store.sceneReferenceAssets[store.getSceneKey(episode.episode, scene.scene_number)]?.status === 'ready'
+    )
+  ).length
+)
+
+async function handleGenerateSceneKeyArt({ episode, scene }) {
+  store.setEpisodeSceneReferenceStatus(episode, 'loading', '')
+  try {
+    const forceRegenerate = store.getEpisodeSceneReferenceGroups(episode).length > 0
+    const result = await generateEpisodeSceneReference(store.storyId, episode, { forceRegenerate })
+    store.applyEpisodeSceneReferenceAsset(result)
+  } catch (error) {
+    store.setEpisodeSceneReferenceStatus(episode, 'failed', error.message || '环境图生成失败')
+  }
+}
 
 function generateVideo() {
   router.push('/video-generation')

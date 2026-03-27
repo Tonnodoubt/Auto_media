@@ -31,7 +31,7 @@ app.include_router(story.router)
 app.include_router(character.router)
 
 # Ensure media directories exist before mounting static files
-for _d in ("media/audio", "media/images", "media/videos", "media/characters"):
+for _d in ("media/audio", "media/images", "media/videos", "media/characters", "media/episodes"):
     Path(_d).mkdir(parents=True, exist_ok=True)
 
 app.mount("/media", StaticFiles(directory="media"), name="media")

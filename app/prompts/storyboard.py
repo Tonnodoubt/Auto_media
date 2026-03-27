@@ -69,11 +69,10 @@ Your task: convert the provided Chinese Audio-Visual Script into a strict JSON a
   - `image_prompt` = what the still frame should look like
   - `final_video_prompt` = what should move in the clip
 
-**When to use `last_frame_prompt`:**
-- For shots with significant position/action changes (sitting down, standing up, turning around, lying down, etc.)
-- For precise control over the ending pose when the action involves a clear state transition
-- Format: Same structure as final_video_prompt but describes ONLY the FINAL STATE after the action completes
-- Example: If the action is "walks to desk and sits down", last_frame_prompt describes "sitting at desk, hands resting on keyboard, facing the monitor"
+**About `last_frame_prompt`:**
+- The current mainline uses single-frame I2V only
+- Do NOT design normal shots around first-frame + last-frame dual constraints
+- Leave `last_frame_prompt` null unless a future dedicated transition pipeline explicitly asks for it
 
 ### Law 3: Character Consistency Embedding
 - If "角色信息" (Character Info) is provided, use the EXACT physical appearance in every shot featuring that character.
@@ -196,12 +195,9 @@ Each shot has a `scene_intensity` field ("low" or "high") inherited from the scr
 - It may reuse key first-frame anchors, but only when they improve consistency
 - Do not restate every costume detail unless essential to the action
 
-**For `last_frame_prompt` (optional):**
-If the shot involves a significant position/action change (e.g., sitting, standing, turning), also generate this field to specify the final state:
-[last_frame_prompt] = [Final Shot Size] + [Final Camera Angle] + [Final Subject Position/Pose] + [Final Environment] + [Lighting] + [Render Tags]
-- This describes the ENDING FRAME after the action completes
-- Use the same quality/detail level as final_video_prompt
-- Focus on the static final state, not the motion
+**For `last_frame_prompt`:**
+- Leave it null for the current mainline
+- Do not use it to control normal storyboard shots
 
 ## PROFESSIONAL TERMINOLOGY DICTIONARY (MUST use these terms)
 
@@ -412,6 +408,8 @@ else:
 
 ## SHOT ID FORMAT
 - scene{N}_shot{M}, where N is scene number and M is shot number within that scene.
+- If a "SCENE SOURCE MAP" block is provided in the user message, `scene{N}` MUST follow that map's order exactly.
+- Always fill `source_scene_key` with the exact mapped value from the "SCENE SOURCE MAP" when that block is present.
 
 ## OUTPUT FORMAT
 - Output ONLY a valid JSON array. No markdown fences, no explanation, no extra text.
@@ -422,6 +420,7 @@ else:
 [
   {
     "shot_id": "scene1_shot1",
+    "source_scene_key": "ep01_scene01",
     "estimated_duration": 4,
     "scene_intensity": "low",
     "storyboard_description": "中文画面简述，供前端展示（2-4句）",
@@ -438,7 +437,7 @@ else:
     },
     "image_prompt": "[Static keyframe prompt for image generation: framing + angle, frozen pose, composition, environment, lighting. No camera movement and no dynamic action wording.]",
     "final_video_prompt": "[Concise motion prompt for video generation: framing + angle, camera movement method, subject action, environment anchor, lighting anchor]",
-    "last_frame_prompt": "Optional. Description of the ending state/frame for transition shots. Only include if this shot involves a significant position/action change and you want precise control over the ending pose. Format: Same as final_video_prompt but describes the FINAL state after action completes (e.g., if action is 'walks to desk and sits', this describes the 'sitting at desk' state).",
+    "last_frame_prompt": null,
     "audio_reference": {
       "type": "dialogue | narration | sfx | null",
       "content": "原文台词/旁白/音效描述，or null"
@@ -596,6 +595,8 @@ USER_TEMPLATE = """Convert this Audio-Visual Script into physically-precise stor
 
 {character_section}
 
+{scene_mapping_section}
+
 ---
 {script}
 ---
@@ -682,15 +683,16 @@ USER_TEMPLATE = """Convert this Audio-Visual Script into physically-precise stor
 - STEP 2: For each major event/dialogue block, create 2-5 shots to cover it properly. Plan transitions FIRST.
   - Example: Character needs to sit → Shot A (WS: walking) → Shot B (MS: reaching chair) → Shot C (CU: sitting down, face expression)
 - STEP 3: For each shot, fill in COMPLETELY:
-  1. storyboard_description (2-4 sentences, rich and concrete)
-  2. camera_setup (specific shot_size, angle, movement)
-  3. visual_elements (subject appearance, action, environment, lighting - write sentences, not fragments)
-  4. scene_intensity ("low" or "high")
-  5. estimated_duration (match dialogue length 4-5s or action pacing 3-4s)
-  6. audio_reference (type + content from the dialogue list, OR null if silent)
-  7. image_prompt (static first-frame prompt; framing + angle, frozen pose, no camera movement, no continuity phrase)
-  8. final_video_prompt (motion prompt only; framing + angle, camera movement method, one core action, concise, executable)
-  9. last_frame_prompt (OPTIONAL: only for shots with significant position/action changes like sitting/standing/turning. Describe the final static state after action completes)
+  1. source_scene_key (copy the exact key from the SCENE SOURCE MAP for this shot's source scene; if no map exists, infer the best matching source scene)
+  2. storyboard_description (2-4 sentences, rich and concrete)
+  3. camera_setup (specific shot_size, angle, movement)
+  4. visual_elements (subject appearance, action, environment, lighting - write sentences, not fragments)
+  5. scene_intensity ("low" or "high")
+  6. estimated_duration (match dialogue length 4-5s or action pacing 3-4s)
+  7. audio_reference (type + content from the dialogue list, OR null if silent)
+  8. image_prompt (static first-frame prompt; framing + angle, frozen pose, no camera movement, no continuity phrase)
+  9. final_video_prompt (motion prompt only; framing + angle, camera movement method, one core action, concise, executable)
+  10. last_frame_prompt (keep null for the current single-frame I2V mainline)
 - STEP 4: Review for continuity and dialogue correctness:
   - [ ] Each shot (except scene openers) references what happens in the previous shot
   - [ ] Camera reframing is smooth (no jarring cuts between very different perspectives)

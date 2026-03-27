@@ -25,6 +25,7 @@ class AudioReference(BaseModel):
 
 class Shot(BaseModel):
     shot_id: str = Field(description="scene{N}_shot{M}")
+    source_scene_key: Optional[str] = Field(default=None, description="原始剧本场景键，例如 ep01_scene03，用于命中场景参考图")
     estimated_duration: int = Field(default=4, description="时长（秒），3-5")
     scene_intensity: Literal["low", "high"] = Field(default="low", description="low=日常过场 / high=高潮核心")
     storyboard_description: str = Field(description="中文画面简述，供前端展示（2-4句具体描述）")
@@ -32,12 +33,12 @@ class Shot(BaseModel):
     visual_elements: VisualElements = Field(description="结构化视觉元素")
     image_prompt: Optional[str] = Field(default=None, description="静态首帧图片提示词，供图片生成模型使用")
     final_video_prompt: str = Field(description="完整英文物理级 Prompt，直接送入视频生成 API")
-    last_frame_prompt: Optional[str] = Field(default=None, description="尾帧提示词（可选），用于生成双帧过渡的结束参考图")
+    last_frame_prompt: Optional[str] = Field(default=None, description="已弃用。主镜头链路统一使用单首帧 I2V，不再消费尾帧提示词")
     audio_reference: Optional[AudioReference] = Field(default=None, description="音频关联")
     mood: Optional[str] = Field(default=None, description="情绪基调英文短语")
     scene_position: Optional[Literal["establishing", "development", "climax", "resolution"]] = Field(default=None, description="镜头在场景中的位置")
     transition_from_previous: Optional[str] = Field(default=None, description="与前一个镜头的视觉/叙事过渡关系描述（如何平滑衔接、状态变化、摄像机运动等）")
-    last_frame_url: Optional[str] = Field(default=None, description="尾帧图片URL（可选），提供时启用双帧过渡模式")
+    last_frame_url: Optional[str] = Field(default=None, description="已弃用。主镜头链路不再消费尾帧图片")
 
 
 class Usage(BaseModel):
