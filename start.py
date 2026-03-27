@@ -47,15 +47,20 @@ def build_runtime_env():
 
 
 def resolve_binary(binary_name, env):
+    def _is_executable_file(path: Path) -> bool:
+        return path.is_file() and os.access(path, os.X_OK)
+
     env_name = f"{binary_name.upper()}_PATH"
     configured = env.get(env_name, "").strip()
     if configured:
         candidate = Path(configured).expanduser()
-        if candidate.exists():
+        if _is_executable_file(candidate):
             return str(candidate)
         resolved = shutil.which(configured, path=env.get("PATH"))
         if resolved:
             return resolved
+        if candidate.exists():
+            raise RuntimeError(f"{env_name} 指向的 {binary_name} 不是可执行文件: {configured}")
         raise RuntimeError(f"{env_name} 指向的 {binary_name} 不存在: {configured}")
 
     resolved = shutil.which(binary_name, path=env.get("PATH"))
@@ -64,10 +69,20 @@ def resolve_binary(binary_name, env):
 
     for directory in COMMON_BINARY_DIRS:
         candidate = directory / binary_name
-        if candidate.exists():
+        if _is_executable_file(candidate):
             return str(candidate)
 
     raise FileNotFoundError(f"未找到 {binary_name} 可执行文件")
+
+
+def _prepend_binary_dirs(env, *binary_paths):
+    path_entries = [entry for entry in env.get("PATH", "").split(os.pathsep) if entry]
+    for binary_path in binary_paths:
+        binary_dir = os.path.dirname(binary_path)
+        if binary_dir and binary_dir not in path_entries:
+            path_entries.insert(0, binary_dir)
+    env["PATH"] = os.pathsep.join(path_entries)
+    return env
 
 
 def detect_ffmpeg_install_command(env=None):
@@ -124,6 +139,7 @@ def ensure_ffmpeg(env):
 
     env["FFMPEG_PATH"] = ffmpeg_path
     env["FFPROBE_PATH"] = ffprobe_path
+    _prepend_binary_dirs(env, ffmpeg_path, ffprobe_path)
     print(f"\n[依赖] FFmpeg 已就绪: {ffmpeg_path}")
     return env
 

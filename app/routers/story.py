@@ -299,7 +299,8 @@ async def generate_scene_reference(
         logger.exception("Scene reference generation failed story_id=%s episode=%s", story_id, body.episode)
         raise HTTPException(status_code=500, detail=f"环境图生成失败: {exc}") from exc
 
-    meta = dict(story.get("meta") or {})
+    latest_story = await repo.get_story(db, story_id)
+    meta = dict((latest_story or story).get("meta") or {})
     episode_reference_assets = {
         pack_key: asset
         for pack_key, asset in dict(meta.get("episode_reference_assets") or {}).items()

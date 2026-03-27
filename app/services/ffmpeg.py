@@ -91,6 +91,31 @@ async def _extract_frame(video_path: str, output_path: str, *frame_args: str) ->
     return output_path
 
 
+def _resolve_image_output_path(output_name: str | None, default_name: str) -> str:
+    if output_name is None:
+        return str(IMAGE_DIR / default_name)
+
+    raw_name = str(output_name).strip()
+    if not raw_name:
+        raise ValueError("output_name 不能为空")
+
+    candidate = Path(raw_name)
+    if (
+        candidate.is_absolute()
+        or "/" in raw_name
+        or "\\" in raw_name
+        or ".." in candidate.parts
+        or "." in candidate.parts[:-1]
+    ):
+        raise ValueError(f"非法 output_name: {output_name}")
+
+    sanitized_name = candidate.name
+    if not sanitized_name or sanitized_name in {".", ".."}:
+        raise ValueError(f"非法 output_name: {output_name}")
+
+    return str(IMAGE_DIR / sanitized_name)
+
+
 async def extract_last_frame(video_path: str, shot_id: str, output_name: str | None = None) -> str:
     """
     从视频末尾提取最后一帧，保存为 PNG 图片。
@@ -108,8 +133,7 @@ async def extract_last_frame(video_path: str, shot_id: str, output_name: str | N
         FileNotFoundError: 视频文件不存在
         RuntimeError: ffmpeg 执行失败
     """
-    output_filename = output_name or f"{shot_id}_lastframe.png"
-    output_path = str(IMAGE_DIR / output_filename)
+    output_path = _resolve_image_output_path(output_name, f"{shot_id}_lastframe.png")
     return await _extract_frame(video_path, output_path, "-sseof", "-0.1")
 
 
@@ -125,8 +149,7 @@ async def extract_first_frame(video_path: str, shot_id: str, output_name: str | 
     Returns:
         输出图片的本地文件路径
     """
-    output_filename = output_name or f"{shot_id}_firstframe.png"
-    output_path = str(IMAGE_DIR / output_filename)
+    output_path = _resolve_image_output_path(output_name, f"{shot_id}_firstframe.png")
     return await _extract_frame(video_path, output_path)
 
 

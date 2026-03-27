@@ -29,6 +29,7 @@ class MinimaxVideoProvider(BaseVideoProvider):
         base_url: str,
         last_frame_url: str = "",
         negative_prompt: str = "",
+        duration_seconds: int | None = None,
     ) -> str:
         """生成视频。
 
@@ -58,6 +59,7 @@ class MinimaxVideoProvider(BaseVideoProvider):
                 headers,
                 effective_base,
                 negative_prompt,
+                duration_seconds,
             )
             file_id = await self._poll(client, task_id, headers, effective_base)
             return await self._retrieve_url(client, file_id, headers, effective_base)
@@ -71,6 +73,7 @@ class MinimaxVideoProvider(BaseVideoProvider):
         headers: dict,
         base_url: str,
         negative_prompt: str = "",
+        duration_seconds: int | None = None,
     ) -> str:
         # 如果是本地地址，先转 base64
         from app.services.video_providers.doubao import _to_data_url
@@ -80,6 +83,7 @@ class MinimaxVideoProvider(BaseVideoProvider):
             "model": model,
             "prompt": prompt,
             "first_frame_image": resolved_image,
+            "duration": duration_seconds or 5,
         }
         if negative_prompt:
             payload["negative_prompt"] = negative_prompt

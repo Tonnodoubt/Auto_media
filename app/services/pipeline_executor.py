@@ -71,6 +71,8 @@ class PipelineExecutor:
         self.art_style = art_style
         self.strategy = strategy
         self.runtime_strategy_metadata = build_runtime_strategy_metadata(strategy)
+        self.shots = []
+        self.results = []
         self.story_context = None
         self.story = None
         effective_story_id = (story_id or self.story_id or "").strip()

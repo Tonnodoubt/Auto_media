@@ -155,6 +155,7 @@ class DoubaoVideoProvider(BaseVideoProvider):
         base_url: str,
         last_frame_url: str = "",
         negative_prompt: str = "",
+        duration_seconds: int | None = None,
     ) -> str:
         """生成视频。
 
@@ -175,7 +176,14 @@ class DoubaoVideoProvider(BaseVideoProvider):
         effective_base = base_url or DEFAULT_BASE_URL
         async with httpx.AsyncClient(timeout=30) as client:
             task_id = await self._submit(
-                client, image_url, last_frame_url, prompt, model, api_key, effective_base
+                client,
+                image_url,
+                last_frame_url,
+                prompt,
+                model,
+                api_key,
+                effective_base,
+                duration_seconds,
             )
         async with httpx.AsyncClient(timeout=30) as client:
             return await self._poll(client, task_id, api_key, effective_base)
@@ -189,6 +197,7 @@ class DoubaoVideoProvider(BaseVideoProvider):
         model: str,
         api_key: str,
         base_url: str,
+        duration_seconds: int | None = None,
     ) -> str:
         """提交视频生成任务。
 
@@ -234,7 +243,11 @@ class DoubaoVideoProvider(BaseVideoProvider):
         resp = await client.post(
             url,
             headers={"Authorization": f"Bearer {api_key}"},
-            json={"model": model, "content": content},
+            json={
+                "model": model,
+                "content": content,
+                "parameters": {"duration": duration_seconds or 5},
+            },
         )
         print(f"[VIDEO DOUBAO SUBMIT] status={resp.status_code} key={mask_key(api_key)} base={base_url}")
         print(

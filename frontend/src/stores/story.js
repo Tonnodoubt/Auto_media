@@ -37,11 +37,20 @@ function createEmptySceneReferenceAsset() {
   }
 }
 
+function escapeXml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+}
+
 function buildVariantSvg({ title, subtitle, variant, accent, sceneKey }) {
-  const safeTitle = String(title || 'Scene Key Art').slice(0, 48)
-  const safeSubtitle = String(subtitle || '').slice(0, 72)
-  const safeVariant = String(variant || 'scene').toUpperCase()
-  const safeKey = String(sceneKey || '').slice(0, 24)
+  const safeTitle = escapeXml(String(title || 'Scene Key Art').slice(0, 48))
+  const safeSubtitle = escapeXml(String(subtitle || '').slice(0, 72))
+  const safeVariant = escapeXml(String(variant || 'scene').toUpperCase())
+  const safeKey = escapeXml(String(sceneKey || '').slice(0, 24))
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">
       <defs>
@@ -250,6 +259,13 @@ export const useStoryStore = defineStore('story', {
       this.scenes = []
       this.clearShots()
       this.sceneReferenceAssets = {}
+      if (this.meta && typeof this.meta === 'object') {
+        this.meta = {
+          ...this.meta,
+          scene_reference_assets: {},
+          episode_reference_assets: {},
+        }
+      }
       this.step3Done = false
       this.clearManualPipelineContext({
         keepProjectId: keepProjectId || this.storyId || '',

@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app.services.ffmpeg import resolve_media_binary
+from app.services.ffmpeg import extract_last_frame, resolve_media_binary
 
 
 class ResolveMediaBinaryTests(unittest.TestCase):
@@ -41,3 +41,9 @@ class ResolveMediaBinaryTests(unittest.TestCase):
             resolve_media_binary.cache_clear()
             with self.assertRaisesRegex(RuntimeError, "未找到 ffmpeg 可执行文件"):
                 resolve_media_binary("ffmpeg")
+
+
+class ExtractFramePathTests(unittest.IsolatedAsyncioTestCase):
+    async def test_extract_last_frame_rejects_path_traversal_output_name(self):
+        with self.assertRaisesRegex(ValueError, "非法 output_name"):
+            await extract_last_frame("media/videos/input.mp4", "scene1_shot1", "../escape.png")

@@ -5,6 +5,7 @@ import ipaddress
 import logging
 import mimetypes
 import re
+import socket
 import time
 import httpx
 from pathlib import Path
@@ -122,6 +123,42 @@ def _is_private_or_local_host(host: str) -> bool:
     )
 
 
+async def _resolve_hostname_ips(host: str) -> list[str]:
+    normalized_host = str(host or "").strip().rstrip(".")
+    if not normalized_host:
+        return []
+    try:
+        ipaddress.ip_address(normalized_host)
+        return [normalized_host]
+    except ValueError:
+        pass
+
+    try:
+        loop = asyncio.get_running_loop()
+        addrinfo = await loop.getaddrinfo(
+            normalized_host,
+            None,
+            family=socket.AF_UNSPEC,
+            type=socket.SOCK_STREAM,
+        )
+    except OSError:
+        logger.warning("Failed to resolve hostname for reference image host=%s", normalized_host)
+        return []
+
+    resolved_ips: list[str] = []
+    seen: set[str] = set()
+    for entry in addrinfo:
+        sockaddr = entry[4]
+        if not sockaddr:
+            continue
+        ip = str(sockaddr[0]).strip()
+        if not ip or ip in seen:
+            continue
+        seen.add(ip)
+        resolved_ips.append(ip)
+    return resolved_ips
+
+
 async def _resolve_reference_image_value(reference: Any, client: httpx.AsyncClient) -> str:
     if isinstance(reference, str):
         image_url = reference.strip()
@@ -148,8 +185,19 @@ async def _resolve_reference_image_value(reference: Any, client: httpx.AsyncClie
 
     parsed = urlparse(image_url)
     if parsed.scheme in ("http", "https"):
-        host = parsed.hostname or ""
+        host = str(parsed.hostname or "").strip().rstrip(".")
+        if not host:
+            return ""
         if _is_private_or_local_host(host):
+            if parsed.path.startswith("/media/"):
+                local_path = _resolve_allowed_media_path(parsed.path.lstrip("/"))
+                if local_path:
+                    return _data_url_from_bytes(local_path.read_bytes(), name=_safe_media_name(parsed.path))
+            return ""
+        resolved_ips = await _resolve_hostname_ips(host)
+        if not resolved_ips:
+            return ""
+        if any(_is_private_or_local_host(ip) for ip in resolved_ips):
             if parsed.path.startswith("/media/"):
                 local_path = _resolve_allowed_media_path(parsed.path.lstrip("/"))
                 if local_path:

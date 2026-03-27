@@ -482,6 +482,7 @@ const manualProjectId = ref(storyStore.manualProjectId || storyStore.storyId || 
 const manualPipelineId = ref(storyStore.manualPipelineId || '')
 const manualStoryId = ref(storyStore.manualStoryId || storyStore.storyId || '')
 const transitionLoadingMap = ref({})
+const episodeReferenceErrors = ref({})
 
 const hasAnyVideo = computed(() => shots.value.some(s => s.video_url))
 const transitionResults = computed(() => {
@@ -742,7 +743,7 @@ function getEpisodeReferenceStatus(episode) {
 }
 
 function getEpisodeReferenceError(episode) {
-  return getEpisodeReferenceGroups(episode).find(group => group.error)?.error || ''
+  return episodeReferenceErrors.value[episode] || getEpisodeReferenceGroups(episode).find(group => group.error)?.error || ''
 }
 
 function getSceneReferenceGroupLabel(episode, sceneNumber) {
@@ -772,12 +773,25 @@ async function generateEpisodeReference(episode) {
   const seedScene = episode?.scenes?.[0]
   if (!seedScene) return
   storyStore.setEpisodeSceneReferenceStatus(episode.episode, 'loading', '')
+  episodeReferenceErrors.value = {
+    ...episodeReferenceErrors.value,
+    [episode.episode]: '',
+  }
   try {
     const forceRegenerate = storyStore.getEpisodeSceneReferenceGroups(episode.episode).length > 0
     const result = await generateEpisodeSceneReference(storyStore.storyId, episode.episode, { forceRegenerate })
     storyStore.applyEpisodeSceneReferenceAsset(result)
+    episodeReferenceErrors.value = {
+      ...episodeReferenceErrors.value,
+      [episode.episode]: '',
+    }
   } catch (error) {
-    storyStore.setEpisodeSceneReferenceStatus(episode.episode, 'failed', error.message || '环境图生成失败')
+    const message = error.message || '环境图生成失败'
+    episodeReferenceErrors.value = {
+      ...episodeReferenceErrors.value,
+      [episode.episode]: message,
+    }
+    storyStore.setEpisodeSceneReferenceStatus(episode.episode, 'failed', message)
   }
 }
 
@@ -963,6 +977,7 @@ async function parseStoryboard() {
   isParsing.value = true
   error.value = ''
   transitionMessage.value = ''
+  episodeReferenceErrors.value = {}
   storyStore.clearShots()
   concatVideoUrl.value = ''
   progress.value = { show: true, label: '正在调用 LLM 解析分镜...', percent: 20 }

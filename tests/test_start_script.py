@@ -41,3 +41,13 @@ class StartScriptTests(unittest.TestCase):
 
         self.assertEqual(updated["FFMPEG_PATH"], "/tmp/ffmpeg")
         self.assertEqual(updated["FFPROBE_PATH"], "/tmp/ffprobe")
+        self.assertEqual(updated["PATH"].split(os.pathsep)[:3], ["/tmp", "/usr/bin"])
+
+    def test_resolve_binary_rejects_non_executable_override(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            binary_path = Path(tmpdir) / "ffmpeg"
+            binary_path.write_text("", encoding="utf-8")
+            binary_path.chmod(0o644)
+
+            with self.assertRaisesRegex(RuntimeError, "不是可执行文件"):
+                start.resolve_binary("ffmpeg", {"FFMPEG_PATH": str(binary_path), "PATH": "/usr/bin"})

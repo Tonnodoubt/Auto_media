@@ -47,7 +47,7 @@ async def generate_audio(
     try:
         results = await generate_tts_batch(body.shots, voice=voice)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"TTS 生成失败: {e}")
+        raise HTTPException(status_code=500, detail=f"TTS 生成失败: {e}") from e
 
     if body.story_id:
         story = await repo.get_story(db, body.story_id)

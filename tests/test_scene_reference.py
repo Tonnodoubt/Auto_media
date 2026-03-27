@@ -266,6 +266,7 @@ class SceneReferenceRouteTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("app.routers.story.prepare_story_context", new=AsyncMock(return_value=(story, None))),
             patch("app.routers.story.generate_episode_scene_reference", new=AsyncMock(return_value=result_payload)),
+            patch("app.routers.story.repo.get_story", new=AsyncMock(return_value=story)),
             patch("app.routers.story.repo.save_story", new=save_story),
         ):
             response = await generate_scene_reference(
@@ -332,6 +333,7 @@ class SceneReferenceRouteTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("app.routers.story.prepare_story_context", new=AsyncMock(return_value=(story, None))),
             patch("app.routers.story.generate_episode_scene_reference", new=AsyncMock(return_value=result_payload)) as generate_mock,
+            patch("app.routers.story.repo.get_story", new=AsyncMock(return_value=story)),
             patch("app.routers.story.repo.save_story", new=AsyncMock()) as save_story,
         ):
             response = await generate_scene_reference(

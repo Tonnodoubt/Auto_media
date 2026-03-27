@@ -39,6 +39,7 @@ async def _generate_remote_video(
     video_base_url: str,
     last_frame_url: str,
     negative_prompt: str,
+    duration_seconds: int | None,
 ) -> str:
     return await provider.generate(
         image_url,
@@ -48,6 +49,7 @@ async def _generate_remote_video(
         video_base_url,
         last_frame_url,
         negative_prompt,
+        duration_seconds=duration_seconds,
     )
 
 
@@ -95,6 +97,7 @@ async def generate_video(
     video_provider: str = DEFAULT_PROVIDER,
     last_frame_url: str = "",
     negative_prompt: str = "",
+    duration_seconds: int | None = None,
 ) -> dict:
     """Generate video for a single shot.
 
@@ -121,6 +124,7 @@ async def generate_video(
         video_base_url=video_base_url,
         last_frame_url=last_frame_url,
         negative_prompt=negative_prompt,
+        duration_seconds=duration_seconds,
     )
     video_bytes = await _download_video_with_retry(remote_url, shot_id)
 
@@ -150,6 +154,7 @@ async def generate_transition_video(
     video_base_url: str = "",
     video_provider: str = DEFAULT_PROVIDER,
     negative_prompt: str = "",
+    duration_seconds: int | None = None,
 ) -> dict:
     if not supports_dual_frame_provider(video_provider):
         raise ValueError(f"provider {video_provider or DEFAULT_PROVIDER} does not support dual-frame transitions")
@@ -165,6 +170,7 @@ async def generate_transition_video(
         video_provider=video_provider,
         last_frame_url=last_frame_url,
         negative_prompt=negative_prompt,
+        duration_seconds=duration_seconds,
     )
 
 

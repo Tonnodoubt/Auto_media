@@ -803,7 +803,7 @@ async def render_video(
 
             prepared_shots = []
             for shot in shots_data:
-                payload = build_generation_payload(shot, story_context, art_style=art_style)
+                payload = build_generation_payload(shot, story_context, art_style=art_style, story=story)
                 prepared_shots.append(
                     {
                         **shot,
@@ -1061,6 +1061,7 @@ async def generate_transition(
             video_base_url=video_config["video_base_url"],
             video_provider=video_config["video_provider"],
             negative_prompt=negative_prompt,
+            duration_seconds=req.duration_seconds,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=400, detail=f"过渡视频生成失败，缺少本地素材文件: {exc}") from exc
@@ -1111,17 +1112,26 @@ async def generate_transition(
 
     persisted_story = await repo.get_story(db, tracking_story_id) if tracking_story_id else None
     if persisted_story:
-        await persist_storyboard_generation_state(
-            db,
-            story_id=tracking_story_id,
-            story=persisted_story,
-            generated_files={
-                "transitions": {transition_id: result},
-                "timeline": timeline,
-            },
-            pipeline_id=normalized_pipeline_id,
-            project_id=project_id,
-        )
+        try:
+            await persist_storyboard_generation_state(
+                db,
+                story_id=tracking_story_id,
+                story=persisted_story,
+                generated_files={
+                    "transitions": {transition_id: result},
+                    "timeline": timeline,
+                },
+                pipeline_id=normalized_pipeline_id,
+                project_id=project_id,
+            )
+        except Exception:
+            logger.exception(
+                "Transition storyboard persistence failed project_id=%s pipeline_id=%s story_id=%s transition_id=%s",
+                project_id,
+                normalized_pipeline_id,
+                tracking_story_id,
+                transition_id,
+            )
 
     return TransitionResult(**result)
 

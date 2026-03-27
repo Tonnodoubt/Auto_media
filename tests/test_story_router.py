@@ -160,6 +160,7 @@ class StoryRouterSceneReferenceTests(unittest.IsolatedAsyncioTestCase):
             patch("app.routers.story.prepare_story_context", new=AsyncMock(return_value=(story, None))),
             patch("app.routers.story.get_art_style", return_value=""),
             patch("app.routers.story.generate_episode_scene_reference", new=generate_reference),
+            patch("app.routers.story.repo.get_story", new=AsyncMock(return_value=story)),
             patch("app.routers.story.repo.save_story", new=save_story),
         ):
             result = await generate_scene_reference(
@@ -173,3 +174,8 @@ class StoryRouterSceneReferenceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, {"episode": 1, "groups": []})
         self.assertEqual(generate_reference.await_args.kwargs["existing_assets"], [])
+        save_story.assert_awaited_once_with(
+            None,
+            "story-force",
+            {"meta": {"episode_reference_assets": {}, "scene_reference_assets": {}}},
+        )

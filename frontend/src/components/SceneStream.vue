@@ -37,6 +37,7 @@
                 <img
                   v-if="group.variants?.scene?.image_url"
                   :src="resolveAssetImageUrl(group.variants.scene.image_url)"
+                  :alt="buildSceneReferenceAlt(group)"
                   class="scene-key-art-image"
                 />
                 <div v-else class="scene-key-art-placeholder">Scene Reference</div>
@@ -158,6 +159,11 @@ function getEpisodeStatus(episodeNumber) {
 function getEpisodeError(episodeNumber) {
   const groups = getEpisodeGroups(episodeNumber)
   return groups.find(group => group.error)?.error || getEpisodeAsset(episodeNumber).error || ''
+}
+
+function buildSceneReferenceAlt(group = {}) {
+  const label = group.group_name || group.group_label || group.variants?.scene?.name || group.summary_environment || '环境组'
+  return `${label} 主场景参考图`
 }
 
 function formatSceneNumbers(numbers = []) {

@@ -67,7 +67,7 @@ CREATE TABLE stories (
 | `outline` | 分集大纲 |
 | `scenes` | Step 3 剧本结果 |
 | `wb_history / wb_turn` | 世界观问答历史 |
-| `character_images` | 角色设定图资产，主键已收口到 `character_id`，同时兼容旧名字 key |
+| `character_images` | 角色设定图资产，主键已统一为 `character_id`，旧名字 key 不再兼容 |
 | `art_style` | 故事级基线画风 |
 
 ### 2.2 `pipelines` 表
