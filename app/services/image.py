@@ -32,6 +32,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "black-forest-labs/FLUX.1-schnell"
 IMAGE_SIZE = "1280x720"
 CHARACTER_SIZE = "1024x1024"
+_TRANSIENT_HTTP_EXCEPTIONS = (
+    httpx.ReadError,
+    httpx.ConnectError,
+    httpx.RemoteProtocolError,
+    httpx.TimeoutException,
+)
 CHARACTER_NEGATIVE_PROMPT = (
     "text, captions, labels, watermark, logo, speech bubble, poster, signboard, "
     "extra props, unrelated objects, foreground obstruction, hands covering face, "
@@ -55,6 +61,57 @@ def _versioned_media_name(stem: str, suffix: str) -> str:
     safe_stem = re.sub(r"[^A-Za-z0-9_-]", "_", stem)
     safe_stem = re.sub(r"_+", "_", safe_stem).strip("_") or "asset"
     return f"{safe_stem}_{token}{suffix}"
+
+
+def _sanitize_remote_target(target: str) -> str:
+    parsed = urlparse(target or "")
+    if not parsed.scheme and not parsed.netloc:
+        return target
+    sanitized = f"{parsed.scheme}://{parsed.netloc}{parsed.path}" if parsed.scheme else f"{parsed.netloc}{parsed.path}"
+    return sanitized or target
+
+
+async def _request_with_retry(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    *,
+    log_label: str,
+    attempts: int = 3,
+    **kwargs,
+) -> httpx.Response:
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return await client.request(method, url, **kwargs)
+        except _TRANSIENT_HTTP_EXCEPTIONS as exc:
+            last_exc = exc
+            logger.warning(
+                "%s transient failure attempt=%s/%s target=%s error=%r",
+                log_label,
+                attempt,
+                attempts,
+                _sanitize_remote_target(url),
+                exc,
+            )
+            if attempt == attempts:
+                break
+            await asyncio.sleep(min(2 * attempt, 5))
+    assert last_exc is not None
+    raise last_exc
+
+
+def _format_upstream_http_error(action: str, target: str, exc: Exception) -> str:
+    detail = str(exc).strip() or repr(exc) or exc.__class__.__name__
+    return f"{action} failed for {_sanitize_remote_target(target)}: {detail}"
+
+
+def _set_response_metadata(resp: Any, **fields) -> None:
+    extensions = getattr(resp, "extensions", None)
+    if not isinstance(extensions, dict):
+        extensions = {}
+        setattr(resp, "extensions", extensions)
+    extensions.update(fields)
 
 
 def _extract_image_url(resp) -> str:
@@ -252,12 +309,20 @@ async def generate_image(
             if len(resolved_reference_strengths) == len(resolved_reference_images):
                 payload["reference_strengths"] = resolved_reference_strengths
 
+        submit_url = f"{base_url}/images/generations"
+
         async def _submit(request_payload: dict) -> httpx.Response:
-            return await client.post(
-                f"{base_url}/images/generations",
-                headers={"Authorization": f"Bearer {image_api_key}"},
-                json=request_payload,
-            )
+            try:
+                return await _request_with_retry(
+                    client,
+                    "POST",
+                    submit_url,
+                    log_label=f"Image generation request shot_id={shot_id}",
+                    headers={"Authorization": f"Bearer {image_api_key}"},
+                    json=request_payload,
+                )
+            except httpx.RequestError as exc:
+                raise RuntimeError(_format_upstream_http_error("Image generation request", submit_url, exc)) from exc
 
         effective_payload = dict(payload)
         resp = await _submit(effective_payload)
@@ -293,6 +358,11 @@ async def generate_image(
             effective_payload.pop("reference_images", None)
             effective_payload.pop("reference_strengths", None)
             resp = await _submit(effective_payload)
+            _set_response_metadata(
+                resp,
+                reference_images_applied=False,
+                dropped_reference_count=len(resolved_reference_images),
+            )
             print(f"[IMAGE][RETRY_NO_REFERENCE] status={resp.status_code} key={mask_key(image_api_key)} base={base_url}")
             logger.warning(
                 "Image provider retry without reference_images finished. shot_id=%s status=%s key=%s provider_rejection=1 response_bytes=%s",
@@ -301,13 +371,33 @@ async def generate_image(
                 mask_key(image_api_key),
                 len(resp.content or b""),
             )
+        elif resolved_reference_images:
+            _set_response_metadata(
+                resp,
+                reference_images_applied=True,
+                dropped_reference_count=0,
+            )
+        else:
+            _set_response_metadata(
+                resp,
+                reference_images_applied=False,
+                dropped_reference_count=0,
+            )
         if not resp.is_success:
             raise RuntimeError(f"图片生成 API 错误 {resp.status_code}: {resp.text[:200]}")
         image_url = _extract_image_url(resp)
 
         # Download and save locally
-        img_resp = await client.get(image_url)
-        img_resp.raise_for_status()
+        try:
+            img_resp = await _request_with_retry(
+                client,
+                "GET",
+                image_url,
+                log_label=f"Image download shot_id={shot_id}",
+            )
+            img_resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise RuntimeError(_format_upstream_http_error("Image download", image_url, exc)) from exc
 
     target_dir = output_dir or IMAGE_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -320,6 +410,8 @@ async def generate_image(
         "shot_id": shot_id,
         "image_path": str(output_path),
         "image_url": f"{url_prefix.rstrip('/')}/{filename}",
+        "reference_images_applied": bool(getattr(resp, "extensions", {}).get("reference_images_applied", False)),
+        "dropped_reference_count": int(getattr(resp, "extensions", {}).get("dropped_reference_count", 0) or 0),
     }
 
 
@@ -356,6 +448,8 @@ async def generate_images_batch(shots: list[dict], model: str = DEFAULT_MODEL, i
             "shot_id": shot["shot_id"],
             "image_path": result["image_path"],
             "image_url": result["image_url"],
+            "reference_images_applied": bool(result.get("reference_images_applied", False)),
+            "dropped_reference_count": int(result.get("dropped_reference_count", 0) or 0),
         }
         for shot, result in zip(shots, results)
     ]
@@ -389,12 +483,20 @@ async def generate_character_image(
             "negative_prompt": CHARACTER_NEGATIVE_PROMPT,
         }
 
+        submit_url = f"{base_url}/images/generations"
+
         async def _submit(request_payload: dict) -> httpx.Response:
-            return await client.post(
-                f"{base_url}/images/generations",
-                headers={"Authorization": f"Bearer {image_api_key}"},
-                json=request_payload,
-            )
+            try:
+                return await _request_with_retry(
+                    client,
+                    "POST",
+                    submit_url,
+                    log_label=f"Character image request character={character_name}",
+                    headers={"Authorization": f"Bearer {image_api_key}"},
+                    json=request_payload,
+                )
+            except httpx.RequestError as exc:
+                raise RuntimeError(_format_upstream_http_error("Character image request", submit_url, exc)) from exc
 
         resp = await _submit(payload)
         print(f"[CHARACTER IMAGE] status={resp.status_code} key={mask_key(image_api_key)} base={base_url} for {character_name}")
@@ -414,8 +516,16 @@ async def generate_character_image(
             raise RuntimeError(f"角色图生成 API 错误 {resp.status_code}: {resp.text[:500]}")
         image_url = _extract_image_url(resp)
 
-        img_resp = await client.get(image_url)
-        img_resp.raise_for_status()
+        try:
+            img_resp = await _request_with_retry(
+                client,
+                "GET",
+                image_url,
+                log_label=f"Character image download character={character_name}",
+            )
+            img_resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise RuntimeError(_format_upstream_http_error("Character image download", image_url, exc)) from exc
 
     # Generate unique filename
     hash_input = f"{story_id}_{character_name}_{time.time()}"

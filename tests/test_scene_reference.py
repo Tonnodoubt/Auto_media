@@ -1,3 +1,5 @@
+# ruff: noqa: RUF001
+
 import unittest
 from typing import Optional
 from unittest.mock import AsyncMock, patch
@@ -93,6 +95,24 @@ class SceneReferencePromptTests(unittest.TestCase):
         self.assertIn("person", prompts["scene"]["negative_prompt"])
         self.assertIn("costume", prompts["scene"]["negative_prompt"])
         self.assertIn("split composition", prompts["scene"]["negative_prompt"])
+
+    def test_build_episode_environment_prompts_preserves_specific_environment_description(self):
+        prompts = build_episode_environment_prompts(
+            [
+                {
+                    "scene_number": 1,
+                    "environment": "夜晚，孤儿院宿舍内。房间简陋但整洁，一张木床靠墙放置，窗外月光洒入。",
+                    "visual": "林浩从床上惊醒，视线扫过木床、旧书桌和窗边。",
+                    "lighting": "冷白色月光从窗户左侧照射进来，室内角落部分被阴影覆盖。",
+                    "mood": "平静转为惊讶",
+                }
+            ],
+            story_context=None,
+            art_style="写实摄影风格",
+        )
+
+        self.assertIn("一张木床靠墙放置", prompts["scene"]["prompt"])
+        self.assertIn("Do not replace this with a generic room", prompts["scene"]["prompt"])
 
 
 class SceneReferenceRouteTests(unittest.IsolatedAsyncioTestCase):

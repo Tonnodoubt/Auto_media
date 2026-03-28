@@ -18,6 +18,33 @@ COMMON_BINARY_DIRS = (
 )
 
 
+def _binary_candidates(binary_name):
+    if platform.system().lower() == "windows" and not binary_name.lower().endswith(".exe"):
+        return (binary_name, f"{binary_name}.exe")
+    return (binary_name,)
+
+
+def _find_winget_binary(binary_name, env):
+    if platform.system().lower() != "windows":
+        return None
+
+    local_app_data = env.get("LOCALAPPDATA", "").strip()
+    if not local_app_data:
+        return None
+
+    packages_dir = Path(local_app_data) / "Microsoft" / "WinGet" / "Packages"
+    if not packages_dir.exists():
+        return None
+
+    for candidate_name in _binary_candidates(binary_name):
+        matches = sorted(packages_dir.glob(f"**/{candidate_name}"), reverse=True)
+        for match in matches:
+            if match.is_file():
+                return str(match)
+
+    return None
+
+
 def _format_cmd(cmd):
     if isinstance(cmd, str):
         return cmd
@@ -63,14 +90,20 @@ def resolve_binary(binary_name, env):
             raise RuntimeError(f"{env_name} 指向的 {binary_name} 不是可执行文件: {configured}")
         raise RuntimeError(f"{env_name} 指向的 {binary_name} 不存在: {configured}")
 
-    resolved = shutil.which(binary_name, path=env.get("PATH"))
-    if resolved:
-        return resolved
+    for candidate_name in _binary_candidates(binary_name):
+        resolved = shutil.which(candidate_name, path=env.get("PATH"))
+        if resolved:
+            return resolved
 
-    for directory in COMMON_BINARY_DIRS:
-        candidate = directory / binary_name
-        if _is_executable_file(candidate):
-            return str(candidate)
+    for candidate_name in _binary_candidates(binary_name):
+        for directory in COMMON_BINARY_DIRS:
+            candidate = directory / candidate_name
+            if _is_executable_file(candidate):
+                return str(candidate)
+
+    winget_binary = _find_winget_binary(binary_name, env)
+    if winget_binary:
+        return winget_binary
 
     raise FileNotFoundError(f"未找到 {binary_name} 可执行文件")
 
@@ -89,6 +122,19 @@ def detect_ffmpeg_install_command(env=None):
     runtime_env = env or build_runtime_env()
     runtime_path = runtime_env.get("PATH")
     system = platform.system().lower()
+    if system == "windows" and shutil.which("winget", path=runtime_path):
+        return [
+            "winget",
+            "install",
+            "--id",
+            "Gyan.FFmpeg",
+            "--exact",
+            "--accept-source-agreements",
+            "--accept-package-agreements",
+            "--disable-interactivity",
+        ], "winget"
+    if system == "windows" and shutil.which("choco", path=runtime_path):
+        return ["choco", "install", "ffmpeg", "-y"], "Chocolatey"
     if system == "darwin" and shutil.which("brew", path=runtime_path):
         return ["brew", "install", "ffmpeg"], "Homebrew"
     if system == "linux" and shutil.which("apt-get", path=runtime_path):
@@ -132,7 +178,7 @@ def ensure_ffmpeg(env):
             ffprobe_path = resolve_binary("ffprobe", env)
         else:
             print_ffmpeg_help()
-            raise SystemExit(1)
+            raise SystemExit(1) from None
     except RuntimeError as exc:
         print(f"\n[依赖] {exc}")
         raise SystemExit(1) from exc

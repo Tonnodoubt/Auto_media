@@ -1009,7 +1009,7 @@ def _scene_reference_prompt_extra(asset: Mapping[str, Any] | None, shot: ShotLik
     lighting_anchor = ""
     if prompt:
         shared_match = re.search(r"Shared environment:\s*([^.]*)\.", prompt, flags=re.IGNORECASE)
-        local_match = re.search(r"Local visual anchors:\s*([^.]*)\.", prompt, flags=re.IGNORECASE)
+        local_match = re.search(r"(?:Local visual anchors|Stable prop anchors):\s*([^.]*)\.", prompt, flags=re.IGNORECASE)
         light_match = re.search(r"Lighting anchor:\s*([^.]*)\.", prompt, flags=re.IGNORECASE)
         shared_environment = _collapse_spaces(shared_match.group(1) if shared_match else "")
         local_visual_anchors = _collapse_spaces(local_match.group(1) if local_match else "")
@@ -1046,14 +1046,16 @@ def _scene_reference_prompt_extra(asset: Mapping[str, Any] | None, shot: ShotLik
     return _sentence(separator.join(parts), lang)
 
 
-def _primary_character_reference_image(story: Mapping[str, Any] | None, shot: ShotLike) -> dict[str, Any]:
+def _matched_character_reference_images(story: Mapping[str, Any] | None, shot: ShotLike) -> list[dict[str, Any]]:
     if not isinstance(story, Mapping):
-        return {}
+        return []
     characters = story.get("characters")
     character_images = story.get("character_images")
     if not isinstance(characters, list) or not isinstance(character_images, Mapping):
-        return {}
+        return []
 
+    references: list[dict[str, Any]] = []
+    weights = (0.64, 0.56)
     for character in characters:
         if not isinstance(character, Mapping):
             continue
@@ -1064,13 +1066,17 @@ def _primary_character_reference_image(story: Mapping[str, Any] | None, shot: Sh
         image_url = _collapse_spaces(str(entry.get("image_url", "")))
         image_path = _collapse_spaces(str(entry.get("image_path", "")))
         if image_url or image_path:
-            return {
-                "kind": "character",
-                "image_url": image_url,
-                "image_path": image_path,
-                "weight": 0.58,
-            }
-    return {}
+            references.append(
+                {
+                    "kind": "character",
+                    "image_url": image_url,
+                    "image_path": image_path,
+                    "weight": weights[min(len(references), len(weights) - 1)],
+                }
+            )
+        if len(references) >= 2:
+            break
+    return references
 
 
 def _build_reference_images(
@@ -1079,9 +1085,7 @@ def _build_reference_images(
     scene_asset: Mapping[str, Any] | None,
 ) -> list[dict[str, Any]]:
     references: list[dict[str, Any]] = []
-    character_reference = _primary_character_reference_image(story, shot)
-    if character_reference:
-        references.append(character_reference)
+    references.extend(_matched_character_reference_images(story, shot))
 
     if isinstance(scene_asset, Mapping):
         variants = scene_asset.get("variants")
@@ -1095,7 +1099,7 @@ def _build_reference_images(
                         "kind": "scene",
                         "image_url": image_url,
                         "image_path": image_path,
-                        "weight": 0.42,
+                        "weight": 0.36,
                     }
                 )
 
@@ -1107,7 +1111,7 @@ def _build_reference_images(
             continue
         deduped.append(item)
         seen.add(key)
-    return deduped[:2]
+    return deduped[:3]
 
 
 def _merge_reference_images(*sources: Any) -> list[Any]:
@@ -1165,14 +1169,25 @@ def build_image_generation_prompt(
     )
 
 
-def build_video_generation_prompt(shot: ShotLike, ctx: StoryContext | None, art_style: str = "") -> str:
+def build_video_generation_prompt(
+    shot: ShotLike,
+    ctx: StoryContext | None,
+    art_style: str = "",
+    scene_reference_extra: str = "",
+) -> str:
     base_prompt = str(_shot_field(shot, "final_video_prompt", "") or _shot_field(shot, "image_prompt", ""))
     if not ctx:
-        return inject_art_style(base_prompt, art_style)
+        merged = " ".join(part for part in (base_prompt, scene_reference_extra) if _collapse_spaces(part))
+        return inject_art_style(merged, art_style)
+    scene_bits = [
+        part
+        for part in (scene_reference_extra, _scene_style_extra(ctx, shot, "video"))
+        if _collapse_spaces(part)
+    ]
     return _merge_prompt(
         base_prompt,
         _appearance_prefix(shot, ctx, include_clothing=True),
-        _scene_style_extra(ctx, shot, "video"),
+        " ".join(scene_bits),
         art_style or ctx.base_art_style,
     )
 
@@ -1208,7 +1223,12 @@ def build_generation_payload(
             art_style=art_style,
             scene_reference_extra=scene_reference_extra,
         ),
-        "final_video_prompt": build_video_generation_prompt(shot, ctx, art_style=art_style),
+        "final_video_prompt": build_video_generation_prompt(
+            shot,
+            ctx,
+            art_style=art_style,
+            scene_reference_extra=scene_reference_extra,
+        ),
     }
     if source_scene_key:
         payload["source_scene_key"] = source_scene_key

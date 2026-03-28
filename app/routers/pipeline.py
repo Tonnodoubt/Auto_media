@@ -45,6 +45,9 @@ router = APIRouter(prefix="/api/v1/pipeline", tags=["pipeline"])
 logger = logging.getLogger(__name__)
 
 _DEFAULT_STEP = "Waiting to start"
+_TERMINAL_PUNCTUATION = " ,.;:!?\uFF0C\u3002\uFF1B\uFF1A\uFF01\uFF1F\u3001"
+_CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]")
+_CJK_SENTENCE_PUNCTUATION_RE = re.compile(r"[\u3002\uFF01\uFF1F\uFF1B\uFF0C\u3001,.!?;:]")
 
 def _default_pipeline_record(*, project_id: str, story_id: str | None = None) -> dict:
     return {
@@ -161,6 +164,36 @@ async def _load_story_context(
     return story or None, story_context
 
 
+async def _safe_persist_storyboard_generation_state(
+    db: AsyncSession,
+    *,
+    step: str,
+    tracking_story_id: str,
+    story,
+    pipeline_id: str = "",
+    project_id: str = "",
+    **kwargs,
+) -> None:
+    try:
+        await persist_storyboard_generation_state(
+            db,
+            story_id=tracking_story_id,
+            story=story,
+            pipeline_id=pipeline_id,
+            project_id=project_id,
+            **kwargs,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Storyboard persistence failed step=%s project_id=%s pipeline_id=%s story_id=%s error=%s",
+            step,
+            project_id,
+            pipeline_id,
+            tracking_story_id,
+            exc,
+        )
+
+
 def _collapse_spaces(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
@@ -171,6 +204,30 @@ def _trim_words(text: str, limit: int) -> str:
     if len(words) <= limit:
         return normalized.strip(" ,.;:!?，。；：！？、")
     return " ".join(words[:limit]).strip(" ,.;:!?，。；：！？、")
+
+
+def _trim_words_cjk_aware(text: str, limit: int) -> str:
+    normalized = _collapse_spaces(text)
+    words = normalized.split()
+    if len(words) == 1 and _CJK_RE.search(_collapse_spaces(normalized)):
+        if len(normalized) <= limit:
+            return normalized.strip(_TERMINAL_PUNCTUATION)
+        trimmed = normalized[:limit]
+        nearby_suffix = normalized[limit : limit + 8]
+        suffix_match = _CJK_SENTENCE_PUNCTUATION_RE.search(nearby_suffix)
+        if suffix_match:
+            trimmed = normalized[: limit + suffix_match.start() + 1]
+        else:
+            prefix_matches = list(_CJK_SENTENCE_PUNCTUATION_RE.finditer(trimmed))
+            if prefix_matches:
+                trimmed = trimmed[: prefix_matches[-1].start() + 1]
+        return trimmed.strip(_TERMINAL_PUNCTUATION)
+    if len(words) <= limit:
+        return normalized.strip(_TERMINAL_PUNCTUATION)
+    return " ".join(words[:limit]).strip(_TERMINAL_PUNCTUATION)
+
+
+_trim_words = _trim_words_cjk_aware
 
 
 def _merge_generated_files(existing: dict | None, incoming: dict | None) -> dict:
@@ -511,9 +568,10 @@ async def generate_storyboard(
         },
     )
     if tracking_story_id and story:
-        await persist_storyboard_generation_state(
+        await _safe_persist_storyboard_generation_state(
             db,
-            story_id=tracking_story_id,
+            step="generate_storyboard",
+            tracking_story_id=tracking_story_id,
             story=story,
             shots=shots,
             usage={
@@ -687,9 +745,10 @@ async def generate_assets(
                 merge_generated_files=True,
             )
             if resolved_story_id and story:
-                await persist_storyboard_generation_state(
+                await _safe_persist_storyboard_generation_state(
                     db_session,
-                    story_id=resolved_story_id,
+                    step="generate_assets",
+                    tracking_story_id=resolved_story_id,
                     story=story,
                     shots=shots,
                     partial_shots=False,
@@ -838,9 +897,10 @@ async def render_video(
                 merge_generated_files=True,
             )
             if resolved_story_id and story:
-                await persist_storyboard_generation_state(
+                await _safe_persist_storyboard_generation_state(
                     db_session,
-                    story_id=resolved_story_id,
+                    step="render_video",
+                    tracking_story_id=resolved_story_id,
                     story=story,
                     shots=shots_data,
                     partial_shots=True,
@@ -933,8 +993,8 @@ async def generate_transition(
         story_id=resolve_tracking_story_id(project_id, _normalize_optional_id(req.story_id)),
     )
     tracking_story_id = (
-        _normalize_optional_id(req.story_id)
-        or _normalize_optional_id(pipeline.get("story_id"))
+        _normalize_optional_id(pipeline.get("story_id"))
+        or _normalize_optional_id(req.story_id)
         or project_id
     )
     generated_files = dict(pipeline.get("generated_files") or {})
@@ -942,8 +1002,14 @@ async def generate_transition(
     story = await repo.get_story(db, tracking_story_id) if tracking_story_id else None
     stored_state = load_storyboard_generation_state(story)
     stored_generated_files = dict(stored_state.get("generated_files") or {})
-    storyboard_payload = generated_files.get("storyboard") or stored_generated_files.get("storyboard") or {}
-    storyboard_shots = storyboard_payload.get("shots") if isinstance(storyboard_payload, dict) else None
+    storyboard_generation = stored_state.get("storyboard_generation")
+    if not isinstance(storyboard_generation, dict):
+        storyboard_generation = stored_state
+    storyboard_shots = storyboard_generation.get("shots") if isinstance(storyboard_generation, dict) else None
+    storyboard_payload = {}
+    if not isinstance(storyboard_shots, list) or not storyboard_shots:
+        storyboard_payload = generated_files.get("storyboard") or stored_generated_files.get("storyboard") or {}
+        storyboard_shots = storyboard_payload.get("shots") if isinstance(storyboard_payload, dict) else None
     if not isinstance(storyboard_shots, list) or not storyboard_shots:
         storyboard_shots = list(stored_state.get("shots") or [])
     if not storyboard_shots:
@@ -1112,26 +1178,18 @@ async def generate_transition(
 
     persisted_story = await repo.get_story(db, tracking_story_id) if tracking_story_id else None
     if persisted_story:
-        try:
-            await persist_storyboard_generation_state(
-                db,
-                story_id=tracking_story_id,
-                story=persisted_story,
-                generated_files={
-                    "transitions": {transition_id: result},
-                    "timeline": timeline,
-                },
-                pipeline_id=normalized_pipeline_id,
-                project_id=project_id,
-            )
-        except Exception:
-            logger.exception(
-                "Transition storyboard persistence failed project_id=%s pipeline_id=%s story_id=%s transition_id=%s",
-                project_id,
-                normalized_pipeline_id,
-                tracking_story_id,
-                transition_id,
-            )
+        await _safe_persist_storyboard_generation_state(
+            db,
+            step=f"generate_transition:{transition_id}",
+            tracking_story_id=tracking_story_id,
+            story=persisted_story,
+            generated_files={
+                "transitions": {transition_id: result},
+                "timeline": timeline,
+            },
+            pipeline_id=normalized_pipeline_id,
+            project_id=project_id,
+        )
 
     return TransitionResult(**result)
 
@@ -1261,9 +1319,10 @@ async def concat_videos(
     if resolved_story_id:
         story = await repo.get_story(db, resolved_story_id)
         if story:
-            await persist_storyboard_generation_state(
+            await _safe_persist_storyboard_generation_state(
                 db,
-                story_id=resolved_story_id,
+                step="concat_videos",
+                tracking_story_id=resolved_story_id,
                 story=story,
                 pipeline_id=normalized_pipeline_id or "",
                 project_id=project_id,

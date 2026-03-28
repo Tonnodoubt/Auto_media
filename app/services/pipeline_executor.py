@@ -78,8 +78,7 @@ class PipelineExecutor:
         effective_story_id = (story_id or self.story_id or "").strip()
         if effective_story_id:
             self.story_id = effective_story_id
-            self.story, self.story_context = await prepare_story_context(
-                self.db,
+            self.story, self.story_context = await self._prepare_story_context(
                 effective_story_id,
                 provider=provider,
                 model=model or "",
@@ -142,6 +141,28 @@ class PipelineExecutor:
 
         except Exception as e:
             await self._update_state(PipelineStatus.FAILED, 0, "生成失败", error=str(e))
+            raise
+
+    async def _prepare_story_context(
+        self,
+        effective_story_id: str,
+        *,
+        provider: str,
+        model: str,
+        api_key: str,
+        base_url: str,
+    ):
+        try:
+            return await prepare_story_context(
+                self.db,
+                effective_story_id,
+                provider=provider,
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
+            )
+        except Exception as exc:
+            await self._update_state(PipelineStatus.FAILED, 0, "Story context failed", error=str(exc))
             raise
 
     async def _run_separated_strategy(
@@ -350,8 +371,41 @@ class PipelineExecutor:
             art_style=self.art_style,
             story=self.story,
         )
-        if self.story_context or self.story:
+        if self.story_context:
             return payload
+        if self.story:
+            story_character_info = self.character_info
+            if not story_character_info and isinstance(self.story, dict):
+                characters = self.story.get("characters", [])
+                character_images = self.story.get("character_images", {})
+                if characters:
+                    story_character_info = {
+                        "characters": characters,
+                        "character_images": character_images or {},
+                    }
+            fallback_payload = {
+                "shot_id": payload.get("shot_id", shot.shot_id),
+                "image_prompt": self._enhance_prompt_with_character(
+                    payload["image_prompt"],
+                    story_character_info,
+                    shot,
+                ),
+                "final_video_prompt": self._enhance_prompt_with_character(
+                    payload["final_video_prompt"],
+                    story_character_info,
+                    shot,
+                ),
+            }
+            negative_prompt = payload.get("negative_prompt")
+            if negative_prompt:
+                fallback_payload["negative_prompt"] = negative_prompt
+            reference_images = payload.get("reference_images")
+            if reference_images:
+                fallback_payload["reference_images"] = reference_images
+            source_scene_key = payload.get("source_scene_key")
+            if source_scene_key:
+                fallback_payload["source_scene_key"] = source_scene_key
+            return fallback_payload
 
         # Fallback for legacy no-story-id flows. Keep the old enhancement path available
         # until all entry points consistently pass through StoryContext.

@@ -4,6 +4,7 @@ FFmpeg 音视频合成服务 — 将无声视频与 TTS 音频合并为有声 MP
 import asyncio
 import logging
 import os
+import platform
 import shutil
 import tempfile
 from functools import lru_cache
@@ -20,6 +21,33 @@ _COMMON_BINARY_DIRS = (
     Path("/opt/local/bin"),
     Path.home() / ".local/bin",
 )
+
+
+def _binary_candidates(binary_name: str) -> tuple[str, ...]:
+    if platform.system().lower() == "windows" and not binary_name.lower().endswith(".exe"):
+        return (binary_name, f"{binary_name}.exe")
+    return (binary_name,)
+
+
+def _find_winget_binary(binary_name: str) -> str | None:
+    if platform.system().lower() != "windows":
+        return None
+
+    local_app_data = os.getenv("LOCALAPPDATA", "").strip()
+    if not local_app_data:
+        return None
+
+    packages_dir = Path(local_app_data) / "Microsoft" / "WinGet" / "Packages"
+    if not packages_dir.exists():
+        return None
+
+    for candidate_name in _binary_candidates(binary_name):
+        matches = sorted(packages_dir.glob(f"**/{candidate_name}"), reverse=True)
+        for match in matches:
+            if match.is_file() and os.access(str(match), os.X_OK):
+                return str(match)
+
+    return None
 
 
 @lru_cache(maxsize=None)
@@ -41,14 +69,20 @@ def resolve_media_binary(binary_name: str) -> str:
             raise RuntimeError(f"环境变量 {env_name} 指向的路径不是可执行文件: {configured}")
         raise RuntimeError(f"环境变量 {env_name} 指向的 {binary_name} 不存在: {configured}")
 
-    resolved = shutil.which(binary_name)
-    if resolved:
-        return resolved
+    for candidate_name in _binary_candidates(binary_name):
+        resolved = shutil.which(candidate_name)
+        if resolved:
+            return resolved
 
-    for directory in _COMMON_BINARY_DIRS:
-        candidate = directory / binary_name
-        if _is_executable_file(candidate):
-            return str(candidate)
+    for candidate_name in _binary_candidates(binary_name):
+        for directory in _COMMON_BINARY_DIRS:
+            candidate = directory / candidate_name
+            if _is_executable_file(candidate):
+                return str(candidate)
+
+    winget_binary = _find_winget_binary(binary_name)
+    if winget_binary:
+        return winget_binary
 
     raise RuntimeError(
         f"未找到 {binary_name} 可执行文件，请先安装 FFmpeg，或通过环境变量 {env_name} 指定路径。"

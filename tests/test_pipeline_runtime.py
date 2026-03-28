@@ -1,3 +1,5 @@
+# ruff: noqa: RUF001
+
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -15,6 +17,7 @@ from app.main import app
 from app.routers.image import generate_images as generate_single_images, ImageRequest
 from app.routers.pipeline import (
     _persist_manual_pipeline_state,
+    _trim_words,
     concat_videos,
     generate_assets,
     generate_storyboard,
@@ -83,6 +86,69 @@ class PipelineRuntimeHelperTests(unittest.TestCase):
 
         self.assertEqual(payload["source_scene_key"], "ep01_scene01")
         self.assertEqual(len(payload["reference_images"]), 2)
+
+    def test_executor_generation_payload_story_only_fallback_keeps_character_anchor(self):
+        executor = PipelineExecutor("project-1", "pipeline-1", None)
+        executor.art_style = "cinematic watercolor"
+        executor.story_context = None
+        executor.story = {
+            "characters": [
+                {
+                    "id": "char_li_ming",
+                    "name": "Li Ming",
+                    "description": "young man, short black hair, wearing a dark blue robe.",
+                }
+            ],
+            "character_images": {
+                "char_li_ming": {
+                    "design_prompt": (
+                        "Standard three-view character turnaround sheet for Li Ming, protagonist, determined expression, "
+                        "character description: young man, short black hair, wearing a dark blue robe."
+                    )
+                }
+            },
+            "meta": {
+                "scene_reference_assets": {
+                    "ep01_scene01": {
+                        "summary_environment": "office lobby",
+                        "summary_visuals": ["glass doors", "reception desk"],
+                        "variants": {
+                            "scene": {
+                                "image_url": "/media/episodes/office.png",
+                                "image_path": "media/episodes/office.png",
+                            }
+                        },
+                    }
+                }
+            },
+        }
+
+        payload = executor._build_generation_payload(
+            Shot(
+                shot_id="scene1_shot1",
+                source_scene_key="ep01_scene01",
+                storyboard_description="Li Ming pauses at the doorway.",
+                camera_setup=CameraSetup(shot_size="MS", camera_angle="Eye-level", movement="Static"),
+                visual_elements=VisualElements(
+                    subject_and_clothing="Li Ming in a dark robe",
+                    action_and_expression="pauses before entering",
+                    environment_and_props="office lobby doorway",
+                    lighting_and_color="soft overcast light",
+                ),
+                image_prompt="Medium shot. Li Ming pauses at the doorway.",
+                final_video_prompt="Medium shot. Static camera. Li Ming steps forward.",
+            )
+        )
+
+        self.assertIn("[Character Li Ming:", payload["image_prompt"])
+        self.assertIn("office lobby", payload["image_prompt"])
+        self.assertEqual(payload["source_scene_key"], "ep01_scene01")
+        self.assertTrue(payload["reference_images"])
+
+    def test_trim_words_limits_cjk_without_whitespace(self):
+        trimmed = _trim_words("保持同一人物与服装，动作从门口延续到进入房间。", 6)
+
+        self.assertEqual(trimmed, "保持同一人物与服装")
 
     def test_resolve_tracking_story_id_prefers_story_id(self):
         self.assertEqual(resolve_tracking_story_id("project-1", "story-1"), "story-1")
@@ -429,6 +495,34 @@ class PipelineStoryContextFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(prepare_mock.await_args.args[1], "story-from-call")
         self.assertEqual(executor.story_id, "story-from-call")
 
+    async def test_pipeline_executor_marks_failed_when_prepare_story_context_raises(self):
+        executor = PipelineExecutor("legacy-project", "pipe-ctx-3", db=None, story_id="story-ctx-error")
+
+        with (
+            patch(
+                "app.services.pipeline_executor.prepare_story_context",
+                new=AsyncMock(side_effect=RuntimeError("context failed")),
+            ),
+            patch.object(executor, "_update_state", new=AsyncMock()) as update_state,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "context failed"):
+                await executor.run_full_pipeline(
+                    script="scene script",
+                    strategy=GenerationStrategy.SEPARATED,
+                    provider="openai",
+                    model="gpt-test",
+                    voice="zh-CN-XiaoxiaoNeural",
+                    image_model="flux",
+                    video_model="wan",
+                    base_url="http://localhost:8000",
+                    llm_api_key="test-key",
+                    story_id="story-ctx-error",
+                )
+
+        update_state.assert_awaited_once()
+        self.assertEqual(update_state.await_args.args[0], PipelineStatus.FAILED)
+        self.assertEqual(update_state.await_args.kwargs["error"], "context failed")
+
     async def test_generate_storyboard_loads_context_from_tracking_story_id(self):
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -459,6 +553,46 @@ class PipelineStoryContextFallbackTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(load_mock.await_args.args[1], "story-from-route")
         self.assertEqual(len(result.shots), 1)
+
+    async def test_generate_storyboard_returns_success_when_storyboard_persist_fails(self):
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        request = Request({"type": "http", "headers": []})
+        req = StoryboardRequest(script="scene script", provider="openai", model="gpt-test", story_id="story-best-effort")
+
+        try:
+            async with session_factory() as session:
+                with (
+                    patch(
+                        "app.routers.pipeline._load_story_context",
+                        new=AsyncMock(return_value=({"id": "story-best-effort", "meta": {}}, None)),
+                    ),
+                    patch(
+                        "app.routers.pipeline.parse_script_to_storyboard",
+                        new=AsyncMock(return_value=([self._make_shot()], {"prompt_tokens": 1, "completion_tokens": 1})),
+                    ),
+                    patch(
+                        "app.routers.pipeline.persist_storyboard_generation_state",
+                        new=AsyncMock(side_effect=RuntimeError("persist failed")),
+                    ),
+                ):
+                    result = await generate_storyboard(
+                        "story-best-effort",
+                        request,
+                        req,
+                        llm={"provider": "openai", "model": "gpt-test", "api_key": "test-key", "base_url": "https://example.com/v1"},
+                        db=session,
+                    )
+                    pipeline = await repo.get_pipeline(session, result.pipeline_id)
+        finally:
+            await engine.dispose()
+
+        self.assertEqual(result.story_id, "story-best-effort")
+        self.assertEqual(len(result.shots), 1)
+        self.assertEqual(pipeline["progress"], 30)
 
 
 class ManualPipelineMainlineTests(unittest.IsolatedAsyncioTestCase):
@@ -907,6 +1041,121 @@ class ManualPipelineMainlineTests(unittest.IsolatedAsyncioTestCase):
             "Transition requires both adjacent shot videos to be generated first. Missing video for: scene1_shot1, scene1_shot2",
         )
 
+    async def test_generate_transition_prefers_pipeline_story_and_persisted_shot_order(self):
+        project_id = "manual-project"
+        story_id = "story-transition-canonical"
+        stale_story_id = "story-transition-stale"
+        pipeline_id = "pipe-transition-canonical"
+        request = self._make_request()
+        shot_one = self._make_shot()
+        shot_two = Shot(
+            shot_id="scene1_shot2",
+            storyboard_description="Li Ming enters the room and looks toward the desk.",
+            camera_setup=CameraSetup(shot_size="MS", camera_angle="Eye-level", movement="Slow Dolly in"),
+            visual_elements=VisualElements(
+                subject_and_clothing="Li Ming in a dark robe",
+                action_and_expression="steps into the room and raises his gaze",
+                environment_and_props="wooden room with a desk",
+                lighting_and_color="soft overcast light",
+            ),
+            image_prompt="Medium shot. Li Ming enters the room and looks toward the desk.",
+            final_video_prompt="Medium shot. Slow Dolly in. Li Ming steps toward the desk.",
+            transition_from_previous="保持同一人物与服装，动作从门口延续到进入房间。",
+        )
+
+        async with self.session_factory() as session:
+            await repo.save_story(
+                session,
+                story_id,
+                {
+                    "idea": "idea",
+                    "genre": "genre",
+                    "tone": "tone",
+                    "meta": {
+                        "storyboard_generation": {
+                            "pipeline_id": pipeline_id,
+                            "project_id": project_id,
+                            "story_id": story_id,
+                            "shots": [shot_two.model_dump(mode="json"), shot_one.model_dump(mode="json")],
+                        }
+                    },
+                },
+            )
+            await repo.save_pipeline(
+                session,
+                pipeline_id,
+                story_id,
+                {
+                    "status": PipelineStatus.RENDERING_VIDEO,
+                    "progress": 85,
+                    "current_step": "Videos ready",
+                    "generated_files": {
+                        "storyboard": {
+                            "shots": [shot_one.model_dump(mode="json"), shot_two.model_dump(mode="json")],
+                        },
+                        "videos": {
+                            shot_one.shot_id: {
+                                "shot_id": shot_one.shot_id,
+                                "video_url": "/media/videos/scene1_shot1.mp4",
+                            },
+                            shot_two.shot_id: {
+                                "shot_id": shot_two.shot_id,
+                                "video_url": "/media/videos/scene1_shot2.mp4",
+                            },
+                        },
+                    },
+                },
+            )
+
+            with (
+                patch("app.routers.pipeline._load_story_context", new=AsyncMock(return_value=({}, None))) as load_mock,
+                patch(
+                    "app.services.ffmpeg.extract_last_frame",
+                    new=AsyncMock(return_value="media/images/transition_scene1_shot2__scene1_shot1_from_last.png"),
+                ),
+                patch(
+                    "app.services.ffmpeg.extract_first_frame",
+                    new=AsyncMock(return_value="media/images/transition_scene1_shot2__scene1_shot1_to_first.png"),
+                ),
+                patch(
+                    "app.services.video.generate_transition_video",
+                    new=AsyncMock(
+                        return_value={
+                            "shot_id": "transition_scene1_shot2__scene1_shot1",
+                            "video_url": "/media/videos/transition_scene1_shot2__scene1_shot1.mp4",
+                        }
+                    ),
+                ),
+                patch("app.routers.pipeline.persist_storyboard_generation_state", new=AsyncMock()),
+            ):
+                result = await generate_transition(
+                    project_id=project_id,
+                    request=request,
+                    req=TransitionGenerateRequest(
+                        pipeline_id=pipeline_id,
+                        story_id=stale_story_id,
+                        from_shot_id=shot_two.shot_id,
+                        to_shot_id=shot_one.shot_id,
+                        transition_prompt="镜头衔接保持克制，不要跳出当前剧情。",
+                        duration_seconds=3,
+                    ),
+                    video_config={
+                        "video_api_key": "video-key",
+                        "video_base_url": "https://video.example/v1",
+                        "video_provider": "doubao",
+                    },
+                    llm={
+                        "provider": "openai",
+                        "model": "gpt-test",
+                        "api_key": "test-key",
+                        "base_url": "https://example.com/v1",
+                    },
+                    db=session,
+                )
+
+        self.assertEqual(result.transition_id, "transition_scene1_shot2__scene1_shot1")
+        self.assertEqual(load_mock.await_args.args[1], story_id)
+
     async def test_single_image_and_video_routes_persist_into_existing_pipeline(self):
         project_id = "story-mainline"
         story_id = "story-mainline"
@@ -1145,6 +1394,45 @@ class SingleAssetPersistenceIsolationTests(unittest.IsolatedAsyncioTestCase):
         persist_pipeline.assert_awaited_once()
         self.assertEqual(persist_pipeline.await_args.kwargs["story_id"], "story-1")
 
+    async def test_single_image_generation_fallback_keeps_explicit_pipeline_id(self):
+        results = [
+            {
+                "shot_id": "scene1_shot1",
+                "image_path": "media/images/scene1_shot1.png",
+                "image_url": "/media/images/scene1_shot1.png",
+            }
+        ]
+
+        with (
+            patch(
+                "app.routers.image.prepare_story_context",
+                new=AsyncMock(side_effect=[({"meta": {}}, None), ({}, None)]),
+            ),
+            patch(
+                "app.routers.image.build_generation_payload",
+                side_effect=RuntimeError("payload build failed"),
+            ),
+            patch("app.routers.image.generate_images_batch", new=AsyncMock(return_value=results)),
+            patch("app.routers.image.persist_storyboard_generation_state", new=AsyncMock()),
+            patch("app.routers.image.persist_generated_files_to_pipeline", new=AsyncMock()) as persist_pipeline,
+        ):
+            response = await generate_single_images(
+                project_id="project-1",
+                request=self._make_request(),
+                body=ImageRequest(
+                    shots=[{"shot_id": "scene1_shot1", "image_prompt": "Medium shot. Hero at doorway."}],
+                    story_id="story-1",
+                    pipeline_id="pipe-explicit",
+                ),
+                image_config={"image_api_key": "", "image_base_url": ""},
+                llm={"provider": "openai", "model": "gpt-test", "api_key": "test-key", "base_url": ""},
+                db=None,
+            )
+
+        self.assertEqual(response, results)
+        persist_pipeline.assert_awaited_once()
+        self.assertEqual(persist_pipeline.await_args.kwargs["pipeline_id"], "pipe-explicit")
+
     async def test_single_image_generation_persists_to_pipeline_without_story_context(self):
         results = [
             {
@@ -1246,6 +1534,61 @@ class SingleAssetPersistenceIsolationTests(unittest.IsolatedAsyncioTestCase):
         persist_storyboard.assert_not_awaited()
         persist_pipeline.assert_awaited_once()
         self.assertEqual(persist_pipeline.await_args.kwargs["story_id"], "story-from-pipeline")
+
+    async def test_single_video_generation_uses_story_scene_reference_in_prompt(self):
+        results = [
+            {
+                "shot_id": "scene1_shot1",
+                "video_url": "/media/videos/scene1_shot1.mp4",
+            }
+        ]
+        story = {
+            "meta": {
+                "scene_reference_assets": {
+                    "ep01_scene01": {
+                        "summary_environment": "office lobby with glass doors and reception desk",
+                        "summary_visuals": ["glass doors", "reception desk"],
+                        "summary_lighting": "soft office ceiling light",
+                        "variants": {
+                            "scene": {"image_url": "/media/episodes/office.png"}
+                        },
+                    }
+                }
+            }
+        }
+
+        with (
+            patch("app.routers.video.prepare_story_context", new=AsyncMock(return_value=(story, None))),
+            patch("app.routers.video.generate_videos_batch", new=AsyncMock(return_value=results)) as generate_batch,
+            patch("app.routers.video.persist_storyboard_generation_state", new=AsyncMock()),
+            patch("app.routers.video.persist_generated_files_to_pipeline", new=AsyncMock()),
+        ):
+            response = await generate_single_videos(
+                project_id="project-1",
+                request=self._make_request(),
+                body=VideoRequest(
+                    shots=[
+                        {
+                            "shot_id": "scene1_shot1",
+                            "source_scene_key": "ep01_scene01",
+                            "image_url": "/media/images/scene1_shot1.png",
+                            "final_video_prompt": "Medium shot. Static camera. Li Ming steps forward.",
+                        }
+                    ],
+                    story_id="story-1",
+                ),
+                video_config={
+                    "video_api_key": "video-key",
+                    "video_base_url": "https://video.example/v1",
+                    "video_provider": "dashscope",
+                },
+                llm={"provider": "openai", "model": "gpt-test", "api_key": "test-key", "base_url": ""},
+                db=None,
+            )
+
+        prepared_shot = generate_batch.await_args.args[0][0]
+        self.assertEqual(response, results)
+        self.assertIn("office lobby with glass doors and reception desk", prepared_shot["final_video_prompt"])
 
     async def test_single_video_generation_returns_success_when_persistence_fails(self):
         results = [

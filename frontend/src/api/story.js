@@ -294,6 +294,16 @@ function getCharacterUrl(path) {
   return `${base}/api/v1/character${path}`
 }
 
+async function readErrorMessage(res) {
+  const contentType = res.headers.get('content-type') || ''
+  if (contentType.includes('application/json')) {
+    const data = await res.json().catch(() => null)
+    return data?.detail || data?.message || ''
+  }
+  const text = await res.text().catch(() => '')
+  return text.trim()
+}
+
 export async function generateCharacterImage(storyId, character) {
   const settings = useSettingsStore()
   const res = await fetch(getCharacterUrl('/generate'), {
@@ -309,8 +319,8 @@ export async function generateCharacterImage(storyId, character) {
     }),
   })
   if (!res.ok) {
-    const data = await res.json().catch(() => null)
-    throw new Error(data?.detail || `请求失败 (${res.status})`)
+    const detail = await readErrorMessage(res)
+    throw new Error(detail || `Request failed (${res.status})`)
   }
   return res.json()
 }
@@ -327,14 +337,14 @@ export async function generateAllCharacterImages(storyId, characters) {
     }),
   })
   if (!res.ok) {
-    const data = await res.json().catch(() => null)
-    throw new Error(data?.detail || `请求失败 (${res.status})`)
+    const detail = await readErrorMessage(res)
+    throw new Error(detail || `Request failed (${res.status})`)
   }
   return res.json()
 }
 
 export async function getCharacterImages(storyId) {
   const res = await fetch(getCharacterUrl(`/${storyId}/images`), { headers: getHeaders() })
-  if (!res.ok) throw new Error(`请求失败 (${res.status})`)
+  if (!res.ok) throw new Error(`Request failed (${res.status})`)
   return res.json()
 }

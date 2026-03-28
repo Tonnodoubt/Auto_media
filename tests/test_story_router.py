@@ -174,8 +174,9 @@ class StoryRouterSceneReferenceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, {"episode": 1, "groups": []})
         self.assertEqual(generate_reference.await_args.kwargs["existing_assets"], [])
-        save_story.assert_awaited_once_with(
-            None,
-            "story-force",
-            {"meta": {"episode_reference_assets": {}, "scene_reference_assets": {}}},
-        )
+        save_story.assert_awaited_once()
+        self.assertEqual(save_story.await_args.args[0], None)
+        self.assertEqual(save_story.await_args.args[1], "story-force")
+        payload = save_story.await_args.args[2]
+        self.assertEqual(payload["meta"]["episode_reference_assets"], {})
+        self.assertEqual(payload["meta"]["scene_reference_assets"], {})

@@ -144,7 +144,7 @@ async def generate_images(
         logger.exception("Enhanced image payload build failed for project=%s story_id=%s", project_id, body.story_id)
         if body.story_id:
             try:
-                effective_pipeline_id = ""
+                effective_pipeline_id = str(body.pipeline_id or "").strip()
                 story, _ = await prepare_story_context(
                     db,
                     body.story_id,
@@ -153,9 +153,9 @@ async def generate_images(
                     api_key=llm["api_key"],
                     base_url=llm["base_url"],
                 )
-                if story:
+                if not effective_pipeline_id and story:
                     generation_state = load_storyboard_generation_state(story)
-                    effective_pipeline_id = str(body.pipeline_id or generation_state.get("pipeline_id", "") or "").strip()
+                    effective_pipeline_id = str(generation_state.get("pipeline_id", "")).strip()
                 fallback_results = await generate_images_batch(
                     [_build_basic_payload(shot, art_style) for shot in body.shots],
                     model=body.model or DEFAULT_MODEL,

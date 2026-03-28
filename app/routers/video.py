@@ -61,7 +61,7 @@ async def generate_videos(
                 effective_pipeline_id = str(generation_state.get("pipeline_id", "")).strip()
         prepared_shots = []
         for shot in body.shots:
-            payload = build_generation_payload(shot, story_context, art_style=art_style)
+            payload = build_generation_payload(shot, story_context, art_style=art_style, story=story)
             prepared_shots.append(
                 {
                     **shot,

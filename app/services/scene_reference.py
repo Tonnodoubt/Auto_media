@@ -530,6 +530,13 @@ def _group_environment_anchors(group_scenes: list[Mapping[str, Any]]) -> tuple[l
     return place_anchors, object_anchors
 
 
+def _group_environment_descriptions(group_scenes: list[Mapping[str, Any]], *, limit: int = 2) -> list[str]:
+    return _unique_normalized(
+        [scene.get("environment", "") for scene in group_scenes],
+        limit=limit,
+    )
+
+
 def _clone_group_asset_from_existing(
     asset: Mapping[str, Any],
     group: Mapping[str, Any],
@@ -651,15 +658,16 @@ def group_episode_scenes_by_environment(episode: int, episode_scenes: list[Mappi
     for index, group in enumerate(groups, start=1):
         scenes = group["scenes"]
         representative = group["representative_scene"]
+        _, object_anchors = _group_environment_anchors(scenes)
         group["group_index"] = index
         group["environment_pack_key"] = build_environment_pack_key(episode, index)
         group["group_label"] = f"环境组 {index}"
         group["scene_keys"] = [scene["scene_key"] for scene in scenes]
         group["scene_numbers"] = [scene["scene_number"] for scene in scenes]
-        group["summary_environment"] = _top_value([scene["environment"] for scene in scenes]) or representative["environment"]
+        group["summary_environment"] = " ".join(_group_environment_descriptions(scenes, limit=2)) or representative["environment"]
         group["summary_lighting"] = _top_value([scene["lighting"] for scene in scenes])
         group["summary_mood"] = _top_value([scene["mood"] for scene in scenes])
-        group["summary_visuals"] = _unique_normalized([scene["visual"] for scene in scenes], limit=2)
+        group["summary_visuals"] = object_anchors or _unique_normalized([scene["visual"] for scene in scenes], limit=2)
 
     return groups
 
@@ -682,9 +690,11 @@ def build_episode_environment_prompts(
         raise ValueError("group_scenes 不能为空")
 
     place_anchors, object_anchors = _group_environment_anchors(group_scenes)
-    environments = place_anchors or _unique_normalized([scene.get("environment", "") for scene in group_scenes], limit=2)
+    environment_descriptions = _group_environment_descriptions(group_scenes, limit=2)
+    environments = environment_descriptions or place_anchors
     visuals = object_anchors
     lighting = _top_value([scene.get("lighting", "") for scene in group_scenes])
+    mood = _top_value([scene.get("mood", "") for scene in group_scenes])
     style_anchors = _unique_normalized(
         [style.image_extra for style in (story_context.scene_styles if story_context else [])],
         limit=2,
@@ -692,17 +702,24 @@ def build_episode_environment_prompts(
 
     base_parts = [
         "Environment reference key art for a matched scene group inside one episode.",
-        "Keep the environment simple, readable, and reusable across the matched scenes only.",
+        "Keep the environment readable and reusable across the matched scenes, but preserve the exact location identity.",
         "Pure environment plate only. No characters, no faces, no bodies, no costumes, no action, no narrative beat.",
     ]
     if environments:
         base_parts.append(f"Shared environment: {'; '.join(environments)}.")
+    if place_anchors:
+        base_parts.append(f"Stable place anchors: {'; '.join(place_anchors)}.")
     if visuals:
-        base_parts.append(f"Local visual anchors: {'; '.join(visuals)}.")
+        base_parts.append(f"Stable prop anchors: {'; '.join(visuals)}.")
     if lighting:
         base_parts.append(f"Lighting anchor: {lighting}.")
+    if mood:
+        base_parts.append(f"Atmosphere anchor: {mood}.")
     if style_anchors:
         base_parts.append(f"Scene style anchors: {'; '.join(style_anchors)}.")
+    base_parts.append(
+        "Match the described architecture, materials, furnishing layout, and prop placement. Do not replace this with a generic room, hallway, palace, or fantasy set."
+    )
     base_parts.append(
         "Environment only, no story beat, no dramatic acting, no foreground hero, no character silhouette, no text, no watermark, no clutter."
     )

@@ -87,9 +87,64 @@ class StoryContextTests(unittest.TestCase):
         self.assertEqual(payload["source_scene_key"], "ep01_scene01")
         self.assertIn("Match the linked environment layout", payload["image_prompt"])
         self.assertIn("jiangnan teahouse doorway", payload["image_prompt"])
+        self.assertIn("Match the linked environment layout", payload["final_video_prompt"])
+        self.assertIn("jiangnan teahouse doorway", payload["final_video_prompt"])
         self.assertEqual(len(payload["reference_images"]), 2)
         self.assertEqual(payload["reference_images"][0]["kind"], "character")
         self.assertEqual(payload["reference_images"][1]["kind"], "scene")
+
+    def test_build_generation_payload_keeps_multiple_character_reference_images(self):
+        story = {
+            "characters": [
+                {
+                    "id": "char_li_ming",
+                    "name": "Li Ming",
+                    "description": "young man, short black hair, wearing a dark blue robe.",
+                },
+                {
+                    "id": "char_boss_zhao",
+                    "name": "Boss Zhao",
+                    "description": "middle-aged man, moustache, wearing a brown brocade robe.",
+                },
+            ],
+            "character_images": {
+                "char_li_ming": {
+                    "image_url": "/media/characters/li_ming.png",
+                    "image_path": "media/characters/li_ming.png",
+                },
+                "char_boss_zhao": {
+                    "image_url": "/media/characters/boss_zhao.png",
+                    "image_path": "media/characters/boss_zhao.png",
+                },
+            },
+            "meta": {
+                "scene_reference_assets": {
+                    "ep01_scene01": {
+                        "status": "ready",
+                        "variants": {
+                            "scene": {
+                                "image_url": "/media/episodes/teahouse.png",
+                                "image_path": "media/episodes/teahouse.png",
+                            }
+                        },
+                    }
+                }
+            },
+        }
+        shot = {
+            "shot_id": "scene1_shot1",
+            "source_scene_key": "ep01_scene01",
+            "characters": [{"name": "Li Ming"}, {"name": "Boss Zhao"}],
+            "image_prompt": "Medium shot. Li Ming faces Boss Zhao across the teahouse counter.",
+            "final_video_prompt": "Medium shot. Static camera. Li Ming speaks while Boss Zhao listens across the counter.",
+        }
+
+        payload = build_generation_payload(shot, build_story_context(story), story=story)
+
+        self.assertEqual(len(payload["reference_images"]), 3)
+        self.assertEqual(payload["reference_images"][0]["kind"], "character")
+        self.assertEqual(payload["reference_images"][1]["kind"], "character")
+        self.assertEqual(payload["reference_images"][2]["kind"], "scene")
 
     def test_get_scene_reference_asset_fallback_respects_episode_token(self):
         story = {
