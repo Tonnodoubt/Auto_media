@@ -25,6 +25,7 @@ class DashScopeVideoProvider(BaseVideoProvider):
         base_url: str,
         last_frame_url: str = "",
         negative_prompt: str = "",
+        duration_seconds: int | None = None,
     ) -> str:
         """生成视频。
 
@@ -42,7 +43,16 @@ class DashScopeVideoProvider(BaseVideoProvider):
         # 注意：DashScope 暂不支持双帧过渡，忽略 last_frame_url
         effective_base = base_url or DEFAULT_BASE_URL
         async with httpx.AsyncClient(timeout=30) as client:
-            task_id = await self._submit(client, image_url, prompt, model, api_key, effective_base, negative_prompt)
+            task_id = await self._submit(
+                client,
+                image_url,
+                prompt,
+                model,
+                api_key,
+                effective_base,
+                negative_prompt,
+                duration_seconds,
+            )
         async with httpx.AsyncClient(timeout=30) as client:
             return await self._poll(client, task_id, api_key, effective_base)
 
@@ -55,6 +65,7 @@ class DashScopeVideoProvider(BaseVideoProvider):
         api_key: str,
         base_url: str,
         negative_prompt: str = "",
+        duration_seconds: int | None = None,
     ) -> str:
         input_payload = {"image_url": image_url, "prompt": prompt}
         if negative_prompt:
@@ -69,7 +80,7 @@ class DashScopeVideoProvider(BaseVideoProvider):
             json={
                 "model": model,
                 "input": input_payload,
-                "parameters": {"duration": 5},
+                "parameters": {"duration": duration_seconds or 5},
             },
         )
         print(f"[VIDEO DASHSCOPE SUBMIT] status={resp.status_code} key={mask_key(api_key)} base={base_url}")

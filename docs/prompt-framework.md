@@ -1,8 +1,8 @@
 # AutoMedia 提示词框架文档
 
-> 更新日期：2026-03-26
+> 更新日期：2026-03-27
 >
-> 本文档按当前仓库代码同步，区分“已落地默认行为”和“兼容/回退行为”。
+> 当前口径：按仓库现有代码同步，区分“已落地默认行为”和“兼容字段/回退行为”。
 
 ---
 
@@ -25,11 +25,16 @@ Step 3   故事生成与修改
 Step 4   分镜导演
   storyboard.SYSTEM_PROMPT + USER_TEMPLATE
 
-Step 5   角色资产与运行期一致性
-  build_character_prompt()
-  APPEARANCE_SYSTEM_PROMPT
-  SCENE_STYLE_SYSTEM_PROMPT
+Step 4.5 场景参考图
+  build_episode_environment_prompts()
+
+Step 5   运行期一致性拼装
+  build_story_context()
   build_generation_payload()
+
+Step 6   过渡视频
+  _build_transition_prompt()
+  generate_transition_video()
 ```
 
 ---
@@ -38,14 +43,16 @@ Step 5   角色资产与运行期一致性
 
 | 文件 | 作用 |
 |------|------|
-| `app/prompts/story.py` | Step 1-3 的主 prompt 模板 |
+| `app/prompts/story.py` | Step 1-3 主 prompt 模板 |
 | `app/prompts/storyboard.py` | Step 4 分镜导演 prompt |
-| `app/prompts/character.py` | 角色三视图设定图 prompt 与角色参考段落拼装 |
+| `app/prompts/character.py` | 角色三视图设定图 prompt |
 | `app/services/story_llm.py` | 灵感分析、世界构建、大纲、剧本、chat、refine、apply-chat |
 | `app/services/storyboard.py` | 剧本转 Shot，兼容旧格式并补全缺省字段 |
+| `app/services/scene_reference.py` | 环境图 prompt、环境分组与复用 |
 | `app/services/story_context_service.py` | 角色外貌缓存、场景风格缓存提取 |
-| `app/core/story_context.py` | 运行期角色/场景锚点清洗与 prompt 拼装 |
-| `app/core/story_assets.py` | `design_prompt` / `visual_dna` / 角色资产记录辅助 |
+| `app/core/story_context.py` | 运行期角色/场景锚点清洗与 payload 拼装 |
+| `app/core/story_assets.py` | 角色图、环境图、`source_scene_key` 辅助 |
+| `app/routers/pipeline.py` | 过渡 prompt 组装与 transition 运行期入口 |
 
 ---
 
@@ -59,7 +66,7 @@ Step 5   角色资产与运行期一致性
 - 审计主角动机是否明确
 - 审计核心冲突是否具备视觉表现力
 
-**输出 JSON**：
+**输出结构**：
 
 ```json
 {
@@ -76,8 +83,9 @@ Step 5   角色资产与运行期一致性
 
 **当前实现说明**：
 
-- 无 API Key 时走 mock，并先落库 `idea / genre / tone`
-- 返回 `story_id`，作为后续 Story 主键
+- 无 API Key 时走 mock
+- 成功后立即创建 `story_id`
+- Step 1 只负责灵感审计，不负责大纲与人物资产
 
 ---
 
@@ -92,7 +100,7 @@ Step 5   角色资产与运行期一致性
 - 每轮必须给 3 个选项
 - 必须问满 6 轮
 - 第 6 轮完成时返回 `complete`
-- `world_summary` 必须汇总已收集的维度与人物设定
+- 完成时把 `world_summary` 写入 `selected_setting`
 
 **返回结构**：
 
@@ -111,8 +119,7 @@ Step 5   角色资产与运行期一致性
 
 **当前实现说明**：
 
-- `world_building_start()` 创建新的 `story_id`，并保存 `wb_history / wb_turn`
-- `world_building_turn()` 在完成时把结果写入 `selected_setting`
+- `_ensure_world_building_question_options()` 会为选项补齐兜底值
 - 完成世界构建后会失效 `scene_style_cache`
 
 ---
@@ -123,7 +130,7 @@ Step 5   角色资产与运行期一致性
 
 **Prompt**：`OUTLINE_PROMPT`
 
-**输出 JSON**：
+**输出结构**：
 
 ```json
 {
@@ -143,16 +150,16 @@ Step 5   角色资产与运行期一致性
 **当前实现说明**：
 
 - Prompt 本身不要求角色 ID
-- 持久化时会由 `normalize_story_record()` 自动补齐并规范化：
+- 持久化时会由 Story 规范化逻辑补齐：
   - `characters[*].id`
   - `relationships[*].source_id / target_id`
-  - `character_images` 与 `character_appearance_cache` 统一按 `character_id` 收口
+- 写回大纲后会清空旧 `scenes`
 
-### 5.2 导演分镜剧本
+### 5.2 剧本生成
 
 **Prompt**：`SCRIPT_PROMPT`
 
-**当前字段**：
+**当前场景字段**：
 
 ```json
 {
@@ -164,7 +171,7 @@ Step 5   角色资产与运行期一致性
       "environment": "时间/地点/天气",
       "lighting": "主光方向/色温/阴影",
       "mood": "情绪短语",
-      "visual": "人物位置/动作/表情/镜头角度",
+      "visual": "人物位置/动作/镜头感",
       "key_actions": ["动作1", "动作2"],
       "shot_suggestions": ["镜头建议1", "镜头建议2"],
       "transition_from_previous": "与上一场景的衔接方式",
@@ -178,10 +185,9 @@ Step 5   角色资产与运行期一致性
 
 **关键说明**：
 
-- 当前 `SCRIPT_PROMPT` 已要求 `lighting / mood / key_actions / shot_suggestions / transition_from_previous`
-- 当前 **没有** 在 Step 3 输出中要求 `scene_intensity`
-- Step 4 的分镜 prompt 会自行要求输出 `scene_intensity`
-- 如果分镜 LLM 返回旧格式或缺少该字段，`parse_script_to_storyboard()` 会默认补成 `"low"`
+- Step 3 已要求 `lighting / mood / key_actions / shot_suggestions / transition_from_previous`
+- Step 3 当前不输出 `scene_intensity`
+- `scene_intensity` 由 Step 4 分镜导演 prompt 负责
 
 ### 5.3 结构化联动修改
 
@@ -201,45 +207,30 @@ Step 5   角色资产与运行期一致性
 **当前约束**：
 
 - 如果返回 `characters`，已存在角色必须保留原有 `id`
-- 如果返回 `relationships`，优先返回 `source_id / target_id`
-- 返回结果写回数据库后，会按变更类型失效一致性缓存
+- refine 不允许返回缺失 `id` 的角色
+- 写回后会按变更类型失效：
+  - `characters` -> `character_appearance_cache`
+  - `outline` -> `scene_style_cache`
 
-### 5.4 对话式局部修改
+### 5.4 对话式修改
 
 **入口**：`build_chat_messages()` + `/api/v1/story/chat` + `build_apply_chat_prompt()` + `apply_chat()`
 
-**聊天模式**：
+**当前支持模式**：
 
-- `character`：返回 2 行纯文本
-  - `当前角色修改：...`
-  - `对剧情的影响：...`
-- `episode`：返回 2 行纯文本
-  - `当前剧情修改：...`
-  - `对后续剧情的影响：...`
-- `outline`：返回 3 行纯文本
-  - `当前大纲修改：...`
-  - `联动影响：...`
-  - `REFINE_JSON:{...}` 供前端隐藏读取
-
-**当前支持类型**：
-
-- `character`
-- `episode`
-
-**输出**：
-
-- 角色聊天展示层：只给结构化短建议，不给长篇分析，不输出代码块
-- 角色应用层：只修改 `description`
-- 集数修改：`title / summary`
+| 模式 | 展示格式 |
+|------|------|
+| `character` | `当前角色修改：...` / `对剧情的影响：...` |
+| `episode` | `当前剧情修改：...` / `对后续剧情的影响：...` |
+| `outline` | `当前大纲修改：...` / `联动影响：...` / `REFINE_JSON:{...}` |
+| `generic` | 简短通用建议 |
 
 **当前实现说明**：
 
-- `CHAT_SYSTEM_PROMPT` 强制“顺着用户意图、少解释、少反驳、短文本分类输出”
-- 角色名字与 `role` 标签在 AI 聊天与 `apply_chat()` 中都被视为不可修改字段
-- `outline` 模式通过隐藏的 `REFINE_JSON` 单行结构，把建议展示和后续联动摘要分离
-- `apply_chat()` 从数据库读取当前权威对象后再写回
-- 角色修改会失效 `character_appearance_cache`
-- 集数修改会失效 `scene_style_cache`
+- 聊天层和应用层都默认不允许改角色名和 `role`
+- `apply_chat()` 从数据库读取权威对象后再写回
+- 角色应用只改 `description`
+- 集数应用只改 `title / summary`
 
 ---
 
@@ -249,22 +240,21 @@ Step 5   角色资产与运行期一致性
 
 ### 6.1 当前强约束
 
-- 严格忠于脚本，不得发明剧情、人物、道具
+- 严格忠于脚本，不发明剧情、人物和道具
 - `image_prompt` 与 `final_video_prompt` 必须分离
-- `image_prompt` 只描述静态首帧，不写运镜
-- `final_video_prompt` 必须写运镜和单个核心动作
-- 每条对白只能分配给一个 Shot，不能重复
-- 强制检查镜头连续性、状态延续和转场平滑
-- 如果脚本或角色参考明确给出正面/侧面/背面朝向，必须保留该 cue
-- 不得凭空发明人物朝向
+- `image_prompt` 负责静态首帧
+- `final_video_prompt` 负责短视频运动
+- `source_scene_key` 必须跟随 `SCENE SOURCE MAP`
+- 若脚本或角色参考明确给出正面/侧面/背面朝向，必须保留
+- 正常主镜头不围绕双帧设计
+- `last_frame_prompt` 当前主线应保持 `null`
 
-### 6.2 Shot 结构
-
-当前 `Shot` schema：
+### 6.2 当前 `Shot` 结构
 
 ```json
 {
   "shot_id": "scene1_shot1",
+  "source_scene_key": "ep01_scene01",
   "estimated_duration": 4,
   "scene_intensity": "low",
   "storyboard_description": "中文画面简述",
@@ -281,7 +271,7 @@ Step 5   角色资产与运行期一致性
   },
   "image_prompt": "静态首帧 prompt",
   "final_video_prompt": "视频运动 prompt",
-  "last_frame_prompt": "可选尾帧 prompt",
+  "last_frame_prompt": null,
   "audio_reference": {
     "type": "dialogue | narration | sfx | null",
     "content": "内容"
@@ -289,113 +279,209 @@ Step 5   角色资产与运行期一致性
   "mood": "情绪短语",
   "scene_position": "establishing | development | climax | resolution",
   "transition_from_previous": "过渡说明",
-  "last_frame_url": "可选尾帧 URL"
+  "last_frame_url": null
 }
 ```
 
-### 6.3 兼容与回退
+### 6.3 后处理与兼容
 
-`parse_script_to_storyboard()` 当前会兼容旧返回格式并自动补齐：
+`parse_script_to_storyboard()` 当前会：
 
-- `visual_prompt -> final_video_prompt`
-- `visual_description_zh -> storyboard_description`
-- 平铺 `shot_size / camera_motion -> camera_setup`
-- `dialogue -> audio_reference`
-- 缺失的 `scene_intensity -> "low"`
+- 兼容旧字段：
+  - `visual_prompt -> final_video_prompt`
+  - `visual_description_zh -> storyboard_description`
+  - `shot_size / camera_motion -> camera_setup`
+  - `dialogue -> audio_reference`
+- 自动补齐缺失的 `visual_elements`
+- 自动补齐缺失的 `scene_intensity = "low"`
+- 根据脚本内容构建 `SCENE SOURCE MAP`
+- 用映射回写 `source_scene_key`
+- 规范化 camera movement
+- 清空普通 shot 的：
+  - `last_frame_prompt`
+  - `last_frame_url`
 
-**当前没有后端二次注入固定 render tags 的专门分发逻辑**；分镜质量控制主要依赖 Step 4 prompt 本身的约束。
+这意味着：
+
+- 当前主镜头链路已经明确收口到单首帧 I2V
+- `last_frame_*` 只剩兼容字段，不再是运行期主数据
 
 ---
 
-## 七、Step 5：角色资产与运行期一致性
+## 七、Step 4.5：场景参考图 Prompt
 
-### 7.1 角色设定图 Prompt
+**入口**：`app/services/scene_reference.py::build_episode_environment_prompts()`
 
-**入口**：`build_character_prompt()`
+### 7.1 当前目标
 
-**当前口径**：
+- 按集聚合相似场景
+- 每组只生成 1 张主环境图
+- 环境图必须是纯环境，不包含人物表演
 
-- 角色图不是头像肖像 prompt，而是标准三视图资产 prompt
-- 主字段为 `design_prompt`
-- 兼容字段为 `prompt`
+### 7.2 Prompt 口径
 
-**模板核心**：
+当前环境图 prompt 会强调：
 
-```text
-Standard three-view character turnaround sheet for {name}, ...
-show front view, side profile, and back view of the same character on one sheet,
-full body in all three views, neutral standing pose, clear silhouette, ...
+- `Environment reference key art`
+- `Pure environment plate only`
+- `No characters, no faces, no bodies, no costumes, no action`
+
+同时 negative prompt 会排除：
+
+- `person / human / man / woman / child`
+- `face / portrait / silhouette`
+- `costume / weapon`
+- `split composition / clutter`
+
+### 7.3 当前运行方式
+
+- 环境图结果写入 `episode_reference_assets`
+- 同时按 `scene_key` 回填到 `scene_reference_assets`
+- 复用优先使用 `reuse_signature`
+- 老资产不足以精确命中时，会回退到环境锚点相似度判断
+
+---
+
+## 八、Step 5：运行期一致性与 Prompt 拼装
+
+### 8.1 StoryContext 提取层
+
+`story_context_service.py` 负责把 Story 中的长期资产整理成运行期可消费结构：
+
+- `character_appearance_cache`
+- `scene_style_cache`
+- `art_style`
+- 角色图中的 `visual_dna`
+
+`build_story_context()` 最终构建：
+
+- `character_locks`
+- `scene_styles`
+- `global_negative_prompt`
+- `clean_character_section`
+
+### 8.2 运行期主入口
+
+`build_generation_payload()` 是图片/视频主链路统一入口，当前会产出：
+
+```json
+{
+  "shot_id": "scene1_shot1",
+  "image_prompt": "...",
+  "final_video_prompt": "...",
+  "source_scene_key": "ep01_scene01",
+  "negative_prompt": "...",
+  "reference_images": [
+    {"kind": "character", "image_url": "...", "weight": 0.58},
+    {"kind": "scene", "image_url": "...", "weight": 0.42}
+  ]
+}
 ```
 
-### 7.2 角色资产数据
+### 8.3 当前拼装逻辑
 
-`build_character_asset_record()` 当前会保存：
+`build_generation_payload()` 当前会同时处理：
 
-- `image_url`
-- `image_path`
-- `prompt`
-- `design_prompt`
-- `asset_kind=character_sheet`
-- `framing=three_view`
-- `character_id`
-- `character_name`
-- `visual_dna`（有值时）
+1. 角色外观一致性
+2. 场景风格补充
+3. 全局 `art_style`
+4. `negative_prompt`
+5. `source_scene_key`
+6. 命中的场景参考图
+7. 参考图列表 `reference_images`
 
-**当前 API 约束**：
+### 8.4 场景参考图如何进入主链路
 
-- `/api/v1/character/generate`
-- `/api/v1/character/generate-all`
+运行期会先根据：
 
-这两个入口都要求角色具备 `character_id`，禁止按角色名复用或覆盖人设图。
+- `shot.source_scene_key`
+- 或 `shot_id -> scene index`
 
-### 7.3 StoryContext 提取 Prompt
+找到命中的环境图资产，然后做两件事：
 
-运行期不是直接把三视图 prompt 全量塞回分镜，而是先做两类抽取：
+1. 生成一段 `scene_reference_extra`，并入 `image_prompt`
+2. 将环境图作为 `reference_images` 中的 `scene` 参考
 
-1. `APPEARANCE_SYSTEM_PROMPT`
-   - 提取角色稳定外貌锚点
-   - 结果写入 `meta["character_appearance_cache"]`
-   - 若已有角色资产，会把 `visual_dna` 回填到 `character_images[character_id]`
+### 8.5 角色图如何进入主链路
 
-2. `SCENE_STYLE_SYSTEM_PROMPT`
-   - 提取可复用场景风格锚点
-   - 结果写入 `meta["scene_style_cache"]`
+运行期会从 `character_images` 中找到命中的角色设定图，并作为：
 
-### 7.4 运行期 Prompt 拼装
+- `reference_images[0]`
+- `kind = character`
 
-`build_generation_payload()` 当前是运行期主组装入口，会统一产出：
+同时仍会保留清洗后的角色外观锚点注入。
 
-- `image_prompt`
-- `final_video_prompt`
-- `last_frame_prompt`
-- `negative_prompt`
+### 8.6 provider 兼容行为
 
-当前行为：
+图片服务当前支持把 `reference_images` 发给 provider。
 
-- `build_generation_payload()` 主链路会消费 `StoryContext.character_locks`，把干净的角色外观约束、场景风格和 `negative_prompt` 分字段组装，而不是把旧的人设图 prompt 整段透传
-- `StoryContext` 侧会优先消费干净的 `character_appearance_cache`，再回退到 `visual_dna`，最后才回退到角色描述中的可见外貌信息
-- 运行时兼容增强层会结合 `build_character_reference_anchor()` 提供清洗后的角色参考锚点，并用 `infer_shot_view_hint()` 识别镜头中的 front / side / back 视角提示，生成诸如 `match the shot's front view` / `side profile` / `back view` 的朝向约束
-- `build_character_reference_anchor()` 会清洗掉性格、命运、剧情摘要、studio/background 等非物理词，只保留体貌与默认服装；这些角色锚点与 `art_style`、`negative_prompt` 保持分离
-- `infer_shot_view_hint()` 只负责从镜头文本和结构化视觉字段中推断朝向提示，不参与 `art_style` 或污染排除词拼装
-- 因此完整运行链应理解为：`build_generation_payload()` 负责主字段组装，`build_character_reference_anchor()` / `infer_shot_view_hint()` 负责运行时角色锚点与朝向提示，两者共同构成最终的一致性注入层
-- `art_style` 与 `negative_prompt` 分离，不再混写
-- 场景缓存关键词未命中时，仍会回退到 `genre` 级风格规则
+如果 provider 对 `reference_images` 或 `reference_strengths` 返回 `400 / 422`：
+
+- 服务会自动重试一次
+- 重试时移除 `reference_images`
+- 这样不会因为参考图能力缺失直接阻断主链路
 
 ---
 
-## 八、当前边界
+## 九、主镜头视频 Prompt 规则
 
-- Step 3 剧本输出当前没有 `scene_intensity` 字段；Step 4 会要求输出，缺省时后端补 `"low"`
-- 角色一致性当前是“结构化缓存 + `visual_dna` + 启发式回退”的组合，不是 DSPy/VLM 闭环
-- Prompt 层已经支持 `last_frame_prompt` / `last_frame_url`，但不同视频 provider 的消费程度不一致
+### 9.1 当前真实口径
+
+- 主镜头视频统一单首帧 I2V
+- `generate_videos_batch()` 固定传入 `last_frame_url=""`
+- 即使老数据里仍有 `last_frame_url`，主链路也不会继续消费
+
+### 9.2 `separated` / `chained` / `integrated`
+
+| 策略 | Prompt 侧真实行为 |
+|------|------|
+| `separated` | 先图，再单首帧 I2V，再合成音频 |
+| `chained` | 仍然是单首帧 I2V，只保留按场景分组执行节奏 |
+| `integrated` | 当前先图后视频，不包含真正语音一体化 prompt 或 API |
 
 ---
 
-## 九、阅读顺序建议
+## 十、过渡视频 Prompt
+
+### 10.1 Prompt 来源
+
+`app/routers/pipeline.py::_build_transition_prompt()` 当前会组合：
+
+- `from_shot` 的收束状态
+- `to_shot` 的开场状态
+- `to_shot.transition_from_previous`
+- 用户额外输入的 `transition_prompt`
+- 统一的主题约束：保持人物、服装、环境、光线、摄像机逻辑连续
+
+### 10.2 当前原则
+
+- transition 是独立运行时资产，不回写为普通 Shot
+- 双帧只存在于 `generate_transition_video()`
+- 锚点帧必须由后端从相邻主镜头视频提取
+- transition prompt 不直接拼接整段主镜头长 prompt，而是做短桥接
+
+### 10.3 与主镜头的边界
+
+- 主镜头：`image_prompt + final_video_prompt`
+- 过渡视频：提取 `from_last` 和 `to_first` 两张帧图后，再调用双帧视频接口
+
+---
+
+## 十一、当前边界
+
+- `last_frame_prompt / last_frame_url` 仍保留在 schema 中，但只是兼容字段
+- 真正 integrated 视频语音一体化 prompt 未落地
+- 角色一致性仍是“缓存 + Visual DNA + 启发式清洗”方案，不是 DSPy / VLM 闭环
+- 过渡视频当前只有生成，没有独立删除接口
+
+---
+
+## 十二、阅读顺序建议
 
 1. `app/prompts/story.py`
 2. `app/prompts/storyboard.py`
-3. `app/prompts/character.py`
-4. `app/services/story_llm.py`
+3. `app/services/scene_reference.py`
+4. `app/services/storyboard.py`
 5. `app/services/story_context_service.py`
 6. `app/core/story_context.py`
+7. `app/routers/pipeline.py`

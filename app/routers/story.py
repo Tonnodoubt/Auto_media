@@ -1,7 +1,10 @@
 import json
 import logging
+from copy import deepcopy
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.story_assets import get_character_visual_dna
@@ -9,10 +12,18 @@ from app.core.story_context import build_character_reference_anchor
 from app.schemas.story import AnalyzeIdeaRequest, GenerateOutlineRequest, GenerateScriptRequest, ChatRequest, RefineRequest, WorldBuildingStartRequest, WorldBuildingTurnRequest, PatchStoryRequest, ApplyChatRequest
 from app.services.story_llm import analyze_idea, generate_outline, generate_script, chat, refine, world_building_start, world_building_turn, apply_chat
 from app.services import story_repository as repo
-from app.core.api_keys import llm_config_dep, resolve_llm_config
+from app.core.api_keys import get_art_style, image_config_dep, llm_config_dep, resolve_llm_config
+from app.services.scene_reference import generate_episode_scene_reference
+from app.services.story_context_service import prepare_story_context
 
 router = APIRouter(prefix="/api/v1/story", tags=["story"])
 logger = logging.getLogger(__name__)
+
+
+class SceneReferenceGenerateRequest(BaseModel):
+    episode: int
+    force_regenerate: bool = False
+    model: Optional[str] = None
 
 
 @router.get("/")
@@ -235,3 +246,86 @@ async def finalize_script(story_id: str, db: AsyncSession = Depends(get_db)):
 
     script_text = "\n".join(lines)
     return {"story_id": story_id, "script": script_text}
+
+
+@router.post("/{story_id}/scene-reference/generate")
+async def generate_scene_reference(
+    story_id: str,
+    body: SceneReferenceGenerateRequest,
+    request: Request,
+    llm: dict = Depends(llm_config_dep),
+    image_config: dict = Depends(image_config_dep),
+    db: AsyncSession = Depends(get_db),
+):
+    story, story_context = await prepare_story_context(
+        db,
+        story_id,
+        provider=llm["provider"],
+        model=llm["model"],
+        api_key=llm["api_key"],
+        base_url=llm["base_url"],
+    )
+    if not story:
+        raise HTTPException(status_code=404, detail="剧本不存在")
+
+    art_style = get_art_style(request)
+    existing_episode_assets = dict((story.get("meta") or {}).get("episode_reference_assets") or {})
+    episode_prefix = f"ep{body.episode:02d}_"
+    existing_groups = []
+    if not body.force_regenerate:
+        existing_groups = [
+            {
+                "environment_pack_key": pack_key,
+                "affected_scene_keys": list(asset.get("affected_scene_keys") or []),
+                "asset": asset,
+            }
+            for pack_key, asset in sorted(existing_episode_assets.items())
+            if pack_key.startswith(episode_prefix) and asset.get("status") == "ready"
+        ]
+
+    try:
+        result = await generate_episode_scene_reference(
+            story,
+            story_context,
+            episode=body.episode,
+            model=body.model or "",
+            art_style=art_style,
+            existing_assets=[group["asset"] for group in existing_groups],
+            **image_config,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Scene reference generation failed story_id=%s episode=%s", story_id, body.episode)
+        raise HTTPException(status_code=500, detail=f"环境图生成失败: {exc}") from exc
+
+    latest_story = await repo.get_story(db, story_id)
+    meta = dict((latest_story or story).get("meta") or {})
+    episode_reference_assets = {
+        pack_key: asset
+        for pack_key, asset in dict(meta.get("episode_reference_assets") or {}).items()
+        if not pack_key.startswith(episode_prefix)
+    }
+    scene_reference_assets = {
+        scene_key: asset
+        for scene_key, asset in dict(meta.get("scene_reference_assets") or {}).items()
+        if not scene_key.startswith(f"ep{body.episode:02d}_scene")
+    }
+
+    for group in result["groups"]:
+        episode_reference_assets[group["environment_pack_key"]] = deepcopy(group["asset"])
+        for scene_key in group["affected_scene_keys"]:
+            scene_reference_assets[scene_key] = deepcopy(group["asset"])
+
+    await repo.save_story(
+        db,
+        story_id,
+        {
+            "meta": {
+                **meta,
+                "episode_reference_assets": episode_reference_assets,
+                "scene_reference_assets": scene_reference_assets,
+            }
+        },
+    )
+    return result

@@ -4,7 +4,12 @@ from unittest.mock import patch
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.database import Base
-from app.core.story_assets import build_character_asset_record, get_character_design_prompt, get_character_visual_dna
+from app.core.story_assets import (
+    build_character_asset_record,
+    get_character_design_prompt,
+    get_character_visual_dna,
+    get_scene_reference_asset,
+)
 from app.core.story_context import _GENRE_STYLE_RULES, build_generation_payload, build_story_context, character_appears_in_shot, infer_shot_view_hint
 from app.models.story import Story
 from app.schemas.storyboard import AudioReference, CameraSetup, Shot, VisualElements
@@ -12,10 +17,206 @@ from app.services import story_context_service
 from app.services import story_repository as repo
 from app.routers.image import _build_basic_payload
 from app.services.story_context_service import prepare_story_context, _parse_json
-from app.services.storyboard import parse_script_to_storyboard
+from app.services.storyboard import _build_scene_mapping, parse_script_to_storyboard
 
 
 class StoryContextTests(unittest.TestCase):
+    def test_scene_mapping_accepts_finalize_heading_format(self):
+        mapping = _build_scene_mapping(
+            "# 第1集 雨夜来客\n"
+            "## 场景1\n"
+            "【环境】江南茶馆门口\n"
+            "## 场景2\n"
+            "【环境】茶馆内堂\n"
+        )
+
+        self.assertEqual(
+            mapping,
+            {
+                1: "ep01_scene01",
+                2: "ep01_scene02",
+            },
+        )
+
+    def test_build_generation_payload_injects_scene_reference_and_dual_images(self):
+        story = {
+            "art_style": "cinematic watercolor",
+            "characters": [
+                {
+                    "id": "char_li_ming",
+                    "name": "Li Ming",
+                    "role": "lead",
+                    "description": "young man, short black hair, wearing a dark blue robe.",
+                }
+            ],
+            "character_images": {
+                "char_li_ming": {
+                    "image_url": "/media/characters/li_ming.png",
+                    "image_path": "media/characters/li_ming.png",
+                    "visual_dna": "young man, short black hair",
+                    "character_id": "char_li_ming",
+                    "character_name": "Li Ming",
+                }
+            },
+            "meta": {
+                "scene_reference_assets": {
+                    "ep01_scene01": {
+                        "summary_environment": "jiangnan teahouse doorway",
+                        "summary_visuals": ["wet stone threshold", "wooden door frame", "warm lantern glow"],
+                        "summary_lighting": "soft rainy daylight with warm lantern fill",
+                        "variants": {
+                            "scene": {
+                                "image_url": "/media/episodes/ep01_env01_scene.png",
+                                "image_path": "media/episodes/ep01_env01_scene.png",
+                            }
+                        },
+                    }
+                }
+            },
+        }
+        shot = {
+            "shot_id": "scene1_shot1",
+            "source_scene_key": "ep01_scene01",
+            "storyboard_description": "李明站在茶馆门口。",
+            "image_prompt": "Medium shot. Li Ming pauses at the teahouse doorway.",
+            "final_video_prompt": "Medium shot. Static camera. Li Ming pushes the door inward.",
+        }
+
+        payload = build_generation_payload(shot, build_story_context(story), story=story)
+
+        self.assertEqual(payload["source_scene_key"], "ep01_scene01")
+        self.assertIn("Match the linked environment layout", payload["image_prompt"])
+        self.assertIn("jiangnan teahouse doorway", payload["image_prompt"])
+        self.assertIn("Match the linked environment layout", payload["final_video_prompt"])
+        self.assertIn("jiangnan teahouse doorway", payload["final_video_prompt"])
+        self.assertEqual(len(payload["reference_images"]), 2)
+        self.assertEqual(payload["reference_images"][0]["kind"], "character")
+        self.assertEqual(payload["reference_images"][1]["kind"], "scene")
+
+    def test_build_generation_payload_keeps_multiple_character_reference_images(self):
+        story = {
+            "characters": [
+                {
+                    "id": "char_li_ming",
+                    "name": "Li Ming",
+                    "description": "young man, short black hair, wearing a dark blue robe.",
+                },
+                {
+                    "id": "char_boss_zhao",
+                    "name": "Boss Zhao",
+                    "description": "middle-aged man, moustache, wearing a brown brocade robe.",
+                },
+            ],
+            "character_images": {
+                "char_li_ming": {
+                    "image_url": "/media/characters/li_ming.png",
+                    "image_path": "media/characters/li_ming.png",
+                },
+                "char_boss_zhao": {
+                    "image_url": "/media/characters/boss_zhao.png",
+                    "image_path": "media/characters/boss_zhao.png",
+                },
+            },
+            "meta": {
+                "scene_reference_assets": {
+                    "ep01_scene01": {
+                        "status": "ready",
+                        "variants": {
+                            "scene": {
+                                "image_url": "/media/episodes/teahouse.png",
+                                "image_path": "media/episodes/teahouse.png",
+                            }
+                        },
+                    }
+                }
+            },
+        }
+        shot = {
+            "shot_id": "scene1_shot1",
+            "source_scene_key": "ep01_scene01",
+            "characters": [{"name": "Li Ming"}, {"name": "Boss Zhao"}],
+            "image_prompt": "Medium shot. Li Ming faces Boss Zhao across the teahouse counter.",
+            "final_video_prompt": "Medium shot. Static camera. Li Ming speaks while Boss Zhao listens across the counter.",
+        }
+
+        payload = build_generation_payload(shot, build_story_context(story), story=story)
+
+        self.assertEqual(len(payload["reference_images"]), 3)
+        self.assertEqual(payload["reference_images"][0]["kind"], "character")
+        self.assertEqual(payload["reference_images"][1]["kind"], "character")
+        self.assertEqual(payload["reference_images"][2]["kind"], "scene")
+
+    def test_get_scene_reference_asset_fallback_respects_episode_token(self):
+        story = {
+            "meta": {
+                "scene_reference_assets": {
+                    "ep01_scene01": {
+                        "status": "ready",
+                        "variants": {"scene": {"image_url": "/media/episodes/ep01_scene01.png"}},
+                    },
+                    "ep02_scene01": {
+                        "status": "ready",
+                        "variants": {"scene": {"image_url": "/media/episodes/ep02_scene01.png"}},
+                    },
+                }
+            }
+        }
+
+        asset = get_scene_reference_asset(
+            story,
+            "ep02_scene01_variant",
+            shot_id="scene1_shot1",
+        )
+
+        self.assertEqual(asset["variants"]["scene"]["image_url"], "/media/episodes/ep02_scene01.png")
+
+    def test_build_generation_payload_preserves_explicit_reference_images(self):
+        story = {
+            "characters": [
+                {
+                    "id": "char_li_ming",
+                    "name": "Li Ming",
+                    "description": "young man, short black hair, wearing a dark blue robe.",
+                }
+            ],
+            "character_images": {
+                "char_li_ming": {
+                    "image_url": "/media/characters/li_ming.png",
+                    "image_path": "media/characters/li_ming.png",
+                }
+            },
+            "meta": {
+                "scene_reference_assets": {
+                    "ep01_scene01": {
+                        "status": "ready",
+                        "variants": {
+                            "scene": {
+                                "image_url": "/media/episodes/ep01_env01_scene.png",
+                                "image_path": "media/episodes/ep01_env01_scene.png",
+                            }
+                        },
+                    }
+                }
+            },
+        }
+        shot = {
+            "shot_id": "scene1_shot1",
+            "source_scene_key": "ep01_scene01",
+            "image_prompt": "Medium shot. Li Ming pauses at the teahouse doorway.",
+            "final_video_prompt": "Medium shot. Static camera. Li Ming pushes the door inward.",
+            "reference_images": [
+                {"kind": "custom", "image_url": "/media/images/custom.png"},
+                {"kind": "scene", "image_url": "/media/episodes/ep01_env01_scene.png"},
+            ],
+        }
+
+        payload = build_generation_payload(shot, build_story_context(story), story=story)
+
+        self.assertEqual(len(payload["reference_images"]), 3)
+        self.assertEqual(payload["reference_images"][0]["kind"], "custom")
+        self.assertEqual(payload["reference_images"][1]["kind"], "scene")
+        self.assertEqual(payload["reference_images"][2]["kind"], "character")
+
     def test_build_story_context_and_payload_preserve_split_prompts(self):
         story = {
             "art_style": "cinematic watercolor",
@@ -75,7 +276,7 @@ class StoryContextTests(unittest.TestCase):
         self.assertIn("jiangnan river town", payload["image_prompt"])
         self.assertNotIn("江南水乡", payload["image_prompt"])
         self.assertNotIn("江南水乡", payload["final_video_prompt"])
-        self.assertIn("last_frame_prompt", payload)
+        self.assertNotIn("last_frame_prompt", payload)
         self.assertNotEqual(payload["image_prompt"], payload["final_video_prompt"])
         self.assertNotIn("Character anchor:", payload["image_prompt"])
 
@@ -162,6 +363,18 @@ class StoryContextTests(unittest.TestCase):
         }
         self.assertTrue(character_appears_in_shot("Li Ming", shot))
         self.assertFalse(character_appears_in_shot("Li", shot))
+
+    def test_character_matching_ignores_environment_only_name_mentions(self):
+        shot = {
+            "storyboard_description": "空镜头展示走廊尽头。",
+            "image_prompt": "Wide shot. Empty corridor under cold light.",
+            "final_video_prompt": "Wide shot. Static camera. Dust floats through the corridor.",
+            "visual_elements": {
+                "environment_and_props": "墙上挂着 Li Ming 的画像与旧徽章",
+            },
+        }
+
+        self.assertFalse(character_appears_in_shot("Li Ming", shot))
 
     def test_infer_shot_view_hint_ignores_generic_profile_phrases(self):
         shot = {
@@ -274,6 +487,39 @@ class ParseStoryboardOverrideTests(unittest.IsolatedAsyncioTestCase):
         flattened = "\n".join(message.get("content", "") for message in fake.messages)
         self.assertIn("Visual DNA only", flattened)
         self.assertNotIn("studio lighting", flattened.lower())
+
+    async def test_parse_script_to_storyboard_rewrites_wrong_source_scene_key_from_scene_map(self):
+        response = """
+        [
+          {
+            "shot_id": "scene2_shot1",
+            "source_scene_key": "ep99_scene99",
+            "storyboard_description": "镜头切到书房内景。",
+            "camera_setup": {"shot_size": "MS", "camera_angle": "Eye-level", "movement": "Static"},
+            "visual_elements": {
+              "subject_and_clothing": "书桌前的男子背影",
+              "action_and_expression": "停在桌前",
+              "environment_and_props": "书房书桌、烛台与窗棂",
+              "lighting_and_color": "烛火暖光与窗外冷光"
+            },
+            "image_prompt": "Medium shot. A man pauses at the writing desk in the study.",
+            "final_video_prompt": "Medium shot. Static camera. He lowers his gaze toward the desk."
+          }
+        ]
+        """.strip()
+
+        class FakeProvider:
+            async def complete_messages_with_usage(self, messages, system: str = "", temperature: float = 0.3, **kwargs):
+                return response, {"prompt_tokens": 10, "completion_tokens": 5}
+
+        with patch("app.services.storyboard.get_llm_provider", return_value=FakeProvider()):
+            shots, _ = await parse_script_to_storyboard(
+                "第 1 集：测试\n\n【场景 3】\n环境：回廊\n画面：空镜头。\n\n【场景 7】\n环境：书房\n画面：男子停在桌前。",
+                provider="openai",
+            )
+
+        self.assertEqual(len(shots), 1)
+        self.assertEqual(shots[0].source_scene_key, "ep01_scene07")
 
 
 class StoryContextPreparationTests(unittest.IsolatedAsyncioTestCase):
@@ -726,6 +972,21 @@ class ImageRouterFallbackTests(unittest.TestCase):
 
         self.assertEqual(payload["negative_prompt"], "blur, low quality")
         self.assertIn("cinematic watercolor", payload["image_prompt"])
+
+    def test_basic_payload_preserves_reference_images(self):
+        payload = _build_basic_payload(
+            {
+                "shot_id": "scene1_shot1",
+                "image_prompt": "Medium shot. A hero stands in the rain.",
+                "reference_images": [
+                    {"kind": "character", "image_url": "/media/characters/hero.png"},
+                    {"kind": "scene", "image_url": "/media/episodes/env.png"},
+                ],
+            },
+            "cinematic watercolor",
+        )
+
+        self.assertEqual(len(payload["reference_images"]), 2)
 
 
 if __name__ == "__main__":

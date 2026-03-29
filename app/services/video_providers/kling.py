@@ -45,6 +45,7 @@ class KlingVideoProvider(BaseVideoProvider):
         base_url: str,
         last_frame_url: str = "",
         negative_prompt: str = "",
+        duration_seconds: int | None = None,
     ) -> str:
         """生成视频。
 
@@ -63,7 +64,16 @@ class KlingVideoProvider(BaseVideoProvider):
         token = self._make_token(api_key)
         effective_base = base_url or DEFAULT_BASE_URL
         async with httpx.AsyncClient(timeout=30) as client:
-            task_id = await self._submit(client, image_url, prompt, model, token, effective_base, negative_prompt)
+            task_id = await self._submit(
+                client,
+                image_url,
+                prompt,
+                model,
+                token,
+                effective_base,
+                negative_prompt,
+                duration_seconds,
+            )
         async with httpx.AsyncClient(timeout=30) as client:
             return await self._poll(client, task_id, token, effective_base)
 
@@ -76,12 +86,13 @@ class KlingVideoProvider(BaseVideoProvider):
         token: str,
         base_url: str,
         negative_prompt: str = "",
+        duration_seconds: int | None = None,
     ) -> str:
         payload = {
             "model_name": model or "kling-v2-master",
             "image": image_url,
             "prompt": prompt,
-            "duration": 5,
+            "duration": duration_seconds or 5,
             "mode": "std",
         }
         if negative_prompt:

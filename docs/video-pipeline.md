@@ -1,441 +1,547 @@
-# Auto_media 视频生成管线文档
+# Auto_media 视频生成与视觉一致性统一文档
 
-> 后端处理逻辑：从分镜 JSON 到视频成片的质量控制链路
-> 提示词模板详见 [prompt-framework.md](prompt-framework.md)
-> 更新日期：2026-03-25
+> 更新日期：2026-03-27
 >
-> 状态说明：当前主链路已经落地 `StoryContext` + `build_generation_payload()`，统一组装 `image_prompt` / `final_video_prompt` / `last_frame_prompt` / `negative_prompt`。本文后半段关于 DSPy、VLM 反馈闭环、起始帧策略增强等内容仍属于规划，不应视为现网默认能力。
+> 文档定位：本文件是视频生成主链路、视觉一致性资产层、场景参考图、首帧生成、历史链式方案的统一入口。
+>
+> 状态说明：
+>
+> - 当前主链路已落地 `StoryContext`、分字段 prompt 组装、场景参考图资产、`scene reference -> shot first frame -> single-frame I2V`。
+> - DSPy 提取器、VLM 质检闭环、Prompt Caching 深化、独立数字资产库仍属于后续增强。
+> - “链式视频生成”保留为历史/备选方案，不是当前默认实现路径。
+>
+> 提示词模板详见 [prompt-framework.md](prompt-framework.md)。
 
 ---
 
-## 一、管线总览
+## 一、统一结论
 
-> 说明：本文中较早出现的 `build_final_prompt()` 属于设计期命名。按照当前仓库实现，更接近真实代码边界的入口是 `app/core/story_context.py` 中的 `build_generation_payload()`，由 `PipelineExecutor`、`image.py`、`video.py` 等链路复用。
+当前项目里，视频一致性问题已经不是“单纯把 prompt 写长一点”就能解决，而是要靠一套统一的运行时资产层：
+
+1. `StoryContext`
+   - 统一收口角色外貌锁、基础画风、场景风格补充、负向约束
+2. 场景参考图资产
+   - 按集生成共享环境组，为首帧图片提供稳定环境基准
+3. 分字段 prompt 组装
+   - `image_prompt`、`final_video_prompt`、`last_frame_prompt` 各司其职
+4. 单帧主链路
+   - 当前主镜头生成已经收口为 `scene reference -> shot first frame -> image-to-video`
+
+旧文档中三个常见误区，需要在这里一次性澄清：
+
+1. 当前主链路不是“把角色设定图 prompt 直接拼回镜头 prompt”
+2. 当前主链路不是“所有镜头默认走链式传最后一帧”
+3. 当前项目还没有独立的 `digital_assets` 资产库表，现阶段正式资产仍以 `Story.character_images` 和 `Story.meta[...]` 为主
+
+---
+
+## 二、主链路总览
 
 ```text
-分镜 JSON (Shot List)
+剧本 / 分镜数据
   │
-  ├─ 0. StoryContext 构建 ─── 角色锁、画风、场景风格、negative prompt 汇总
-  ├─ 1. CharacterLock 注入 ── 角色外貌/服装锚点合并到生成 payload
-  ├─ 2. 镜头流上下文注入 ─── 携带前一镜头环境信息，添加衔接短语
-  ├─ 3. 强度分级渲染标签 ─── 按 scene_intensity 注入 low/high 渲染参数
-  ├─ 4. Negative Prompt ──── 通过独立字段或 provider 参数注入
+  ├─ 0. StoryContext 构建
+  │     ├─ character_appearance_cache
+  │     ├─ scene_style_cache
+  │     ├─ art_style
+  │     └─ negative_prompt
   │
-  ▼
-  build_generation_payload() / build_*_generation_prompt()
+  ├─ 1. 场景参考图命中
+  │     └─ scene_reference_assets / episode_reference_assets
   │
-  ├─ 5. Judge Agent 审查 ─── fast model 逻辑/物理一致性检查（可选）
-  ├─ 6. 起始帧生成 ────── 静态图作为视频首帧引导（可选，视 API 支持）
-  ├─ 7. VLM 反馈闭环 ──── 关键镜头抽检，不通过则增强 prompt 后有限次重试（规划中）
+  ├─ 2. 生成 payload
+  │     ├─ image_prompt
+  │     ├─ final_video_prompt
+  │     ├─ last_frame_prompt
+  │     └─ negative_prompt
   │
-  ▼
-  视频生成 API (Kling / Runway / Seedance / Sora)
+  ├─ 3. 首帧图片生成
+  │     └─ scene reference + shot image prompt
   │
-  ├─ 8. 换脸后处理 ────── 替代/增强角色一致性（可选，视 API 支持）
+  ├─ 4. 单帧 I2V 视频生成
+  │     └─ motion-focused final_video_prompt
   │
-  ▼
-  最终视频素材
+  └─ 5. 可选后处理 / 规划能力
+        ├─ VLM 抽检与有限次重试
+        ├─ Prompt Caching
+        └─ DSPy 结构化提取
 ```
+
+当前最重要的设计边界是：
+
+- 图片阶段消费 `image_prompt`
+- 视频阶段消费 `final_video_prompt`
+- 终态补图或特殊镜头才消费 `last_frame_prompt`
+- `negative_prompt` 作为独立字段或 provider 参数处理，不回退成正向 prompt 的机械拼接
 
 ---
 
-## 二、Visual DNA 注入
+## 三、当前已落地的一致性资产层
 
-### 问题
+### 3.1 现有资产存储位置
 
-LLM 每次生成分镜时自由描述角色外貌 → 同一角色跨镜头不一致（发型变、服装扣子变、甚至性别变）。
+| 资产 | 存储位置 | 当前用途 |
+|------|------|------|
+| 角色设定图 | `Story.character_images` | 存 `design_prompt / visual_dna / image_url / image_path` |
+| 角色外貌缓存 | `Story.meta["character_appearance_cache"]` | 运行时主缓存，提供 `body / clothing / negative_prompt` |
+| 场景风格缓存 | `Story.meta["scene_style_cache"]` | 为图片/视频 prompt 补充场景级风格 |
+| 环境图组资产 | `Story.meta["episode_reference_assets"]` | 每集环境组主资产 |
+| 场景命中环境图 | `Story.meta["scene_reference_assets"]` | `scene_key -> 环境组资产` 映射 |
 
-### 方案
+### 3.2 当前项目还没有什么
 
-在 `build_final_prompt()` 中，将 `visual_elements.subject_and_clothing` 强制替换为该角色在 `character_images` 中存储的 `visual_dna` 固定串。
+以下能力还没有作为正式运行时能力落地：
 
-```python
-def inject_visual_dna(shot: dict, character_dna: dict[str, str]) -> dict:
-    """
-    将 shot 中的 subject_and_clothing 替换为固定 Visual DNA。
+- 独立 `digital_assets` 表
+- 跨故事资产版本管理
+- 资产标签检索和 UI 管理后台
+- 通用数字资产库 CRUD
 
-    Args:
-        shot: 单个 Shot 字典
-        character_dna: {角色名: visual_dna_string}
-    """
-    subject = shot["visual_elements"]["subject_and_clothing"]
+因此“数字资产库”在当前项目里的正确理解，是“Story 级一致性资产层”，而不是独立 DAM 系统。
 
-    for name, dna in character_dna.items():
-        # 如果 subject 中提到了该角色（英文名或中文名），替换为固定 DNA
-        if name.lower() in subject.lower() or name in subject:
-            # 保留 LLM 生成的动态部分（如局部特写描述），在前面插入固定 DNA
-            shot["visual_elements"]["subject_and_clothing"] = dna
-            break
+### 3.3 StoryContext 作为统一入口
 
-    return shot
-```
+当前主链路已经以 `StoryContext` 为运行时收口点，避免自动模式、手动模式、单镜头接口各自拼装 prompt。
 
-### Visual DNA 生成时机
-
-在 Step 2.5（角色参考图生成后），有两种方式提取 Visual DNA：
-
-**方式 A（推荐）**：用 LLM 从角色描述中提炼固定英文短语
+推荐理解为：
 
 ```python
-VISUAL_DNA_PROMPT = """从以下角色描述中，提取一段固定的英文外貌描述（30-50词），
-严格遵循格式：年龄+种族+性别, 发型+发色, 显著特征, 服装材质+颜色+类型+细节, 体型
+@dataclass
+class CharacterLock:
+    body_features: str
+    default_clothing: str
+    negative_prompt: str = ""
 
-角色名：{name}
-角色描述：{description}
+@dataclass
+class SceneStyle:
+    image_extra: str
+    video_extra: str
+    negative_prompt: str = ""
 
-只返回英文描述串，不要其他内容。"""
+@dataclass
+class StoryContext:
+    base_art_style: str
+    global_negative_prompt: str
+    character_locks: dict[str, CharacterLock]
+    scene_styles: list[SceneStyle]
+    clean_character_section: str
 ```
 
-**方式 B**：人工编写后存入 `character_images[name]["visual_dna"]`
+字段来源口径：
 
-> 实现说明：运行期当前优先读取 `Story.meta["character_appearance_cache"]`，`character_images[name]["visual_dna"]` 仅作为兼容投影字段保留。
+| 字段 | 当前来源 |
+|------|------|
+| `base_art_style` | `Story.art_style` |
+| `character_locks` | `meta.character_appearance_cache` 优先，其次 `character_images.visual_dna`，最后角色描述 |
+| `scene_styles` | `Story.genre` + `Story.selected_setting` + `meta.scene_style_cache` |
+| `world_summary` | 真实落点优先取 `Story.selected_setting`，不是只看 `meta["world_summary"]` |
 
 ---
 
-## 三、镜头流上下文注入
+## 四、角色一致性：从 Visual DNA 到 CharacterLock
 
-### 问题
+### 4.1 当前问题
 
-视频模型只看当前 Prompt → 相邻镜头的背景、光影突然变色（跳戏）。
+如果只依赖分镜 LLM 自由描述角色外貌，会出现：
 
-### 方案
+- 同一角色跨镜头发型、服装、体型漂移
+- 角色设定图虽然已生成，但没有被稳定投影到运行时
+- 多角色同框时外貌属性串扰
 
-在 `build_final_prompt()` 中，将前一镜头的环境和光影信息作为衔接上下文追加。
+### 4.2 当前正确口径
 
-```python
-def inject_temporal_context(current_shot: dict, prev_shot: dict | None) -> dict:
-    """
-    向 final_video_prompt 注入前一镜头的环境/光影上下文。
-    仅在同一场景内（scene_number 相同）注入。
-    """
-    if prev_shot is None:
-        return current_shot
+角色一致性已经从“直接重用 character sheet prompt”收敛为“结构化外貌锁 + 干净角色块”：
 
-    # 仅同场景内注入（跨场景不需要衔接）
-    curr_scene = current_shot["shot_id"].split("_")[0]  # "scene1"
-    prev_scene = prev_shot["shot_id"].split("_")[0]
-    if curr_scene != prev_scene:
-        return current_shot
+1. 主缓存是 `meta["character_appearance_cache"]`
+2. `character_images[*]["visual_dna"]` 仅保留为兼容投影字段
+3. 上游传给 storyboard 的是干净版 `Character Reference`
+4. 运行时再按图片/视频阶段分别注入对应字段
 
-    prev_env = prev_shot["visual_elements"]["environment_and_props"]
-    prev_light = prev_shot["visual_elements"]["lighting_and_color"]
+### 4.3 推荐存储格式
 
-    continuity = f"Maintaining consistent environment: {prev_env}. Continuing lighting: {prev_light}."
-
-    current_shot["final_video_prompt"] = (
-        current_shot["final_video_prompt"].rstrip(". ")
-        + f". {continuity}"
-    )
-
-    return current_shot
-```
-
----
-
-## 四、强度分级渲染标签
-
-根据 `scene_intensity` 注入不同级别的渲染后缀和额外参数。
-
-```python
-RENDER_PROFILES = {
-    "low": {
-        "tags": "Cinematic, 4k resolution, photorealistic, --ar 16:9",
-        "extra": "natural lighting, steady camera, realistic movement",
-    },
-    "high": {
-        "tags": "Masterpiece, 8k resolution, highly detailed, photorealistic, shot on ARRI Alexa 65 macro lens, --ar 16:9",
-        "extra": "macro details, slow motion 120fps, volumetric lighting, subsurface scattering",
-    },
-}
-
-def apply_intensity_profile(shot: dict) -> dict:
-    """根据 scene_intensity 替换 final_video_prompt 末尾的渲染标签。"""
-    intensity = shot.get("scene_intensity", "low")
-    profile = RENDER_PROFILES.get(intensity, RENDER_PROFILES["low"])
-
-    prompt = shot["final_video_prompt"]
-
-    # 移除 LLM 生成的默认渲染标签（如果有），追加分级标签
-    # 简单策略：在最后一个句号后替换
-    if profile["extra"]:
-        prompt = f"{prompt}, {profile['extra']}"
-
-    shot["final_video_prompt"] = prompt
-    return shot
-```
-
----
-
-## 五、Negative Prompt 注入
-
-视频生成经常出现崩坏肢体和诡异闪烁。在 `final_video_prompt` 末尾追加画质约束。
-
-```python
-NEGATIVE_SUFFIX = (
-    " --negative low quality, blurry, distorted limbs, extra fingers, "
-    "messy anatomy, flickering, morphing, low resolution, watermark, text overlay"
-)
-
-def inject_negative_prompt(shot: dict) -> dict:
-    """追加 Negative Prompt 后缀（部分模型支持 --negative 语法）。"""
-    shot["final_video_prompt"] += NEGATIVE_SUFFIX
-    return shot
-```
-
-> 注意：并非所有视频 API 都支持 `--negative` 语法。如 API 提供独立的 `negative_prompt` 参数，应改为在 API 调用层传入，而非拼接到 prompt 字符串中。
-
----
-
-## 六、build_final_prompt 组装（完整流程）
-
-> 当前代码中已经拆分为 `build_image_generation_prompt()` / `build_video_generation_prompt()` / `build_last_frame_generation_prompt()` 与 `build_generation_payload()`；本节保留的是设计上的等价表达。
-
-将以上所有步骤串联为统一的后处理函数：
-
-```python
-def build_final_prompt(
-    shots: list[dict],
-    character_dna: dict[str, str],
-    enable_negative: bool = True,
-) -> list[dict]:
-    """
-    对分镜 JSON 执行完整的后处理管线。
-
-    Args:
-        shots: LLM 生成的原始 Shot 列表
-        character_dna: {角色名: visual_dna_string}
-        enable_negative: 是否追加 Negative Prompt
-    """
-    prev_shot = None
-
-    for shot in shots:
-        # 1. Visual DNA 注入
-        inject_visual_dna(shot, character_dna)
-
-        # 2. 镜头流上下文
-        inject_temporal_context(shot, prev_shot)
-
-        # 3. 强度分级
-        apply_intensity_profile(shot)
-
-        # 4. Negative Prompt
-        if enable_negative:
-            inject_negative_prompt(shot)
-
-        prev_shot = shot
-
-    return shots
-```
-
----
-
-## 七、Judge Agent — 分镜审查（可选）
-
-在生成视频前，用 fast/cheap model 检查分镜逻辑和物理一致性，拦截明显错误，避免浪费昂贵的视频生成费用。
-
-### Judge Prompt
-
-```
-你是一位专业的分镜审查员。请检查以下分镜序列中的逻辑和物理错误。
-
-检查项：
-1. 逻辑连贯：角色上一镜头倒地，下一镜头不应在奔跑（除非有起身动作）
-2. 光影一致：同场景相邻镜头的光源方向和色温不应突变
-3. 角色一致：同一角色的服装/发型跨镜头不应变化
-4. 物理合理：不应同时出现矛盾的环境描述（如"阳光直射"和"霓虹灯映射"在同一室内场景）
-5. 动作可行：单个 3-5 秒镜头中的动作是否过于复杂
-
-分镜序列（JSON）：
-{shots_json}
-
-请以 JSON 返回：
+```json
 {
-  "passed": true/false,
-  "issues": [
-    {
-      "shot_id": "scene1_shot3",
-      "type": "逻辑/光影/角色/物理/动作",
-      "description": "问题描述",
-      "suggestion": "修正建议"
+  "character_appearance_cache": {
+    "char_liming": {
+      "body": "young male, silver-white hair, ice blue eyes, slender build",
+      "clothing": "white hanfu with blue cloud embroidery",
+      "negative_prompt": "modern casualwear"
     }
-  ]
+  }
 }
-
-如果没有问题，返回 {"passed": true, "issues": []}。
 ```
 
-### 推荐模型
+读取优先级：
 
-| 模型 | 速度 | 成本 | 适合场景 |
-|------|------|------|---------|
-| GPT-4o-mini | 快 | 极低 | 日常审查 |
-| Gemini Flash | 快 | 极低 | 日常审查 |
-| Claude Haiku | 快 | 低 | 需要更高准确度时 |
+1. `meta.character_appearance_cache[character_id]`
+2. `character_images[character_id].visual_dna`
+3. `characters[].description`
 
-### 调用时机
+### 4.4 干净角色块，而不是回灌原始设定图 prompt
 
-```
-storyboard.SYSTEM_PROMPT 生成 Shot List
-    ↓
-Judge Agent 审查
-    ├─ passed=true → 进入 build_final_prompt()
-    └─ passed=false → 将 issues 反馈给分镜 LLM 重新生成（最多重试 1 次）
-```
+当前上游和运行时都应避免把三视图设定图里的噪声词重新注入生成链路，例如：
+
+- `clean background`
+- `character sheet`
+- `front / side / back view`
+- 排版要求
+- 纯设定图摄影棚语言
+
+正确目标是保留 immutable traits，并允许镜头级服装、姿态、动作继续由分镜和剧情驱动。
 
 ---
 
-## 八、起始帧策略（可选）
+## 五、场景参考图：当前正式方案
 
-### 问题
+### 5.1 当前定位
 
-视频模型处理复杂动作时容易出现幻觉（六指、肢体变形）。
+场景参考图已经是当前主链路的一部分，不再只是设计稿。
 
-### 方案
+它负责：
 
-对每个 Shot，先用图像生成 API 生成一张高质量静态图作为视频首帧（First Frame），再用 image-to-video API 生成视频。静态图可以"锚定"角色外貌和场景布局，降低视频模型的发挥空间。
+1. 稳定环境空间、光线方向、主色调、背景道具
+2. 作为首帧图片生成的环境基准
+3. 为同集内共享物理空间的多个场景提供复用资产
 
-```python
-async def generate_first_frame(shot: dict, image_api_key: str, image_base_url: str) -> str:
-    """
-    用 shot 的 final_video_prompt 生成一张静态图作为视频起始帧。
-    返回图片 URL。
-    """
-    # 复用现有的 generate_image 函数
-    from app.services.image import generate_image
+它不负责：
 
-    result = await generate_image(
-        prompt=shot["final_video_prompt"],
-        shot_id=shot["shot_id"],
-        model="black-forest-labs/FLUX.1-schnell",
-        image_api_key=image_api_key,
-        image_base_url=image_base_url,
-    )
-    return result["image_url"]
+1. 主角 pose
+2. 剧情动作
+3. 镜头过渡
+4. 直接替代主镜头视频生成
+
+### 5.2 当前粒度
+
+当前不是“一场一个参考图按钮”，而是：
+
+```text
+Episode
+  -> Environment Group 1
+  -> Environment Group 2
+  -> ...
 ```
 
-### API 支持情况
+也就是每集统一生成环境图组，再把 `scene_key` 映射回命中的环境组。
 
-| 视频 API | 支持 image-to-video | 说明 |
-|----------|-------------------|------|
-| Kling | 是 | `image` 参数传入首帧 |
-| Runway Gen-3/4 | 是 | `init_image` 参数 |
-| Seedance | 部分 | 视版本 |
-| Sora | 否（纯文生视频） | 不适用此策略 |
+### 5.3 当前每组只生成一张主环境图
 
-### 成本权衡
+当前正式运行时结构只有：
 
-起始帧策略会增加一次图像生成调用（成本约 ¥0.01-0.05/张），但可以显著降低视频重跑率（减少因肢体崩坏导致的重试）。建议仅对 `scene_intensity: "high"` 的镜头启用。
+- `variants.scene`
 
----
+不再把旧的 `wide / close` 双图结构作为目标态保留。
 
-## 九、换脸后处理（替代方案）
+### 5.4 当前环境图必须是纯环境图
 
-如果视频 API 或第三方服务支持换脸（FaceSwap），可作为 Visual DNA 的补充或替代：
+环境图 prompt 已经收紧为：
 
-- **与 Visual DNA 并用**：Prompt 层面保持一致性（Visual DNA），视频生成后再用参考图换脸进一步校正
-- **替代 Visual DNA**：Prompt 中不再强调角色外貌，生成视频后统一换脸。适合对角色精度要求极高的场景
+- 只保留环境锚点
+- 弱化或移除情绪、剧情、人物动作
+- 明确排除人物、脸、服装、武器、姿态、叙事 beat
 
-换脸的优势是面部一致性更高，劣势是增加后处理时间和成本，且对侧脸/遮挡场景效果有限。
+可概括为：
 
----
+```text
+主环境参考图 = 环境空间 + 光线 + 背景道具
+不承担主角表演，不承担剧情推进
+```
 
-## 十、完整调用链路
+### 5.5 当前分组逻辑
 
-```python
-async def generate_video_pipeline(
-    script: str,
-    character_info: dict,
-    provider: str,
-    model: str,
-    api_key: str,
-    base_url: str,
-    video_api_key: str,
-    video_base_url: str,
-    image_api_key: str = "",
-    image_base_url: str = "",
-    enable_judge: bool = True,
-    enable_first_frame: bool = False,
-    enable_negative: bool = True,
-):
-    """完整的视频生成管线。"""
+环境分组逻辑的目标不是“文本越像越合并”，而是“同一物理空间尽量合并，不同空间尽量拆开”。
 
-    # Step 4: 分镜生成
-    shots, usage = await parse_script_to_storyboard(
-        script, provider, model, api_key, base_url, character_info
-    )
+当前主要依据：
 
-    # Step 4.5: Judge Agent 审查（可选）
-    if enable_judge:
-        judge_result = await run_judge_agent(shots)
-        if not judge_result["passed"]:
-            # 携带 issues 重新生成（最多 1 次）
-            shots, usage = await regenerate_with_feedback(
-                script, judge_result["issues"], provider, model, api_key, base_url
-            )
+1. `place_anchors`
+2. `object_anchors`
+3. `environment_signature`
+4. 噪声剔除
 
-    # 提取 Visual DNA
-    character_dna = {
-        name: info.get("visual_dna", "")
-        for name, info in character_info.get("character_images", {}).items()
-        if info.get("visual_dna")
+不会主导分组的噪声包括：
+
+- 情绪词
+- 动作词
+- 镜头词
+- 抽象修辞
+- 不足以代表空间结构的时间词
+
+### 5.6 当前资产结构
+
+```json
+{
+  "meta": {
+    "episode_reference_assets": {
+      "ep01_env01": {
+        "status": "ready",
+        "environment_pack_key": "ep01_env01",
+        "affected_scene_keys": ["ep01_scene01", "ep01_scene02"],
+        "variants": {
+          "scene": {
+            "prompt": "...",
+            "image_url": "/media/episodes/ep01_env01_scene_xxxx.png",
+            "image_path": "media/episodes/ep01_env01_scene_xxxx.png"
+          }
+        },
+        "reuse_signature": "..."
+      }
+    },
+    "scene_reference_assets": {
+      "ep01_scene01": { "...命中的环境组资产副本..." }
     }
-
-    # Step 5: 后处理管线
-    shots_data = [shot.model_dump() for shot in shots]
-    shots_data = build_final_prompt(shots_data, character_dna, enable_negative)
-
-    # 起始帧生成（可选，仅 high intensity）
-    if enable_first_frame:
-        for shot in shots_data:
-            if shot.get("scene_intensity") == "high":
-                shot["first_frame_url"] = await generate_first_frame(
-                    shot, image_api_key, image_base_url
-                )
-
-    # 视频生成 API 调用
-    videos = await generate_videos_batch(shots_data, video_api_key, video_base_url)
-
-    return videos
+  }
+}
 ```
+
+### 5.7 接口与展示
+
+当前已实现接口：
+
+```text
+POST /api/v1/story/{story_id}/scene-reference/generate
+```
+
+当前前端口径：
+
+1. 每集一处环境图组面板
+2. 单个 scene 不重复展示按钮和缩略图
+3. 每组只显示 1 张主场景参考图
+4. scene 只展示自己命中的环境组
+
+### 5.8 复用与重建规则
+
+当前不会因为轻微文案改动就整集重生。
+
+流程是：
+
+1. 重新读取本集 scene
+2. 重新计算环境组
+3. 计算每组 `reuse_signature`
+4. 命中则复用旧资产
+5. 只有新增组或签名明显变化的组才重生
+
+通常触发重生的条件：
+
+- 物理空间变化
+- 核心背景结构变化
+- 关键环境道具变化
+- `art_style` 明显变化
 
 ---
 
-## 十一、后续演进：DSPy 与 Generative Feedback Loops
+## 六、首帧与主镜头生成：当前默认路径
 
-### 11.1 DSPy 的建议挂载点
+### 6.1 当前主镜头链路
 
-- 将角色外貌提取逻辑放在 `app/core/story_context.py` 的缓存构建阶段
-- 目标输出继续落到 `Story.meta["character_appearance_cache"]`
-- 生产环境只加载离线编译好的 DSPy 配置，不在请求链路实时 compile
+当前默认实现已收口为：
 
-### 11.2 建议的数据契约
-
-```python
-class CharacterAppearance(BaseModel):
-    body: str
-    clothing: str
+```text
+scene reference
+  -> shot first frame image
+  -> motion-focused final_video_prompt
+  -> single-frame image-to-video
 ```
 
-对应现有运行时结构：
+而不是：
 
-- `CharacterLock.body_features <- body`
-- `CharacterLock.default_clothing <- clothing`
+```text
+first frame + last frame
+  -> 强行双帧约束所有主镜头
+```
 
-### 11.3 反馈闭环的建议挂载点
+### 6.2 为什么必须保留分字段 Prompt
 
-- 图片生成后：检查角色外貌、服装、主体数量是否满足 `CharacterLock`
-- 视频生成后：检查起始帧一致性、动作完成度、尾帧目标状态是否满足要求
-- 失败时只对当前 shot 增加纠错指令并有限次重试，不回滚整个 pipeline
+当前已经明确拆分：
 
-### 11.4 成本控制原则
+- `image_prompt`：首帧静态内容、构图、环境、定格姿态
+- `final_video_prompt`：动作、运镜、短时运动执行
+- `last_frame_prompt`：少数需要终态参考的镜头
 
-- 不对每个镜头默认全量质检
-- 新角色首次出场必须检
-- 大跨度换装必须检
-- 同场景连续镜头建议每 3-5 镜抽检一次
+因此一致性层不能再回退成一个“大一统 prompt”。
 
-### 11.5 当前状态
+推荐运行时产物仍然是 bundle：
 
-- `StoryContext` 与统一 payload 组装已进入主链路
-- DSPy 提取器尚未接入
-- VLM 质检与自动重试尚未接入
+```python
+payload = {
+    "image_prompt": "...",
+    "final_video_prompt": "...",
+    "last_frame_prompt": "...",   # optional
+    "negative_prompt": "...",     # optional
+}
+```
+
+### 6.3 当前 Prompt 组装公式
+
+```text
+图片正向 prompt:
+  [干净角色块] + [image_prompt] + [scene_style image extra] + [art_style]
+
+视频正向 prompt:
+  [干净角色块] + [final_video_prompt] + [scene_style video extra] + [art_style]
+
+尾帧正向 prompt:
+  [干净角色块] + [last_frame_prompt] + [scene_style image extra] + [art_style]
+```
+
+负向 prompt 规则：
+
+- 图片 provider 支持独立参数时，单独传入
+- 视频 provider 若不支持，则默认丢弃 negative，不做机械正向改写
+- 少量人工校验过的 guardrails 可以进入 `scene_style` 或 provider 适配层
+
+### 6.4 当前已完成的主链路修正
+
+相较旧稿，当前仓库已经完成这些关键修正：
+
+1. 自动流水线、手动 `/pipeline/*`、单镜头 `/image/*` 与 `/video/*` 统一复用主入口
+2. `Shot` 已拆为 `image_prompt / final_video_prompt / last_frame_prompt`
+3. `_postprocess_shot()` 优先保留分镜 LLM 产物，只做轻量归一化
+4. 运行时优先读取 `StoryContext`，而不是回灌原始角色设定图 prompt
+5. 图片链路中的 `negative_prompt` 已与 `art_style` 解耦
+
+---
+
+## 七、链式视频生成：历史文档收口后的备选方案
+
+### 7.1 方案定义
+
+链式视频生成指的是：同一场景内，后一个镜头直接使用前一个视频的最后一帧作为起始图。
+
+```text
+场景首镜头 -> 首帧生图 -> 视频1 -> 提取最后一帧
+                               ↓
+后续镜头   <- 复用最后一帧 -> 视频2 -> 提取最后一帧
+```
+
+### 7.2 这个方案解决什么
+
+它主要解决：
+
+- 同场景相邻镜头的视觉连续性
+- 角色和背景在短链路内的自然延续
+- 不依赖参考图 API 的基本连续性增强
+
+### 7.3 为什么它不是当前默认主链路
+
+链式方案虽然有价值，但当前不作为默认实现，原因包括：
+
+1. 当前主链路已经有场景参考图 + 首帧图 + 单帧 I2V，能覆盖大部分一致性需求
+2. 链式模式会引入串行依赖，显著增加时延
+3. 视频压缩后再抽帧重喂，会带来质量累积衰减
+4. 单镜头失败会阻塞同场景后续镜头
+5. 它与当前“主镜头去双帧污染”的收口方向并不完全一致
+
+### 7.4 适合重新评估的场景
+
+如果后续要重新启用链式模式，更适合限定在以下条件：
+
+- 超强连续性的长场景
+- 同一空间内连续动作表演
+- provider 对 I2V 起始帧稳定性较好
+- 场景内镜头数可控
+
+建议仍保留“场景内链式、场景间并行”的设计原则，而不是全局串行。
+
+### 7.5 保留的风险结论
+
+链式模式的风险仍成立：
+
+- 最后一帧需要可访问 URL 或可上传资产
+- 画质可能逐步衰减
+- 错误恢复需要断点续生
+- 单场景镜头数越多，耗时越高
+
+因此当前统一口径是：保留为备选方案，不与现网默认路径混写。
+
+---
+
+## 八、规划中的增强能力
+
+### 8.1 DSPy 结构化提取
+
+目标：
+
+- 将角色外貌提取从硬编码 prompt 演进为结构化抽取
+- 输出继续写入 `meta["character_appearance_cache"]`
+- 生产环境只加载离线编译结果，不在请求链路实时 compile
+
+### 8.2 VLM 反馈闭环
+
+建议挂载点：
+
+- 图片生成后检查角色外貌、服装、主体数量
+- 视频生成后检查起始帧一致性、动作完成度、终态是否符合要求
+- 失败时只对当前 shot 增加纠错指令并有限次重试
+
+成本控制原则：
+
+1. 不默认全量检查
+2. 新角色首次出场必检
+3. 大跨度换装必检
+4. 同场景连续镜头建议抽检
+
+### 8.3 Prompt Caching
+
+前置条件不是“立刻上缓存”，而是先保证静态前缀稳定：
+
+- 去掉时间戳、UUID、调试寄语等动态噪声
+- 把结构化 `messages` 作为长期演进方向
+- `cache_fingerprint` 只用于调试和观测，不进入业务分支
+
+### 8.4 独立数字资产库
+
+如果未来要做真正的数字资产库，建议把它看成当前 Story 级资产层的下一阶段，而不是与现有缓存体系并行再造一套真相源。
+
+推荐顺序：
+
+1. 先稳定 Story 级一致性资产
+2. 再引入跨 Story 复用和检索
+3. 最后再考虑独立表、标签系统和管理 UI
+
+---
+
+## 九、自动模式与手动模式的统一要求
+
+后续所有一致性增强都应同时覆盖：
+
+1. 自动流水线
+2. 手动 `/pipeline/*`
+3. 单镜头 `/image/*`
+4. 单镜头 `/video/*`
+
+不能只在 `PipelineExecutor` 做增强，否则手动补图、手动补视频会重新分叉。
+
+统一原则：
+
+- 统一走 `StoryContext`
+- 统一走分字段 payload
+- 统一消费场景参考图资产
+- provider 差异只留在适配层
+
+---
+
+## 十、当前验收结论
+
+截至 2026-03-27，当前主链路已经满足：
+
+1. 角色一致性不再依赖原始设定图 prompt 直接回灌
+2. `image_prompt / final_video_prompt / last_frame_prompt` 已明确分工
+3. 场景参考图已具备按集分组、复用、展示、持久化能力
+4. 主镜头链路已收口为“场景参考图 -> 首帧图 -> 单帧 I2V”
+5. 旧 `wide / close` 环境双图结构不再是正式目标态
+
+当前仍未落地：
+
+1. DSPy 提取器
+2. VLM 自动质检与重试闭环
+3. 真正独立的数字资产库
+4. 将链式模式作为正式默认策略
+
+---
+
+## 十一、建议阅读顺序
+
+1. `README.md`
+2. 本文档
+3. [prompt-framework.md](prompt-framework.md)
+4. [feature-documentation.md](feature-documentation.md)
+5. [END_TO_END_CONSISTENCY_IMPLEMENTATION_PLAN.md](END_TO_END_CONSISTENCY_IMPLEMENTATION_PLAN.md)

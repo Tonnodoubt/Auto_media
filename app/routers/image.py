@@ -8,6 +8,12 @@ from app.core.api_keys import image_config_dep, get_art_style, inject_art_style,
 from app.core.database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.story_context import build_generation_payload
+from app.services import story_repository as repo
+from app.services.storyboard_state import (
+    load_storyboard_generation_state,
+    persist_generated_files_to_pipeline,
+    persist_storyboard_generation_state,
+)
 from app.services.story_context_service import prepare_story_context
 
 router = APIRouter(prefix="/api/v1/image", tags=["image"])
@@ -18,12 +24,12 @@ class ImageRequest(BaseModel):
     shots: List[dict]
     model: Optional[str] = DEFAULT_MODEL
     story_id: Optional[str] = None
+    pipeline_id: Optional[str] = None
 
 
 class ImageResult(BaseModel):
     shot_id: str
     image_url: str
-    last_frame_url: Optional[str] = None
 
 
 def _build_basic_payload(shot: dict, art_style: str) -> dict:
@@ -42,9 +48,9 @@ def _build_basic_payload(shot: dict, art_style: str) -> dict:
     negative_prompt = str(shot.get("negative_prompt", "")).strip()
     if negative_prompt:
         payload["negative_prompt"] = negative_prompt
-    last_frame_prompt = str(shot.get("last_frame_prompt", "")).strip()
-    if last_frame_prompt:
-        payload["last_frame_prompt"] = inject_art_style(last_frame_prompt, art_style)
+    reference_images = shot.get("reference_images")
+    if isinstance(reference_images, list) and reference_images:
+        payload["reference_images"] = reference_images
     return payload
 
 
@@ -58,10 +64,66 @@ async def generate_images(
     db: AsyncSession = Depends(get_db),
 ):
     art_style = get_art_style(request)
+    story = None
+    story_context = None
+    effective_pipeline_id = str(body.pipeline_id or "").strip()
+
+    async def _persist_generated_images(generated_files: dict) -> None:
+        pipeline_story_id = str(body.story_id or "").strip()
+
+        if body.story_id and story:
+            try:
+                await persist_storyboard_generation_state(
+                    db,
+                    story_id=body.story_id,
+                    story=story,
+                    shots=body.shots,
+                    partial_shots=True,
+                    generated_files=generated_files,
+                    pipeline_id=effective_pipeline_id,
+                    project_id=project_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Image storyboard persistence failed project=%s story_id=%s pipeline_id=%s generated_files=%s",
+                    project_id,
+                    body.story_id,
+                    effective_pipeline_id,
+                    generated_files,
+                )
+
+        if not effective_pipeline_id:
+            return
+
+        try:
+            if not pipeline_story_id:
+                existing_pipeline = await repo.get_pipeline(db, effective_pipeline_id)
+                pipeline_story_id = str(existing_pipeline.get("story_id", "")).strip()
+            if pipeline_story_id:
+                await persist_generated_files_to_pipeline(
+                    db,
+                    project_id=project_id,
+                    pipeline_id=effective_pipeline_id,
+                    story_id=pipeline_story_id,
+                    generated_files=generated_files,
+                )
+            else:
+                logger.warning(
+                    "Skipping image pipeline persistence because story_id is unavailable. project=%s pipeline_id=%s",
+                    project_id,
+                    effective_pipeline_id,
+                )
+        except Exception:
+            logger.exception(
+                "Image pipeline persistence failed project=%s story_id=%s pipeline_id=%s generated_files=%s",
+                project_id,
+                pipeline_story_id or body.story_id,
+                effective_pipeline_id,
+                generated_files,
+            )
     try:
-        story_context = None
         if body.story_id:
-            _, story_context = await prepare_story_context(
+            story, story_context = await prepare_story_context(
                 db,
                 body.story_id,
                 provider=llm["provider"],
@@ -69,7 +131,50 @@ async def generate_images(
                 api_key=llm["api_key"],
                 base_url=llm["base_url"],
             )
-        payloads = [build_generation_payload(shot, story_context, art_style=art_style) for shot in body.shots]
+            if not effective_pipeline_id and story:
+                generation_state = load_storyboard_generation_state(story)
+                effective_pipeline_id = str(generation_state.get("pipeline_id", "")).strip()
+        payloads = [
+            build_generation_payload(shot, story_context, art_style=art_style, story=story)
+            for shot in body.shots
+        ]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Enhanced image payload build failed for project=%s story_id=%s", project_id, body.story_id)
+        if body.story_id:
+            try:
+                effective_pipeline_id = str(body.pipeline_id or "").strip()
+                story, _ = await prepare_story_context(
+                    db,
+                    body.story_id,
+                    provider=llm["provider"],
+                    model=llm["model"],
+                    api_key=llm["api_key"],
+                    base_url=llm["base_url"],
+                )
+                if not effective_pipeline_id and story:
+                    generation_state = load_storyboard_generation_state(story)
+                    effective_pipeline_id = str(generation_state.get("pipeline_id", "")).strip()
+                fallback_results = await generate_images_batch(
+                    [_build_basic_payload(shot, art_style) for shot in body.shots],
+                    model=body.model or DEFAULT_MODEL,
+                    art_style=art_style,
+                    **image_config,
+                )
+                generated_files = {
+                    "images": {result["shot_id"]: result for result in fallback_results},
+                }
+                await _persist_generated_images(generated_files)
+                return fallback_results
+            except HTTPException:
+                raise
+            except Exception:
+                logger.exception("Fallback image generation also failed for project=%s story_id=%s", project_id, body.story_id)
+        detail = str(e).strip() or repr(e) or e.__class__.__name__
+        raise HTTPException(status_code=500, detail=f"图片生成失败: {detail}") from e
+
+    try:
         results = await generate_images_batch(
             payloads,
             model=body.model or DEFAULT_MODEL,
@@ -79,20 +184,12 @@ async def generate_images(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Enhanced image generation failed for project=%s story_id=%s", project_id, body.story_id)
-        if body.story_id:
-            try:
-                fallback_results = await generate_images_batch(
-                    [_build_basic_payload(shot, art_style) for shot in body.shots],
-                    model=body.model or DEFAULT_MODEL,
-                    art_style=art_style,
-                    **image_config,
-                )
-                return fallback_results
-            except HTTPException:
-                raise
-            except Exception:
-                logger.exception("Fallback image generation also failed for project=%s story_id=%s", project_id, body.story_id)
+        logger.exception("Image generation failed for project=%s story_id=%s", project_id, body.story_id)
         detail = str(e).strip() or repr(e) or e.__class__.__name__
         raise HTTPException(status_code=500, detail=f"图片生成失败: {detail}") from e
+
+    generated_files = {
+        "images": {result["shot_id"]: result for result in results},
+    }
+    await _persist_generated_images(generated_files)
     return results

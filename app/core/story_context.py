@@ -6,7 +6,13 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from app.core.api_keys import inject_art_style
-from app.core.story_assets import get_character_design_prompt, get_character_visual_dna
+from app.core.story_assets import (
+    extract_scene_index_from_shot_id,
+    get_character_asset_entry,
+    get_character_design_prompt,
+    get_character_visual_dna,
+    get_scene_reference_asset,
+)
 
 
 _CLOTHING_HINTS = (
@@ -664,7 +670,7 @@ def _get_visual_field(shot: ShotLike, field: str) -> str:
     return _collapse_spaces(str(getattr(visual_elements, field, "")))
 
 
-ShotLike = Mapping[str, Any] | Any
+ShotLike = Any
 
 
 def _shot_character_names(shot: ShotLike) -> list[str]:
@@ -694,16 +700,14 @@ def _shot_character_names(shot: ShotLike) -> list[str]:
 
 
 def _shot_text_haystack(shot: ShotLike, *, include_last_frame: bool = True) -> str:
+    del include_last_frame
     parts = [
         str(_shot_field(shot, "storyboard_description", "")),
         str(_shot_field(shot, "image_prompt", "")),
         str(_shot_field(shot, "final_video_prompt", "")),
         _get_visual_field(shot, "subject_and_clothing"),
         _get_visual_field(shot, "action_and_expression"),
-        _get_visual_field(shot, "environment_and_props"),
     ]
-    if include_last_frame:
-        parts.append(str(_shot_field(shot, "last_frame_prompt", "")))
     return _collapse_spaces(" ".join(parts))
 
 
@@ -787,7 +791,6 @@ def infer_shot_view_hint(name: str, shot: ShotLike) -> str:
         str(_shot_field(shot, "storyboard_description", "")),
         str(_shot_field(shot, "image_prompt", "")),
         str(_shot_field(shot, "final_video_prompt", "")),
-        str(_shot_field(shot, "last_frame_prompt", "")),
         _get_visual_field(shot, "subject_and_clothing"),
         _get_visual_field(shot, "action_and_expression"),
     ]
@@ -896,7 +899,7 @@ def _appearance_prefix(shot: ShotLike, ctx: StoryContext, include_clothing: bool
         merged = _format_character_anchor(
             name,
             lock,
-            lang="zh" if _contains_cjk(" ".join([str(_shot_field(shot, "image_prompt", "")), str(_shot_field(shot, "final_video_prompt", "")), str(_shot_field(shot, "last_frame_prompt", ""))])) else "en",
+            lang="zh" if _contains_cjk(" ".join([str(_shot_field(shot, "image_prompt", "")), str(_shot_field(shot, "final_video_prompt", ""))])) else "en",
             include_clothing=include_clothing and should_inject_clothing_for(name, shot),
         )
         if merged:
@@ -909,7 +912,6 @@ def _appearance_prefix(shot: ShotLike, ctx: StoryContext, include_clothing: bool
         [
             str(_shot_field(shot, "image_prompt", "")),
             str(_shot_field(shot, "final_video_prompt", "")),
-            str(_shot_field(shot, "last_frame_prompt", "")),
         ]
     )
     lang = "zh" if _contains_cjk(base_prompt) else "en"
@@ -980,26 +982,212 @@ def build_negative_prompt(shot: ShotLike, ctx: StoryContext | None) -> str:
     return _collapse_spaces(", ".join(dict.fromkeys(normalized_terms)))
 
 
-def build_image_generation_prompt(shot: ShotLike, ctx: StoryContext | None, art_style: str = "") -> str:
+def _shot_source_scene_key(shot: ShotLike) -> str:
+    explicit = _collapse_spaces(str(_shot_field(shot, "source_scene_key", "")))
+    if explicit:
+        return explicit
+    scene_index = extract_scene_index_from_shot_id(str(_shot_field(shot, "shot_id", "")))
+    if scene_index is None:
+        return ""
+    return f"scene{scene_index}"
+
+
+def _scene_reference_prompt_extra(asset: Mapping[str, Any] | None, shot: ShotLike) -> str:
+    if not isinstance(asset, Mapping):
+        return ""
+
+    scene_variant = {}
+    variants = asset.get("variants")
+    if isinstance(variants, Mapping):
+        raw_scene_variant = variants.get("scene")
+        if isinstance(raw_scene_variant, Mapping):
+            scene_variant = dict(raw_scene_variant)
+
+    prompt = _collapse_spaces(str(scene_variant.get("prompt", "")))
+    shared_environment = ""
+    local_visual_anchors = ""
+    lighting_anchor = ""
+    if prompt:
+        shared_match = re.search(r"Shared environment:\s*([^.]*)\.", prompt, flags=re.IGNORECASE)
+        local_match = re.search(r"(?:Local visual anchors|Stable prop anchors):\s*([^.]*)\.", prompt, flags=re.IGNORECASE)
+        light_match = re.search(r"Lighting anchor:\s*([^.]*)\.", prompt, flags=re.IGNORECASE)
+        shared_environment = _collapse_spaces(shared_match.group(1) if shared_match else "")
+        local_visual_anchors = _collapse_spaces(local_match.group(1) if local_match else "")
+        lighting_anchor = _collapse_spaces(light_match.group(1) if light_match else "")
+
+    if not shared_environment:
+        shared_environment = _collapse_spaces(str(asset.get("summary_environment", "")))
+    if not local_visual_anchors:
+        visuals = asset.get("summary_visuals") or []
+        if isinstance(visuals, list):
+            local_visual_anchors = _collapse_spaces("; ".join(str(item) for item in visuals if _collapse_spaces(str(item))))
+    if not lighting_anchor:
+        lighting_anchor = _collapse_spaces(str(asset.get("summary_lighting", "")))
+
+    if not any((shared_environment, local_visual_anchors, lighting_anchor)):
+        return ""
+
+    preferred_prompt_text = " ".join(
+        [
+            str(_shot_field(shot, "image_prompt", "")),
+            str(_shot_field(shot, "final_video_prompt", "")),
+        ]
+    )
+    fallback_text = str(_shot_field(shot, "storyboard_description", ""))
+    lang = "zh" if _contains_cjk(preferred_prompt_text or fallback_text) else "en"
+    parts: list[str] = []
+    if shared_environment:
+        parts.append(f"保持命中的环境布局：{shared_environment}" if lang == "zh" else f"Match the linked environment layout: {shared_environment}")
+    if local_visual_anchors:
+        parts.append(f"保留场景锚点：{local_visual_anchors}" if lang == "zh" else f"Keep scene anchors: {local_visual_anchors}")
+    if lighting_anchor:
+        parts.append(f"沿用环境光线：{lighting_anchor}" if lang == "zh" else f"Keep the scene lighting: {lighting_anchor}")
+    separator = "；" if lang == "zh" else ". "
+    return _sentence(separator.join(parts), lang)
+
+
+def _matched_character_reference_images(story: Mapping[str, Any] | None, shot: ShotLike) -> list[dict[str, Any]]:
+    if not isinstance(story, Mapping):
+        return []
+    characters = story.get("characters")
+    character_images = story.get("character_images")
+    if not isinstance(characters, list) or not isinstance(character_images, Mapping):
+        return []
+
+    references: list[dict[str, Any]] = []
+    weights = (0.64, 0.56)
+    for character in characters:
+        if not isinstance(character, Mapping):
+            continue
+        name = _collapse_spaces(str(character.get("name", "")))
+        if not name or not character_appears_in_shot(name, shot):
+            continue
+        entry = get_character_asset_entry(character_images, str(character.get("id", "")), name=name)
+        image_url = _collapse_spaces(str(entry.get("image_url", "")))
+        image_path = _collapse_spaces(str(entry.get("image_path", "")))
+        if image_url or image_path:
+            references.append(
+                {
+                    "kind": "character",
+                    "image_url": image_url,
+                    "image_path": image_path,
+                    "weight": weights[min(len(references), len(weights) - 1)],
+                }
+            )
+        if len(references) >= 2:
+            break
+    return references
+
+
+def _build_reference_images(
+    shot: ShotLike,
+    story: Mapping[str, Any] | None,
+    scene_asset: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    references: list[dict[str, Any]] = []
+    references.extend(_matched_character_reference_images(story, shot))
+
+    if isinstance(scene_asset, Mapping):
+        variants = scene_asset.get("variants")
+        scene_variant = variants.get("scene") if isinstance(variants, Mapping) else {}
+        if isinstance(scene_variant, Mapping):
+            image_url = _collapse_spaces(str(scene_variant.get("image_url", "")))
+            image_path = _collapse_spaces(str(scene_variant.get("image_path", "")))
+            if image_url or image_path:
+                references.append(
+                    {
+                        "kind": "scene",
+                        "image_url": image_url,
+                        "image_path": image_path,
+                        "weight": 0.36,
+                    }
+                )
+
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in references:
+        key = (_collapse_spaces(str(item.get("image_url", ""))), _collapse_spaces(str(item.get("image_path", ""))))
+        if key in seen:
+            continue
+        deduped.append(item)
+        seen.add(key)
+    return deduped[:3]
+
+
+def _merge_reference_images(*sources: Any) -> list[Any]:
+    merged: list[Any] = []
+    seen: set[tuple[str, str]] = set()
+
+    for source in sources:
+        if not isinstance(source, list):
+            continue
+        for item in source:
+            if isinstance(item, Mapping):
+                identity_value = (
+                    _collapse_spaces(str(item.get("id", "")))
+                    or _collapse_spaces(str(item.get("image_url", "")))
+                    or _collapse_spaces(str(item.get("image_path", "")))
+                )
+                if not identity_value:
+                    continue
+                identity = ("mapping", identity_value)
+                normalized_item = dict(item)
+            else:
+                value = _collapse_spaces(str(item))
+                if not value:
+                    continue
+                identity = ("raw", value)
+                normalized_item = item
+            if identity in seen:
+                continue
+            seen.add(identity)
+            merged.append(normalized_item)
+
+    return merged
+
+
+def build_image_generation_prompt(
+    shot: ShotLike,
+    ctx: StoryContext | None,
+    art_style: str = "",
+    scene_reference_extra: str = "",
+) -> str:
     base_prompt = str(_shot_field(shot, "image_prompt", "") or _shot_field(shot, "final_video_prompt", ""))
     if not ctx:
-        return inject_art_style(base_prompt, art_style)
+        merged = " ".join(part for part in (base_prompt, scene_reference_extra) if _collapse_spaces(part))
+        return inject_art_style(merged, art_style)
+    scene_bits = [
+        part
+        for part in (scene_reference_extra, _scene_style_extra(ctx, shot, "image"))
+        if _collapse_spaces(part)
+    ]
     return _merge_prompt(
         base_prompt,
         _appearance_prefix(shot, ctx, include_clothing=True),
-        _scene_style_extra(ctx, shot, "image"),
+        " ".join(scene_bits),
         art_style or ctx.base_art_style,
     )
 
 
-def build_video_generation_prompt(shot: ShotLike, ctx: StoryContext | None, art_style: str = "") -> str:
+def build_video_generation_prompt(
+    shot: ShotLike,
+    ctx: StoryContext | None,
+    art_style: str = "",
+    scene_reference_extra: str = "",
+) -> str:
     base_prompt = str(_shot_field(shot, "final_video_prompt", "") or _shot_field(shot, "image_prompt", ""))
     if not ctx:
-        return inject_art_style(base_prompt, art_style)
+        merged = " ".join(part for part in (base_prompt, scene_reference_extra) if _collapse_spaces(part))
+        return inject_art_style(merged, art_style)
+    scene_bits = [
+        part
+        for part in (scene_reference_extra, _scene_style_extra(ctx, shot, "video"))
+        if _collapse_spaces(part)
+    ]
     return _merge_prompt(
         base_prompt,
         _appearance_prefix(shot, ctx, include_clothing=True),
-        _scene_style_extra(ctx, shot, "video"),
+        " ".join(scene_bits),
         art_style or ctx.base_art_style,
     )
 
@@ -1018,19 +1206,43 @@ def build_last_frame_generation_prompt(shot: ShotLike, ctx: StoryContext | None,
     )
 
 
-def build_generation_payload(shot: ShotLike, ctx: StoryContext | None, art_style: str = "") -> dict[str, Any]:
+def build_generation_payload(
+    shot: ShotLike,
+    ctx: StoryContext | None,
+    art_style: str = "",
+    story: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    source_scene_key = _shot_source_scene_key(shot)
+    scene_asset = get_scene_reference_asset(story, source_scene_key, shot_id=str(_shot_field(shot, "shot_id", "")))
+    scene_reference_extra = _scene_reference_prompt_extra(scene_asset, shot)
     payload: dict[str, Any] = {
         "shot_id": str(_shot_field(shot, "shot_id", "")),
-        "image_prompt": build_image_generation_prompt(shot, ctx, art_style=art_style),
-        "final_video_prompt": build_video_generation_prompt(shot, ctx, art_style=art_style),
+        "image_prompt": build_image_generation_prompt(
+            shot,
+            ctx,
+            art_style=art_style,
+            scene_reference_extra=scene_reference_extra,
+        ),
+        "final_video_prompt": build_video_generation_prompt(
+            shot,
+            ctx,
+            art_style=art_style,
+            scene_reference_extra=scene_reference_extra,
+        ),
     }
-
-    last_frame_prompt = build_last_frame_generation_prompt(shot, ctx, art_style=art_style)
-    if last_frame_prompt:
-        payload["last_frame_prompt"] = last_frame_prompt
+    if source_scene_key:
+        payload["source_scene_key"] = source_scene_key
 
     negative_prompt = build_negative_prompt(shot, ctx)
     if negative_prompt:
         payload["negative_prompt"] = negative_prompt
+
+    reference_images = _merge_reference_images(
+        _shot_field(shot, "reference_images", None),
+        payload.get("reference_images"),
+        _build_reference_images(shot, story, scene_asset),
+    )
+    if reference_images:
+        payload["reference_images"] = reference_images
 
     return payload

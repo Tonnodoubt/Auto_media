@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
 from typing import List, Optional
@@ -9,6 +11,7 @@ from app.services.image import generate_character_image, generate_character_imag
 from app.services import story_repository as repo
 
 router = APIRouter(prefix="/api/v1/character", tags=["character"])
+logger = logging.getLogger(__name__)
 
 
 class CharacterImageRequest(BaseModel):
@@ -59,8 +62,12 @@ async def generate_single(body: CharacterImageRequest, request: Request, image_c
             art_style=art_style,
             **image_config,
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"角色人设图生成失败: {e}") from e
+        logger.exception("Character image generation failed story_id=%s character_id=%s", body.story_id, body.character_id)
+        detail = str(e).strip() or repr(e) or e.__class__.__name__
+        raise HTTPException(status_code=500, detail=f"Character image generation failed: {detail}") from e
 
     story = await repo.get_story(db, body.story_id)
     character_images = story.get("character_images", {}) if story else {}
@@ -104,8 +111,12 @@ async def generate_all(body: BatchCharacterRequest, request: Request, image_conf
             art_style=art_style,
             **image_config,
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"批量角色人设图生成失败: {e}") from e
+        logger.exception("Batch character image generation failed story_id=%s count=%s", body.story_id, len(body.characters))
+        detail = str(e).strip() or repr(e) or e.__class__.__name__
+        raise HTTPException(status_code=500, detail=f"Batch character image generation failed: {detail}") from e
 
     valid_results = []
     errors = []

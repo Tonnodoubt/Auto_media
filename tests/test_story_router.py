@@ -3,7 +3,12 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import Request
 
-from app.routers.story import api_generate_script, api_patch
+from app.routers.story import (
+    SceneReferenceGenerateRequest,
+    api_generate_script,
+    api_patch,
+    generate_scene_reference,
+)
 from app.schemas.story import Character, GenerateScriptRequest, OutlineScene, PatchStoryRequest
 
 
@@ -130,3 +135,48 @@ class StoryRouterPatchTests(unittest.IsolatedAsyncioTestCase):
             appearance=True,
             scene_style=False,
         )
+
+
+class StoryRouterSceneReferenceTests(unittest.IsolatedAsyncioTestCase):
+    def _make_request(self) -> Request:
+        return Request({"type": "http", "headers": []})
+
+    async def test_generate_scene_reference_force_regenerate_skips_reuse_assets(self):
+        story = {
+            "meta": {
+                "episode_reference_assets": {
+                    "ep01_env01": {
+                        "status": "ready",
+                        "affected_scene_keys": ["ep01_scene01"],
+                        "reuse_signature": "sig-1",
+                    }
+                }
+            }
+        }
+        save_story = AsyncMock()
+        generate_reference = AsyncMock(return_value={"episode": 1, "groups": []})
+
+        with (
+            patch("app.routers.story.prepare_story_context", new=AsyncMock(return_value=(story, None))),
+            patch("app.routers.story.get_art_style", return_value=""),
+            patch("app.routers.story.generate_episode_scene_reference", new=generate_reference),
+            patch("app.routers.story.repo.get_story", new=AsyncMock(return_value=story)),
+            patch("app.routers.story.repo.save_story", new=save_story),
+        ):
+            result = await generate_scene_reference(
+                "story-force",
+                SceneReferenceGenerateRequest(episode=1, force_regenerate=True),
+                self._make_request(),
+                llm={"provider": "openai", "model": "gpt-test", "api_key": "test-key", "base_url": ""},
+                image_config={},
+                db=None,
+            )
+
+        self.assertEqual(result, {"episode": 1, "groups": []})
+        self.assertEqual(generate_reference.await_args.kwargs["existing_assets"], [])
+        save_story.assert_awaited_once()
+        self.assertEqual(save_story.await_args.args[0], None)
+        self.assertEqual(save_story.await_args.args[1], "story-force")
+        payload = save_story.await_args.args[2]
+        self.assertEqual(payload["meta"]["episode_reference_assets"], {})
+        self.assertEqual(payload["meta"]["scene_reference_assets"], {})
