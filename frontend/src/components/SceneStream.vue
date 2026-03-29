@@ -95,6 +95,7 @@
 <script setup>
 import { useSettingsStore } from '../stores/settings.js'
 import { getSceneKey } from '../stores/story.js'
+import { resolveBackendMediaUrl } from '../utils/backend.js'
 
 const props = defineProps({
   scenes: {
@@ -185,10 +186,7 @@ function assetStatusClass(status) {
 }
 
 function resolveAssetImageUrl(url) {
-  if (!url) return ''
-  if (url.startsWith('data:') || url.startsWith('http://') || url.startsWith('https://')) return url
-  const base = settings.backendUrl ? settings.backendUrl.replace(/\/$/, '') : ''
-  return base ? `${base}${url}` : url
+  return resolveBackendMediaUrl(url, settings.backendUrl)
 }
 </script>
 

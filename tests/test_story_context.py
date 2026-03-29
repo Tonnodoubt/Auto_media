@@ -85,13 +85,82 @@ class StoryContextTests(unittest.TestCase):
         payload = build_generation_payload(shot, build_story_context(story), story=story)
 
         self.assertEqual(payload["source_scene_key"], "ep01_scene01")
+        self.assertIn("Treat the linked scene reference image as environment canon", payload["image_prompt"])
         self.assertIn("Match the linked environment layout", payload["image_prompt"])
         self.assertIn("jiangnan teahouse doorway", payload["image_prompt"])
+        self.assertIn("Treat the linked scene reference image as environment canon", payload["final_video_prompt"])
         self.assertIn("Match the linked environment layout", payload["final_video_prompt"])
         self.assertIn("jiangnan teahouse doorway", payload["final_video_prompt"])
+        self.assertIn("wrong location layout", payload["negative_prompt"])
         self.assertEqual(len(payload["reference_images"]), 2)
         self.assertEqual(payload["reference_images"][0]["kind"], "character")
         self.assertEqual(payload["reference_images"][1]["kind"], "scene")
+        self.assertGreater(payload["reference_images"][1]["weight"], 0.4)
+
+    def test_build_story_context_uses_character_design_prompt_to_lock_headwear(self):
+        story = {
+            "characters": [
+                {
+                    "id": "char_li_ming",
+                    "name": "Li Ming",
+                    "description": "young man with calm expression.",
+                }
+            ],
+            "character_images": {
+                "char_li_ming": {
+                    "design_prompt": (
+                        "Standard three-view character turnaround sheet for Li Ming, protagonist, determined expression, "
+                        "character description: young man, short black hair, wearing a dark blue robe, black bamboo hat, leather belt, "
+                        "show front view, side profile, and back view of the same character on one sheet"
+                    )
+                }
+            },
+        }
+        shot = {
+            "shot_id": "scene1_shot1",
+            "storyboard_description": "Li Ming waits by the doorway.",
+            "image_prompt": "Medium shot. Li Ming waits by the doorway.",
+            "final_video_prompt": "Medium shot. Static camera. Li Ming looks toward the courtyard.",
+        }
+
+        ctx = build_story_context(story)
+        payload = build_generation_payload(shot, ctx, story=story)
+
+        self.assertIn("black bamboo hat", ctx.clean_character_section)
+        self.assertIn("dark blue robe", payload["image_prompt"])
+        self.assertIn("black bamboo hat", payload["image_prompt"])
+        self.assertIn("signature accessories", payload["image_prompt"])
+
+    def test_scene_reference_prompt_uses_chinese_anchor_for_cjk_shot(self):
+        story = {
+            "meta": {
+                "scene_reference_assets": {
+                    "ep01_scene01": {
+                        "summary_environment": "江南茶馆门口",
+                        "summary_visuals": ["木门", "灯笼", "青石门槛"],
+                        "summary_lighting": "雨后天光混合暖色灯笼补光",
+                        "variants": {
+                            "scene": {
+                                "image_url": "/media/episodes/ep01_env01_scene.png",
+                                "image_path": "media/episodes/ep01_env01_scene.png",
+                            }
+                        },
+                    }
+                }
+            }
+        }
+        shot = {
+            "shot_id": "scene1_shot1",
+            "source_scene_key": "ep01_scene01",
+            "storyboard_description": "李明站在茶馆门口。",
+            "image_prompt": "中景，李明停在茶馆门口。",
+            "final_video_prompt": "中景固定镜头，李明推门进入茶馆。",
+        }
+
+        payload = build_generation_payload(shot, None, story=story)
+
+        self.assertIn("把关联场景参考图当作当前镜头的环境基准", payload["image_prompt"])
+        self.assertIn("保持命中的环境布局", payload["image_prompt"])
 
     def test_build_generation_payload_keeps_multiple_character_reference_images(self):
         story = {

@@ -100,7 +100,6 @@ function isAuthError(msg) {
 }
 
 async function startGenerate() {
-  if (!settings.useMock && !settings.effectiveLlmApiKey) { showKeyModal.value = true; return }
   scriptAbortController?.abort()
   const controller = new AbortController()
   scriptAbortController = controller

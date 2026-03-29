@@ -4,6 +4,7 @@ from typing import Any, Optional
 from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException
+from app.core.config import settings
 from app.services import story_repository as repo
 from app.services.story_mock import (
     MOCK_WB_QUESTIONS,
@@ -27,6 +28,17 @@ MODEL_MAP = {
 
 
 logger = logging.getLogger(__name__)
+
+
+def _should_use_dev_mock(api_key: str, feature_name: str) -> bool:
+    if api_key:
+        return False
+    if settings.debug:
+        return True
+    raise HTTPException(
+        status_code=400,
+        detail=f"{feature_name} 需要可用的 LLM API Key，请在前端设置或后端 .env 中完成配置",
+    )
 
 
 def _append_world_building_option(target: list[str], value: Any) -> None:
@@ -234,7 +246,7 @@ def _parse_json(content: str):
 async def refine(story_id: str, change_type: str, change_summary: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "", model: str = "") -> dict:
     import json as _json
     story = await repo.get_story(db, story_id)
-    if not api_key:
+    if _should_use_dev_mock(api_key, "故事细化"):
         return {"characters": None, "relationships": None, "outline": None, "meta_theme": None}
 
     client = _make_client(api_key, base_url)
@@ -298,7 +310,7 @@ async def refine(story_id: str, change_type: str, change_summary: str, db: Async
 
 
 async def analyze_idea(idea: str, genre: str, tone: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "", model: str = "") -> dict:
-    if not api_key:
+    if _should_use_dev_mock(api_key, "灵感分析"):
         return await mock_analyze_idea(idea, genre, tone, db=db)
 
     import json as _json
@@ -323,7 +335,7 @@ async def analyze_idea(idea: str, genre: str, tone: str, db: AsyncSession, api_k
 
 
 async def generate_outline(story_id: str, selected_setting: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "", model: str = "") -> dict:
-    if not api_key:
+    if _should_use_dev_mock(api_key, "大纲生成"):
         return await mock_generate_outline(story_id, selected_setting, db=db)
 
     client = _make_client(api_key, base_url)
@@ -372,7 +384,7 @@ async def chat(
     mode: str = "generic",
     context: Optional[dict] = None,
 ):
-    if not api_key:
+    if _should_use_dev_mock(api_key, "对话生成"):
         async for chunk in mock_chat(story_id, message, db=db, mode=mode, context=context):
             yield chunk
         return
@@ -390,7 +402,7 @@ async def chat(
 
 
 async def generate_script(story_id: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "", model: str = ""):
-    if not api_key:
+    if _should_use_dev_mock(api_key, "剧本生成"):
         async for scene in mock_generate_script(story_id):
             yield scene
         return
@@ -398,9 +410,11 @@ async def generate_script(story_id: str, db: AsyncSession, api_key: str = "", ba
     story = await repo.get_story(db, story_id)
     outline = story.get("outline", [])
     if not outline:
-        async for scene in mock_generate_script(story_id):
-            yield scene
-        return
+        if settings.debug:
+            async for scene in mock_generate_script(story_id):
+                yield scene
+            return
+        raise HTTPException(status_code=400, detail="剧本生成失败：当前故事缺少大纲，请先完成世界观与大纲生成")
     characters = story.get("characters", [])
     characters_text = "\n".join(
         f"- {c['name']}（{c.get('role', '')}）：{c.get('description', '')}"
@@ -463,7 +477,7 @@ async def generate_script(story_id: str, db: AsyncSession, api_key: str = "", ba
 
 async def world_building_start(idea: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "", model: str = "") -> dict:
     import uuid
-    if not api_key:
+    if _should_use_dev_mock(api_key, "世界观生成"):
         return await mock_world_building_start(idea, db=db)
 
     story_id = str(uuid.uuid4())
@@ -491,7 +505,7 @@ async def world_building_start(idea: str, db: AsyncSession, api_key: str = "", b
 
 
 async def world_building_turn(story_id: str, answer: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "", model: str = "") -> dict:
-    if not api_key:
+    if _should_use_dev_mock(api_key, "世界观追问"):
         return await mock_world_building_turn(story_id, answer, db=db)
 
     story = await repo.get_story(db, story_id)

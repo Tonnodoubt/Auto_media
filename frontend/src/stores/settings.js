@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia'
 
-// === 发布时改为 false 以完全禁用 Mock 模式 ===
-const MOCK_ENABLED = true
+// 开发环境默认允许 Mock，部署环境默认关闭；如需强制覆盖，可设置 VITE_ENABLE_MOCK=true/false
+const MOCK_ENABLED = import.meta.env.VITE_ENABLE_MOCK === 'true'
+  || (import.meta.env.DEV && import.meta.env.VITE_ENABLE_MOCK !== 'false')
 
 export const LLM_PROVIDERS = [
   {

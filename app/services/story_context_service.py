@@ -49,7 +49,7 @@ Return strict JSON only in this shape:
     {
       "id": "stable character id from input",
       "body": "immutable physical traits only, in concise English, max 18 words",
-      "clothing": "default outfit only, in concise English, max 12 words",
+      "clothing": "default outfit and always-on accessories/headwear only, in concise English, max 12 words",
       "negative_prompt": "optional contamination exclusions only, max 12 words"
     }
   ]
@@ -57,7 +57,8 @@ Return strict JSON only in this shape:
 
 Rules:
 - Keep only immutable appearance traits in body: age bracket, gender presentation, hair color/style, eye color, skin tone, build, distinctive facial traits.
-- Keep clothing to the normal default outfit, not scene-specific actions or poses.
+- Keep clothing to the normal default outfit and stable accessories/headwear, not scene-specific actions or poses.
+- If the character normally wears a hat, hood, glasses, scarf, jewelry, mask, or signature accessory, keep it in clothing.
 - Exclude lighting, background, camera words, emotions, personality, role arc, story summary, studio terms, art tags.
 - Output concise English phrases suitable for image/video prompting.
 """.strip()

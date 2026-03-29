@@ -27,6 +27,42 @@ _CLOTHING_HINTS = (
     "hanfu",
     "kimono",
     "jacket",
+    "cloak",
+    "cape",
+    "vest",
+    "tunic",
+    "shawl",
+    "scarf",
+    "gloves",
+    "belt",
+    "sash",
+    "hat",
+    "cap",
+    "hood",
+    "helmet",
+    "headband",
+    "veil",
+    "mask",
+    "glasses",
+    "goggles",
+    "necklace",
+    "earrings",
+    "bracelet",
+    "ring",
+    "boots",
+    "hatband",
+    "hairpin",
+    "brooch",
+    "帽",
+    "头巾",
+    "斗笠",
+    "发带",
+    "披风",
+    "围巾",
+    "腰带",
+    "眼镜",
+    "面具",
+    "耳环",
     "衣",
     "袍",
     "衫",
@@ -332,6 +368,16 @@ def _extract_description_fragment(text: str, hints: tuple[str, ...], word_limit:
     return ""
 
 
+def _join_unique_bits(*parts: str) -> str:
+    merged: list[str] = []
+    for part in parts:
+        normalized = _collapse_spaces(part)
+        if not normalized or normalized in merged:
+            continue
+        merged.append(normalized)
+    return "; ".join(merged)
+
+
 def _looks_like_physical_detail(text: str) -> bool:
     lowered = _collapse_spaces(text).lower()
     if not lowered:
@@ -454,6 +500,25 @@ def _clean_design_prompt_anchor_source(design_prompt: str) -> str:
     return _collapse_spaces(cleaned).strip(" ,.;:!?，。；：！？、")
 
 
+def _character_asset_fallback_description(
+    character_images: Mapping[str, Any] | None,
+    *,
+    character_id: str = "",
+    name: str = "",
+    description: str = "",
+) -> str:
+    design_prompt = get_character_design_prompt(character_images, character_id, name=name)
+    prompt_description = _extract_design_prompt_description(design_prompt)
+    prompt_anchor_source = _clean_design_prompt_anchor_source(design_prompt)
+    visual_dna = get_character_visual_dna(character_images, character_id, name=name)
+    return _join_unique_bits(
+        prompt_description,
+        prompt_anchor_source,
+        visual_dna,
+        description,
+    )
+
+
 def build_character_reference_anchor(
     character_images: Mapping[str, Any] | None,
     name: str,
@@ -473,44 +538,33 @@ def build_character_reference_anchor(
             merged.append(normalized_bit)
         return "; ".join(merged)
 
-    def _compose_fallback_description(*parts: str) -> str:
-        merged: list[str] = []
-        for part in parts:
-            normalized_part = _collapse_spaces(part)
-            if not normalized_part or normalized_part in merged:
-                continue
-            merged.append(normalized_part)
-        return "; ".join(merged)
-
     normalized_description = _collapse_spaces(description)
     visual_dna_body = sanitize_body_features(
         get_character_visual_dna(character_images, character_id, name=name),
         fallback_description=normalized_description,
     )
-    design_prompt = get_character_design_prompt(character_images, character_id, name=name)
-    prompt_description = _extract_design_prompt_description(design_prompt)
-    prompt_anchor_source = _clean_design_prompt_anchor_source(design_prompt)
-    prompt_fallback_description = prompt_description or prompt_anchor_source or normalized_description
-    composed_prompt_fallback_description = _compose_fallback_description(
-        prompt_description or prompt_anchor_source,
-        normalized_description,
+    prompt_fallback_description = _character_asset_fallback_description(
+        character_images,
+        character_id=character_id,
+        name=name,
+        description=normalized_description,
     )
     if visual_dna_body:
         clothing = sanitize_default_clothing(
             "",
-            fallback_description=composed_prompt_fallback_description,
+            fallback_description=prompt_fallback_description,
         )
         merged = _merge_visual_bits(visual_dna_body, clothing)
         if merged:
             return merged
 
     body = sanitize_body_features(
-        prompt_description,
-        fallback_description=composed_prompt_fallback_description,
+        "",
+        fallback_description=prompt_fallback_description,
     )
     clothing = sanitize_default_clothing(
         "",
-        fallback_description=composed_prompt_fallback_description,
+        fallback_description=prompt_fallback_description,
     )
     merged = _merge_visual_bits(body, clothing)
     if merged:
@@ -603,20 +657,26 @@ def build_story_context(story: Mapping[str, Any]) -> StoryContext:
 
         cached_entry = cached_appearance.get(char_id) or {}
         description = _collapse_spaces(str(character.get("description", "")))
+        fallback_description = _character_asset_fallback_description(
+            character_images,
+            character_id=char_id,
+            name=name,
+            description=description,
+        ) or description
 
         cached_body = _collapse_spaces(str(cached_entry.get("body", ""))) if isinstance(cached_entry, dict) else ""
         cached_clothing = _collapse_spaces(str(cached_entry.get("clothing", ""))) if isinstance(cached_entry, dict) else ""
         negative_prompt = _collapse_spaces(str(cached_entry.get("negative_prompt", ""))) if isinstance(cached_entry, dict) else ""
 
-        body = sanitize_body_features(cached_body, fallback_description=description) if cached_body else ""
-        clothing = sanitize_default_clothing(cached_clothing, fallback_description=description) if cached_clothing else ""
+        body = sanitize_body_features(cached_body, fallback_description=fallback_description) if cached_body else ""
+        clothing = sanitize_default_clothing(cached_clothing, fallback_description=fallback_description) if cached_clothing else ""
         if not body:
             body = sanitize_body_features(
                 get_character_visual_dna(character_images, char_id, name=name),
-                fallback_description=description,
-            ) or _guess_body_features(description)
+                fallback_description=fallback_description,
+            ) or _guess_body_features(fallback_description)
         if not clothing:
-            clothing = _guess_default_clothing(description)
+            clothing = _guess_default_clothing(fallback_description)
 
         character_locks[char_id] = CharacterLock(
             name=name,
@@ -917,7 +977,12 @@ def _appearance_prefix(shot: ShotLike, ctx: StoryContext, include_clothing: bool
     lang = "zh" if _contains_cjk(base_prompt) else "en"
     prefix = "保持角色外观一致：" if lang == "zh" else "Maintain consistent appearance: "
     suffix = "。" if lang == "zh" else "."
-    return f"{prefix}{_join_natural_phrases(appearance_lines, lang)}{suffix}"
+    continuity_clause = (
+        "除非镜头明确写了换装，否则保持服饰颜色、材质、帽子、发型和标志性配件一致。"
+        if lang == "zh"
+        else "Keep outfit colors, materials, headwear, hairstyle, and signature accessories unchanged unless the shot explicitly shows a wardrobe change."
+    )
+    return f"{prefix}{_join_natural_phrases(appearance_lines, lang)}{suffix} {continuity_clause}"
 
 
 def _scene_style_extra(ctx: StoryContext, shot: ShotLike, mode: str) -> str:
@@ -1035,15 +1100,55 @@ def _scene_reference_prompt_extra(asset: Mapping[str, Any] | None, shot: ShotLik
     )
     fallback_text = str(_shot_field(shot, "storyboard_description", ""))
     lang = "zh" if _contains_cjk(preferred_prompt_text or fallback_text) else "en"
-    parts: list[str] = []
+    parts: list[str] = [
+        "把关联场景参考图当作当前镜头的环境基准，不要改成别的地点或另一套布景"
+        if lang == "zh"
+        else "Treat the linked scene reference image as environment canon"
+    ]
     if shared_environment:
         parts.append(f"保持命中的环境布局：{shared_environment}" if lang == "zh" else f"Match the linked environment layout: {shared_environment}")
     if local_visual_anchors:
-        parts.append(f"保留场景锚点：{local_visual_anchors}" if lang == "zh" else f"Keep scene anchors: {local_visual_anchors}")
+        parts.append(f"保留场景锚点：{local_visual_anchors}" if lang == "zh" else f"Keep scene anchors unchanged: {local_visual_anchors}")
     if lighting_anchor:
-        parts.append(f"沿用环境光线：{lighting_anchor}" if lang == "zh" else f"Keep the scene lighting: {lighting_anchor}")
+        parts.append(f"沿用环境光线：{lighting_anchor}" if lang == "zh" else f"Keep the scene lighting direction and color logic: {lighting_anchor}")
     separator = "；" if lang == "zh" else ". "
     return _sentence(separator.join(parts), lang)
+
+
+def _merge_negative_prompt_parts(*values: str) -> str:
+    normalized_terms: list[str] = []
+    for value in values:
+        normalized_terms.extend(_split_negative_terms(_collapse_spaces(value)))
+    return _collapse_spaces(", ".join(dict.fromkeys(normalized_terms)))
+
+
+def _scene_reference_negative_prompt(asset: Mapping[str, Any] | None) -> str:
+    if not isinstance(asset, Mapping):
+        return ""
+
+    variants = asset.get("variants")
+    scene_variant = variants.get("scene") if isinstance(variants, Mapping) else {}
+    has_scene_variant = isinstance(scene_variant, Mapping) and any(
+        _collapse_spaces(str(scene_variant.get(key, "")))
+        for key in ("image_url", "image_path", "prompt")
+    )
+    has_scene_anchor = has_scene_variant or any(
+        _collapse_spaces(str(asset.get(key, "")))
+        for key in ("summary_environment", "summary_lighting")
+    )
+    if not has_scene_anchor:
+        return ""
+
+    return ", ".join(
+        [
+            "wrong location layout",
+            "changed architecture",
+            "generic environment swap",
+            "altered prop placement",
+            "missing signature props",
+            "inconsistent lighting direction",
+        ]
+    )
 
 
 def _matched_character_reference_images(story: Mapping[str, Any] | None, shot: ShotLike) -> list[dict[str, Any]]:
@@ -1094,12 +1199,13 @@ def _build_reference_images(
             image_url = _collapse_spaces(str(scene_variant.get("image_url", "")))
             image_path = _collapse_spaces(str(scene_variant.get("image_path", "")))
             if image_url or image_path:
+                scene_weight = 0.72 if not references else (0.5 if len(references) == 1 else 0.42)
                 references.append(
                     {
                         "kind": "scene",
                         "image_url": image_url,
                         "image_path": image_path,
-                        "weight": 0.36,
+                        "weight": scene_weight,
                     }
                 )
 
@@ -1233,7 +1339,10 @@ def build_generation_payload(
     if source_scene_key:
         payload["source_scene_key"] = source_scene_key
 
-    negative_prompt = build_negative_prompt(shot, ctx)
+    negative_prompt = _merge_negative_prompt_parts(
+        build_negative_prompt(shot, ctx),
+        _scene_reference_negative_prompt(scene_asset),
+    )
     if negative_prompt:
         payload["negative_prompt"] = negative_prompt
 

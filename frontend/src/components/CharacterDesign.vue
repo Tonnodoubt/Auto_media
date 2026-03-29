@@ -98,6 +98,7 @@ import { useStoryStore } from '../stores/story.js'
 import { useSettingsStore } from '../stores/settings.js'
 import { generateCharacterImage, generateAllCharacterImages, getCharacterImages } from '../api/story.js'
 import ApiKeyModal from './ApiKeyModal.vue'
+import { resolveBackendMediaUrl } from '../utils/backend.js'
 import { findCharacterByRef, findCharacterImageEntry, getCharacterKey } from '../utils/character.js'
 
 const props = defineProps({
@@ -111,10 +112,7 @@ const store = useStoryStore()
 const settings = useSettingsStore()
 
 function getMediaUrl(path) {
-  if (!path) return ''
-  if (path.startsWith('http')) return path
-  const base = settings.backendUrl ? settings.backendUrl.replace(/\/$/, '') : 'http://localhost:8000'
-  return `${base}${path}`
+  return resolveBackendMediaUrl(path, settings.backendUrl)
 }
 
 const currentIndex = ref(0)

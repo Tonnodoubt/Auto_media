@@ -308,6 +308,13 @@ def _url_from_local_media_path(path: str) -> str:
     return f"/{normalized}"
 
 
+def _resolve_public_base_url(request: Request, configured_base_url: str = "") -> str:
+    normalized = str(configured_base_url or "").strip().rstrip("/")
+    if normalized:
+        return normalized
+    return str(request.base_url).rstrip("/")
+
+
 def _absolute_media_url(url: str, base_url: str) -> str:
     normalized = str(url or "").strip()
     if not normalized:
@@ -415,6 +422,7 @@ async def auto_generate(
     pipeline_id = str(uuid4())
     tracking_story_id = resolve_tracking_story_id(project_id, req.story_id)
     runtime_note = get_runtime_strategy_note(req.strategy) or None
+    public_base_url = _resolve_public_base_url(request, req.base_url)
 
     keys = extract_api_keys(request)
     resolved_llm = resolve_llm_config(
@@ -483,7 +491,7 @@ async def auto_generate(
                 voice=req.voice,
                 image_model=req.image_model,
                 video_model=req.video_model,
-                base_url=req.base_url,
+                base_url=public_base_url,
                 llm_api_key=resolved_llm["api_key"],
                 llm_base_url=resolved_llm["base_url"],
                 image_api_key=image_api_key,
@@ -854,7 +862,7 @@ async def render_video(
     shots_data: list[dict],
     video_config: dict = Depends(video_config_dep),
     llm: dict = Depends(llm_config_dep),
-    base_url: str = Query("http://localhost:8000", description="Backend base url"),
+    base_url: str | None = Query(None, description="Backend base url"),
     video_model: str = Query("wan2.6-i2v-flash", description="Video model"),
     pipeline_id: str | None = Query(None, description="Optional manual pipeline id"),
     story_id: str | None = Query(None, description="Stable story id for StoryContext loading"),
@@ -865,6 +873,7 @@ async def render_video(
 
     tracking_story_id = resolve_tracking_story_id(project_id, _normalize_optional_id(story_id))
     resolved_pipeline_id = _normalize_optional_id(pipeline_id) or str(uuid4())
+    public_base_url = _resolve_public_base_url(request, base_url or "")
     art_style = get_art_style(request)
     total = len(shots_data)
 
@@ -913,7 +922,7 @@ async def render_video(
 
             video_results = await video.generate_videos_batch(
                 shots=prepared_shots,
-                base_url=base_url,
+                base_url=public_base_url,
                 model=video_model,
                 art_style=art_style,
                 **video_config,
