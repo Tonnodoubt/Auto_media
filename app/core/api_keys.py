@@ -179,6 +179,14 @@ def resolve_llm_config(header_key: str, header_base_url: str, header_provider: s
     # 未提供自定义 base_url：正常回退到服务端配置
     api_key = header_key or getattr(_cfg, key_attr, "")
     base_url = getattr(_cfg, url_attr, "")
+    if not api_key and not _cfg.debug:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"LLM API Key 未配置 (provider={provider})，"
+                "请在前端设置中填写，或在后端 .env 中配置对应密钥"
+            ),
+        )
     return {"api_key": api_key, "base_url": base_url, "provider": provider, "model": header_model}
 
 

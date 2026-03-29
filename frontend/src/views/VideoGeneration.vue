@@ -434,6 +434,7 @@ import { useStoryStore } from '../stores/story.js'
 import { generateEpisodeSceneReference, generatePipelineTransition, getHeaders, getPipelineStatus } from '../api/story.js'
 import StepIndicator from '../components/StepIndicator.vue'
 import ApiKeyModal from '../components/ApiKeyModal.vue'
+import { resolveBackendBaseUrl, resolveBackendMediaUrl } from '../utils/backend.js'
 
 const router = useRouter()
 const settings = useSettingsStore()
@@ -962,11 +963,6 @@ function isAuthError(msg) {
 
 // 解析分镜
 async function parseStoryboard() {
-  if (!settings.useMock && !settings.effectiveLlmApiKey) {
-    showKeyModal.value = true
-    return
-  }
-
   const script = getScript()
 
   if (!script) {
@@ -1130,19 +1126,11 @@ async function parseStoryboard() {
 }
 
 function getBackendUrl() {
-  const configured = settings.backendUrl?.replace(/\/$/, '')
-  if (configured) return configured
-  if (import.meta.env.DEV) return 'http://localhost:8000'
-  if (typeof window !== 'undefined' && window.location?.origin) {
-    return window.location.origin.replace(/\/$/, '')
-  }
-  return ''
+  return resolveBackendBaseUrl(settings.backendUrl)
 }
 
 function getMediaUrl(path) {
-  if (!path) return ''
-  if (path.startsWith('http') || path.startsWith('data:')) return path
-  return `${getBackendUrl()}${path}`
+  return resolveBackendMediaUrl(path, settings.backendUrl)
 }
 
 // TTS/Image/Video 生成函数

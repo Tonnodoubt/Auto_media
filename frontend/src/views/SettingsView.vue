@@ -20,12 +20,12 @@
         <div class="field">
           <label>后端地址</label>
           <div class="input-row">
-            <input v-model="backendUrl" placeholder="留空使用默认 http://localhost:8000" />
+            <input v-model="backendUrl" placeholder="留空时，本地开发走代理；部署后走当前站点同源地址" />
             <button class="test-btn" @click="testBackend" :disabled="testing">
               {{ backendStatus === 'ok' ? '✓' : backendStatus === 'fail' ? '✗' : testing ? '…' : '测试' }}
             </button>
           </div>
-          <span class="hint">FastAPI 服务地址，留空走 Vite 代理</span>
+          <span class="hint">留空时，本地开发走 Vite 代理；部署后默认使用当前站点同源地址</span>
           <span v-if="backendStatus === 'ok'" class="status-ok">连接正常</span>
           <span v-if="backendStatus === 'fail'" class="status-fail">{{ backendError }}</span>
         </div>
@@ -212,6 +212,7 @@
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSettingsStore, LLM_PROVIDERS, IMAGE_PROVIDERS, VIDEO_PROVIDERS } from '../stores/settings.js'
+import { resolveBackendHealthUrl } from '../utils/backend.js'
 
 const router = useRouter()
 const store = useSettingsStore()
@@ -340,8 +341,7 @@ async function testBackend() {
   backendStatus.value = ''
   backendError.value = ''
   try {
-    const base = backendUrl.value ? backendUrl.value.replace(/\/$/, '') : ''
-    const res = await fetch(`${base}/health`, { signal: AbortSignal.timeout(5000) })
+    const res = await fetch(resolveBackendHealthUrl(backendUrl.value), { signal: AbortSignal.timeout(5000) })
     backendStatus.value = res.ok ? 'ok' : 'fail'
     if (!res.ok) backendError.value = `服务器返回 ${res.status}`
   } catch {

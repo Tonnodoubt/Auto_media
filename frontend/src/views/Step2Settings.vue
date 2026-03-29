@@ -175,7 +175,6 @@ async function retryOutline() {
 }
 
 async function submitTurn() {
-  if (!settings.useMock && !settings.effectiveLlmApiKey) { showKeyModal.value = true; return }
   const userAnswer = answer.value.trim()
   if (!userAnswer) return
   submitting.value = true
