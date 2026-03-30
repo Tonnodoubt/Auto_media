@@ -327,6 +327,37 @@ h1 {
   gap: 12px;
 }
 
+.episode-key-art-group-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.episode-key-art-group-tab {
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid #ddd7ff;
+  background: rgba(255, 255, 255, 0.92);
+  color: #625a85;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.episode-key-art-group-tab:hover {
+  border-color: #b9adff;
+  color: #5147a9;
+  background: #f7f4ff;
+}
+
+.episode-key-art-group-tab.active {
+  border-color: #6c63ff;
+  background: #6c63ff;
+  color: #fff;
+  box-shadow: 0 6px 14px rgba(108, 99, 255, 0.16);
+}
+
 .episode-key-art-group {
   border-radius: 10px;
   border: 1px solid #ddd7ff;
