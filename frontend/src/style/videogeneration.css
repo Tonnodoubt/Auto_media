@@ -987,7 +987,8 @@ button:disabled {
   font-size: 11px;
   color: #8b7750;
   text-align: right;
-  word-break: break-word;
+  overflow-wrap: break-word;
+  word-wrap: break-word;
 }
 
 .transition-title {
