@@ -1297,21 +1297,25 @@ class ManualPipelineMainlineTests(unittest.IsolatedAsyncioTestCase):
             transition_from_previous="保持同一人物与服装，动作从门口停顿延续到进入内堂，右手仍扶着门边再放下。",
         )
 
-        async def _fake_generate_image(**kwargs):
-            shot_id = kwargs["shot_id"]
-            return {
-                "shot_id": shot_id,
-                "image_path": f"media/images/{shot_id}.png",
-                "image_url": f"/media/images/{shot_id}.png",
-            }
+        async def _fake_generate_images_batch(*, shots, **kwargs):
+            return [
+                {
+                    "shot_id": shot["shot_id"],
+                    "image_path": f"media/images/{shot['shot_id']}.png",
+                    "image_url": f"/media/images/{shot['shot_id']}.png",
+                }
+                for shot in shots
+            ]
 
-        async def _fake_generate_video(**kwargs):
-            shot_id = kwargs["shot_id"]
-            return {
-                "shot_id": shot_id,
-                "video_path": f"media/videos/{shot_id}.mp4",
-                "video_url": f"/media/videos/{shot_id}.mp4",
-            }
+        async def _fake_generate_videos_batch(*, shots, **kwargs):
+            return [
+                {
+                    "shot_id": shot["shot_id"],
+                    "video_path": f"media/videos/{shot['shot_id']}.mp4",
+                    "video_url": f"/media/videos/{shot['shot_id']}.mp4",
+                }
+                for shot in shots
+            ]
 
         async with self.session_factory() as session:
             await repo.save_story(session, story_id, story)
@@ -1322,8 +1326,8 @@ class ManualPipelineMainlineTests(unittest.IsolatedAsyncioTestCase):
                     "app.routers.pipeline.parse_script_to_storyboard",
                     new=AsyncMock(return_value=([shot_one, shot_two], {"prompt_tokens": 12, "completion_tokens": 34})),
                 ) as parse_storyboard_mock,
-                patch("app.services.image.generate_image", new=AsyncMock(side_effect=_fake_generate_image)) as generate_image_mock,
-                patch("app.services.video.generate_video", new=AsyncMock(side_effect=_fake_generate_video)) as generate_video_mock,
+                patch("app.services.image.generate_images_batch", new=AsyncMock(side_effect=_fake_generate_images_batch)) as generate_images_batch_mock,
+                patch("app.services.video.generate_videos_batch", new=AsyncMock(side_effect=_fake_generate_videos_batch)) as generate_videos_batch_mock,
                 patch(
                     "app.services.ffmpeg.extract_last_frame",
                     new=AsyncMock(return_value="media/images/transition_scene1_shot1__scene1_shot2_from_last.png"),
@@ -1474,26 +1478,30 @@ class ManualPipelineMainlineTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-        image_calls_by_shot = {call.kwargs["shot_id"]: call.kwargs for call in generate_image_mock.await_args_list}
+        generate_images_batch_mock.assert_awaited_once()
+        image_batch_payload = generate_images_batch_mock.await_args.kwargs["shots"]
+        image_calls_by_shot = {shot["shot_id"]: shot for shot in image_batch_payload}
         first_image_call = image_calls_by_shot[shot_one.shot_id]
         second_image_call = image_calls_by_shot[shot_two.shot_id]
-        self.assertTrue(first_image_call["visual_prompt"].startswith("Medium shot."))
-        self.assertIn("video opening frame", first_image_call["visual_prompt"])
-        self.assertIn("face-only portrait crop", first_image_call["visual_prompt"])
+        self.assertTrue(first_image_call["image_prompt"].startswith("Medium shot."))
+        self.assertIn("video opening frame", first_image_call["image_prompt"])
+        self.assertIn("face-only portrait crop", first_image_call["image_prompt"])
         self.assertTrue(any(item["kind"] == "scene" for item in first_image_call["reference_images"]))
         self.assertTrue(any(item["kind"] == "character" for item in first_image_call["reference_images"]))
-        self.assertTrue(second_image_call["visual_prompt"].startswith("Medium shot."))
-        self.assertIn("continuing beat inside the same scene", second_image_call["visual_prompt"])
+        self.assertTrue(second_image_call["image_prompt"].startswith("Medium shot."))
+        self.assertIn("continuing beat inside the same scene", second_image_call["image_prompt"])
         self.assertTrue(any(item["kind"] == "previous_shot_image" for item in second_image_call["reference_images"]))
 
-        video_calls_by_shot = {call.kwargs["shot_id"]: call.kwargs for call in generate_video_mock.await_args_list}
+        generate_videos_batch_mock.assert_awaited_once()
+        video_batch_payload = generate_videos_batch_mock.await_args.kwargs["shots"]
+        video_calls_by_shot = {shot["shot_id"]: shot for shot in video_batch_payload}
         first_video_call = video_calls_by_shot[shot_one.shot_id]
         second_video_call = video_calls_by_shot[shot_two.shot_id]
-        self.assertIn("Start from this exact opening frame:", first_video_call["prompt"])
-        self.assertIn("Do not suddenly reveal missing hands, props", first_video_call["prompt"])
-        self.assertIn("continuous beat in the same scene timeline", second_video_call["prompt"])
-        self.assertEqual(first_video_call["image_url"], "http://testserver/media/images/scene1_shot1.png")
-        self.assertEqual(second_video_call["image_url"], "http://testserver/media/images/scene1_shot2.png")
+        self.assertIn("Start from this exact opening frame:", first_video_call["final_video_prompt"])
+        self.assertIn("Do not suddenly reveal missing hands, props", first_video_call["final_video_prompt"])
+        self.assertIn("continuous beat in the same scene timeline", second_video_call["final_video_prompt"])
+        self.assertEqual(first_video_call["image_url"], "/media/images/scene1_shot1.png")
+        self.assertEqual(second_video_call["image_url"], "/media/images/scene1_shot2.png")
 
         transition_prompt = generate_transition_mock.await_args.kwargs["prompt"]
         self.assertIn("Action bridge:", transition_prompt)
