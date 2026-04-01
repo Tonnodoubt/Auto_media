@@ -1,6 +1,6 @@
 # 数据库持久化实现现状
 
-**更新日期**: 2026-03-27  
+**更新日期**: 2026-04-01  
 **文档目标**: 说明当前仓库里真正落地的 SQLite 持久化结构、写入路径、缓存更新策略与恢复口径。
 
 ---
@@ -261,12 +261,20 @@ resolve_tracking_story_id(project_id, story_id)
    - `progress_detail`
    - `generated_files`
 
-自动流水线完成后，`generated_files` 至少会包含：
+自动流水线会按阶段持续快照 `generated_files`。当前常见键包括：
 
+- `storyboard`
+- `tts`（仅 `separated / chained`）
+- `images`
+- `videos`
 - `shots`
 - `meta`
 
-其中 `meta` 内通常会带运行策略信息，例如 integrated fallback note。
+其中：
+
+- `meta` 内通常会带运行策略信息，例如 integrated fallback note。
+- 最终 snapshot 至少会包含 `storyboard / images / videos / shots / meta`。
+- `integrated` fallback 不会产生独立 `tts` 结果。
 
 ### 6.3 手动分镜与素材链路
 

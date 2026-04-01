@@ -7,6 +7,7 @@ import mimetypes
 import re
 import socket
 import time
+from collections import OrderedDict
 import httpx
 from pathlib import Path
 from typing import Any, Optional
@@ -118,6 +119,74 @@ async def _request_with_retry(
 def _format_upstream_http_error(action: str, target: str, exc: Exception) -> str:
     detail = str(exc).strip() or repr(exc) or exc.__class__.__name__
     return f"{action} failed for {_sanitize_remote_target(target)}: {detail}"
+
+
+def _collapse_spaces(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def _scene_key_from_shot_id(shot_id: str) -> str:
+    match = re.match(r"(scene\d+)", str(shot_id or ""))
+    return match.group(1) if match else "scene0"
+
+
+def _group_shots_by_scene(shots: list[dict]) -> OrderedDict[str, list[tuple[int, dict]]]:
+    groups: OrderedDict[str, list[tuple[int, dict]]] = OrderedDict()
+    for index, shot in enumerate(shots):
+        scene_key = _scene_key_from_shot_id(str(shot.get("shot_id", "")))
+        groups.setdefault(scene_key, []).append((index, shot))
+    return groups
+
+
+def _merge_reference_images(*sources: Any) -> list[Any]:
+    merged: list[Any] = []
+    seen: set[tuple[str, ...]] = set()
+
+    for source in sources:
+        if not isinstance(source, list):
+            continue
+        for item in source:
+            if isinstance(item, dict):
+                image_url = _collapse_spaces(str(item.get("image_url", "")))
+                image_path = _collapse_spaces(str(item.get("image_path", "")))
+                identity = ("mapping", image_url, image_path)
+                if not image_url and not image_path:
+                    fallback_identity = _collapse_spaces(str(item.get("id", ""))) or _collapse_spaces(str(item.get("kind", "")))
+                    if not fallback_identity:
+                        continue
+                    identity = ("mapping-fallback", fallback_identity)
+                normalized_item = dict(item)
+            else:
+                raw_value = _collapse_spaces(str(item))
+                if not raw_value:
+                    continue
+                identity = ("raw", raw_value)
+                normalized_item = item
+            if identity in seen:
+                continue
+            seen.add(identity)
+            merged.append(normalized_item)
+
+    return merged
+
+
+def _previous_shot_reference(previous_result: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not previous_result:
+        return []
+
+    image_url = _collapse_spaces(str(previous_result.get("image_url", "")))
+    image_path = _collapse_spaces(str(previous_result.get("image_path", "")))
+    if not image_url and not image_path:
+        return []
+
+    return [
+        {
+            "kind": "previous_shot_image",
+            "image_url": image_url,
+            "image_path": image_path,
+            "weight": 0.38,
+        }
+    ]
 
 
 def _set_response_metadata(resp: Any, **fields) -> None:
@@ -448,11 +517,12 @@ async def generate_images_batch(
     image_provider: str = "",
     art_style: str = "",
 ) -> list[dict]:
-    """Generate images for all shots concurrently.
+    """Generate images for all shots.
 
     Phase 4:
     - 仅生成主镜头首帧图片（image_url）
     - 不再为普通 shot 生成 last_frame_url
+    - 同场景内按顺序生成，并把上一张主镜头图作为下一张的额外参考图
     """
     def _prompt(shot: dict) -> str:
         p = shot.get("image_prompt") or shot.get("visual_prompt") or shot.get("final_video_prompt", "")
@@ -460,32 +530,50 @@ async def generate_images_batch(
             raise ValueError(f"shot {shot.get('shot_id', '?')} has no image_prompt / visual_prompt / final_video_prompt")
         return inject_art_style(p, art_style)
 
-    tasks = [
-        generate_image(
-            _prompt(shot),
-            shot["shot_id"],
-            model,
-            image_api_key,
-            image_base_url,
-            image_provider,
-            shot.get("negative_prompt", ""),
-            shot.get("reference_images"),
-        )
-        for shot in shots
-    ]
+    async def _process_scene(scene_entries: list[tuple[int, dict]]) -> list[tuple[int, dict]]:
+        previous_result: dict[str, Any] | None = None
+        scene_results: list[tuple[int, dict]] = []
 
-    results = await asyncio.gather(*tasks)
+        for index, shot in scene_entries:
+            effective_reference_images = _merge_reference_images(
+                shot.get("reference_images"),
+                _previous_shot_reference(previous_result),
+            )
+            result = await generate_image(
+                visual_prompt=_prompt(shot),
+                shot_id=shot["shot_id"],
+                model=model,
+                image_api_key=image_api_key,
+                image_base_url=image_base_url,
+                image_provider=image_provider,
+                negative_prompt=shot.get("negative_prompt", ""),
+                reference_images=effective_reference_images or None,
+            )
+            previous_result = result
+            scene_results.append(
+                (
+                    index,
+                    {
+                        "shot_id": shot["shot_id"],
+                        "image_path": result["image_path"],
+                        "image_url": result["image_url"],
+                        "reference_images_applied": bool(result.get("reference_images_applied", False)),
+                        "dropped_reference_count": int(result.get("dropped_reference_count", 0) or 0),
+                    },
+                )
+            )
 
-    return [
-        {
-            "shot_id": shot["shot_id"],
-            "image_path": result["image_path"],
-            "image_url": result["image_url"],
-            "reference_images_applied": bool(result.get("reference_images_applied", False)),
-            "dropped_reference_count": int(result.get("dropped_reference_count", 0) or 0),
-        }
-        for shot, result in zip(shots, results)
-    ]
+        return scene_results
+
+    scene_groups = _group_shots_by_scene(shots)
+    grouped_results = await asyncio.gather(*[_process_scene(entries) for entries in scene_groups.values()])
+
+    ordered_results: dict[int, dict] = {}
+    for scene_results in grouped_results:
+        for index, result in scene_results:
+            ordered_results[index] = result
+
+    return [ordered_results[index] for index in range(len(shots)) if index in ordered_results]
 
 
 async def generate_character_image(

@@ -78,6 +78,101 @@ def _coerce_world_building_options(raw_options: Any) -> list[str]:
     return normalized
 
 
+def _format_outline_guidance_list(raw_items: Any, *, fallback: str) -> str:
+    if not isinstance(raw_items, list):
+        return fallback
+
+    normalized_items = [str(item).strip() for item in raw_items if str(item or "").strip()]
+    if not normalized_items:
+        return fallback
+    return "\n".join(f"- {item}" for item in normalized_items)
+
+
+def _normalize_outline_text_list(raw_items: Any, *, fallback: Any = None) -> list[str] | None:
+    fallback_items = None
+    if isinstance(fallback, list):
+        fallback_items = [str(item).strip() for item in fallback if str(item or "").strip()]
+
+    if not isinstance(raw_items, list):
+        return fallback_items
+
+    normalized_items = [str(item).strip() for item in raw_items if str(item or "").strip()]
+    if normalized_items:
+        return normalized_items
+    return fallback_items
+
+
+def _normalize_episode_number(value: Any) -> int | None:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _find_outline_episode(outline: list[dict], episode_number: Any) -> dict | None:
+    normalized_episode = _normalize_episode_number(episode_number)
+    if normalized_episode is None:
+        return None
+
+    for episode in outline:
+        if _normalize_episode_number(episode.get("episode")) == normalized_episode:
+            return episode
+    return None
+
+
+def _normalize_episode_outline_payload(payload: dict[str, Any], *, fallback_episode: dict | None = None) -> dict[str, Any]:
+    normalized = dict(fallback_episode or {})
+
+    episode_number = _normalize_episode_number(payload.get("episode"))
+    if episode_number is None and fallback_episode is not None:
+        episode_number = _normalize_episode_number(fallback_episode.get("episode"))
+    if episode_number is not None:
+        normalized["episode"] = episode_number
+
+    title = str(payload.get("title") or "").strip()
+    if title:
+        normalized["title"] = title
+
+    summary = str(payload.get("summary") or "").strip()
+    if summary:
+        normalized["summary"] = summary
+
+    beats = _normalize_outline_text_list(
+        payload.get("beats"),
+        fallback=fallback_episode.get("beats") if isinstance(fallback_episode, dict) else None,
+    )
+    if beats is not None:
+        normalized["beats"] = beats
+
+    scene_list = _normalize_outline_text_list(
+        payload.get("scene_list"),
+        fallback=fallback_episode.get("scene_list") if isinstance(fallback_episode, dict) else None,
+    )
+    if scene_list is not None:
+        normalized["scene_list"] = scene_list
+
+    return normalized
+
+
+def _resolve_apply_chat_current_item(story: dict[str, Any], change_type: str, current_item: dict[str, Any]) -> dict[str, Any]:
+    if change_type == "character":
+        characters = list(story.get("characters") or [])
+        current_id = str(current_item.get("id", "")).strip()
+        current_name = str(current_item.get("name", "")).strip()
+        for character in characters:
+            if current_id and str(character.get("id", "")).strip() == current_id:
+                return dict(character)
+            if not current_id and current_name and str(character.get("name", "")).strip() == current_name:
+                return dict(character)
+        return dict(current_item or {})
+
+    outline = list(story.get("outline") or [])
+    authoritative_episode = _find_outline_episode(outline, current_item.get("episode"))
+    if authoritative_episode:
+        return dict(authoritative_episode)
+    return dict(current_item or {})
+
+
 def _fallback_world_building_options(question: dict) -> list[str]:
     question_text = str(question.get("text") or "").strip()
     question_dimension = str(question.get("dimension") or "").strip()
@@ -283,7 +378,16 @@ async def refine(story_id: str, change_type: str, change_summary: str, db: Async
     if data.get("relationships") is not None:
         updates["relationships"] = data["relationships"]
     if data.get("outline") is not None:
-        updates["outline"] = _merge_outline(list(story.get("outline") or []), list(data["outline"] or []))
+        existing_outline = list(story.get("outline") or [])
+        normalized_outline = [
+            _normalize_episode_outline_payload(
+                episode,
+                fallback_episode=_find_outline_episode(existing_outline, episode.get("episode")) if isinstance(episode, dict) else None,
+            )
+            for episode in list(data["outline"] or [])
+            if isinstance(episode, dict)
+        ]
+        updates["outline"] = _merge_outline(existing_outline, normalized_outline)
     if data.get("meta_theme") is not None:
         existing_meta = story.get("meta") or {}
         updates["meta"] = {**existing_meta, "theme": data["meta_theme"]}
@@ -435,6 +539,14 @@ async def generate_script(story_id: str, db: AsyncSession, api_key: str = "", ba
             title=ep["title"],
             summary=ep["summary"],
             characters_text=characters_text,
+            beats_text=_format_outline_guidance_list(
+                ep.get("beats"),
+                fallback="- 未提供额外节拍，请根据剧情概要自行拆出本集冲突递进。",
+            ),
+            scene_list_text=_format_outline_guidance_list(
+                ep.get("scene_list"),
+                fallback="- 未提供额外场景切分，请根据剧情概要自行划分 3-5 个稳定场景。",
+            ),
         )
         resolved_model = _get_model(provider, model)
         try:
@@ -544,14 +656,17 @@ async def world_building_turn(story_id: str, answer: str, db: AsyncSession, api_
 
 async def apply_chat(story_id: str, change_type: str, chat_history: list, current_item: dict,
                      db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "", model: str = "") -> dict:
-    import json as _json
     if not api_key:
         raise HTTPException(status_code=400, detail="apply_chat 需要提供 api_key")
 
+    story = await repo.get_story(db, story_id)
+    if not story:
+        raise HTTPException(status_code=404, detail="故事不存在")
+
+    authoritative_item = _resolve_apply_chat_current_item(story, change_type, current_item)
     client = _make_client(api_key, base_url)
     history_text = _build_apply_chat_history_text(change_type, chat_history)
-
-    prompt = build_apply_chat_prompt(change_type, current_item, history_text)
+    prompt = build_apply_chat_prompt(change_type, authoritative_item, history_text)
 
     resp = await client.chat.completions.create(
         model=_get_model(provider, model),
@@ -563,18 +678,16 @@ async def apply_chat(story_id: str, change_type: str, chat_history: list, curren
         print(f"[APPLY_CHAT] JSON 解析失败: {e!r} | 原始响应: {resp.choices[0].message.content!r:.500}")
         return {}
 
-    # 从 DB 取权威数据，避免写入客户端篡改的其他项目数据
-    story = await repo.get_story(db, story_id)
     if change_type == "character":
         characters = list(story.get("characters") or [])
-        current_id = str(current_item.get("id", "")).strip()
+        current_id = str(authoritative_item.get("id", "")).strip()
         updated_character = None
         for c in characters:
             if current_id and str(c.get("id", "")).strip() == current_id:
                 c["description"] = data.get("description", c.get("description", ""))
                 updated_character = dict(c)
                 break
-            if not current_id and c.get("name") == current_item.get("name"):
+            if not current_id and c.get("name") == authoritative_item.get("name"):
                 c["description"] = data.get("description", c.get("description", ""))
                 updated_character = dict(c)
                 break
@@ -583,16 +696,18 @@ async def apply_chat(story_id: str, change_type: str, chat_history: list, curren
             await repo.invalidate_story_consistency_cache(db, story_id, appearance=True)
         if updated_character is not None:
             return {
-                "name": updated_character.get("name", current_item.get("name", "")),
-                "role": updated_character.get("role", current_item.get("role", "")),
-                "description": updated_character.get("description", current_item.get("description", "")),
+                "name": updated_character.get("name", authoritative_item.get("name", "")),
+                "role": updated_character.get("role", authoritative_item.get("role", "")),
+                "description": updated_character.get("description", authoritative_item.get("description", "")),
             }
     else:
         outline = list(story.get("outline") or [])
+        current_episode_number = _normalize_episode_number(authoritative_item.get("episode"))
+        updated_episode = None
         for ep in outline:
-            if ep.get("episode") == current_item.get("episode"):
-                ep["title"] = data.get("title", ep["title"])
-                ep["summary"] = data.get("summary", ep["summary"])
+            if _normalize_episode_number(ep.get("episode")) == current_episode_number:
+                ep.update(_normalize_episode_outline_payload(data, fallback_episode=ep))
+                updated_episode = dict(ep)
                 break
         if outline:
             await repo.save_story(
@@ -601,5 +716,7 @@ async def apply_chat(story_id: str, change_type: str, chat_history: list, curren
                 {"outline": outline, "meta": dict(story.get("meta") or {}), "scenes": []},
             )
             await repo.invalidate_story_consistency_cache(db, story_id, scene_style=True)
+        if updated_episode is not None:
+            return updated_episode
 
     return data

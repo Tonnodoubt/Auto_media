@@ -378,7 +378,8 @@ def _url_from_local_media_path(path: str) -> str:
         resolved_media_dir = MEDIA_DIR.resolve(strict=False)
         if resolved_candidate.is_relative_to(resolved_media_dir):
             relative = resolved_candidate.relative_to(resolved_media_dir)
-            return f"/media/{str(relative).replace('\\', '/')}"
+            normalized_relative = str(relative).replace("\\", "/")
+            return f"/media/{normalized_relative}"
     except (OSError, RuntimeError, ValueError):
         pass
 
@@ -468,31 +469,108 @@ def _build_transition_prompt(
     parts = [
         "Short cinematic transition between two adjacent storyboard shots.",
         "Stay inside the same story beat and visual theme.",
+        "Use the previous shot's extracted last frame and the next shot's extracted first frame as hard transition anchors.",
         f"Start from the exact ending frame of: {from_desc or from_frame or from_prompt or from_subject}.",
         f"Arrive at the exact opening frame of: {to_desc or to_frame or to_prompt or to_subject}.",
         "Create one smooth, physically plausible bridging motion instead of a hard jump.",
+        "The middle frames must interpolate pose, body orientation, clothing folds, prop placement, and camera perspective gradually instead of morphing suddenly halfway.",
+        "The transition must feel smooth and natural in character motion, environment continuity, and camera motion.",
         "Keep identity, outfit, props, environment logic, lighting direction, and camera continuity consistent.",
         "Do not introduce new characters, unrelated props, new locations, costume changes, or off-theme action.",
+        "Avoid pose popping, identity drift, outfit drift, anatomy warping, background morphing, lighting flicker, or abrupt camera snaps.",
     ]
     if from_action or to_action:
         parts.append(f"Action bridge: move naturally from {from_action or from_desc or from_prompt} into {to_action or to_desc or to_prompt}.")
     if from_camera_phrase or to_camera_phrase:
-        parts.append(f"Camera continuity: begin with {from_camera_phrase or 'the current framing'} and settle into {to_camera_phrase or 'the destination framing'} with smooth motion.")
+        parts.append(
+            f"Camera continuity: begin with {from_camera_phrase or 'the current framing'} and settle into {to_camera_phrase or 'the destination framing'} with smooth natural easing, not a sudden cut, snap zoom, or jerky pan."
+        )
     if from_environment or to_environment:
         parts.append(
-            f"Environment continuity: preserve the visible space and props from {from_environment or from_desc} into {to_environment or to_desc} without abrupt layout changes."
+            f"Environment continuity: preserve the visible space and props from {from_environment or from_desc} into {to_environment or to_desc} without abrupt layout changes, location drift, or prop teleportation."
         )
     if from_lighting or to_lighting:
         parts.append(
-            f"Lighting continuity: keep the light direction and color stable from {from_lighting or 'the previous frame'} toward {to_lighting or 'the next frame'}."
+            f"Lighting continuity: keep the light direction and color stable from {from_lighting or 'the previous frame'} toward {to_lighting or 'the next frame'}, avoiding flicker or sudden contrast jumps."
         )
     if from_subject or to_subject:
-        parts.append(f"Subject continuity: keep the same appearance and silhouette from {from_subject or to_subject} to {to_subject or from_subject}.")
+        parts.append(
+            f"Subject continuity: keep the same appearance and silhouette from {from_subject or to_subject} to {to_subject or from_subject}, with natural anatomy, stable facial identity, and unchanged primary outfit."
+        )
     if bridge:
         parts.append(f"Narrative bridge: {bridge}.")
     if hint:
         parts.append(f"User emphasis: {hint}.")
     return _collapse_spaces(" ".join(parts))
+
+
+def _transition_negative_prompt() -> str:
+    return ", ".join(
+        [
+            "identity drift",
+            "wrong face",
+            "pose popping",
+            "warped anatomy",
+            "limb distortion",
+            "outfit drift",
+            "background morphing",
+            "environment swap",
+            "prop teleportation",
+            "lighting flicker",
+            "camera jitter",
+            "abrupt cut",
+            "snap zoom",
+        ]
+    )
+
+
+def _build_transition_frame_source(
+    *,
+    shot_id: str,
+    video_url: str,
+    frame_role: str,
+    extracted_image_url: str,
+    source_type: str,
+    extraction_error: str = "",
+) -> dict:
+    side_label = "前镜" if frame_role == "from_last" else "后镜"
+    if source_type == "video_frame":
+        diagnostic_note = f"{side_label}锚点来自相邻主镜头视频抽帧。"
+        extraction_error = ""
+    else:
+        diagnostic_note = f"{side_label}视频抽帧失败，已回退到分镜图，过渡边界可能更明显。"
+        extraction_error = _trim_words(_collapse_spaces(extraction_error), 24)
+
+    source = {
+        "shot_id": shot_id,
+        "video_url": video_url,
+        "frame_role": frame_role,
+        "extracted_image_url": extracted_image_url,
+        "source_type": source_type,
+        "diagnostic_note": diagnostic_note,
+    }
+    if extraction_error:
+        source["extraction_error"] = extraction_error
+    return source
+
+
+def _build_transition_diagnostic_summary(
+    first_frame_source: dict,
+    last_frame_source: dict,
+) -> str:
+    first_type = str(first_frame_source.get("source_type", "")).strip()
+    last_type = str(last_frame_source.get("source_type", "")).strip()
+    fallback_sides: list[str] = []
+    if first_type != "video_frame":
+        fallback_sides.append("前镜")
+    if last_type != "video_frame":
+        fallback_sides.append("后镜")
+
+    if not fallback_sides:
+        return "前后锚点都来自相邻主镜头视频抽帧。若分界仍明显，更可能是两个主镜头本身的首尾状态差异较大。"
+    if len(fallback_sides) == 1:
+        return f"{fallback_sides[0]}锚点当前回退到了分镜图，过渡边界更容易明显。建议优先检查对应主镜头视频是否可稳定抽帧。"
+    return "前后锚点当前都回退到了分镜图，过渡边界很可能明显。建议先检查两个主镜头视频与本地抽帧是否正常。"
 
 
 def _merge_negative_prompts(*prompts: str) -> str:
@@ -632,6 +710,7 @@ async def auto_generate(
                             character_info = {
                                 "characters": characters,
                                 "character_images": character_images or {},
+                                "meta": story.get("meta") or {},
                             }
                 except Exception:
                     logger.exception("Failed to load character info for story_id=%s", tracking_story_id)
@@ -726,6 +805,7 @@ async def generate_storyboard(
                 character_info = {
                     "characters": characters,
                     "character_images": character_images or {},
+                    "meta": story.get("meta") or {},
                 }
 
         shots, usage = await parse_script_to_storyboard(
@@ -1097,6 +1177,7 @@ async def render_video(
                         **shot,
                         "final_video_prompt": payload["final_video_prompt"],
                         "negative_prompt": payload.get("negative_prompt", ""),
+                        "reference_images": payload.get("reference_images", []),
                     }
                 )
 
@@ -1306,12 +1387,17 @@ async def generate_transition(
     negative_prompt = _merge_negative_prompts(
         str(from_payload.get("negative_prompt", "")),
         str(to_payload.get("negative_prompt", "")),
+        _transition_negative_prompt(),
     )
 
     transition_id = f"transition_{req.from_shot_id}__{req.to_shot_id}"
     base_url = str(request.base_url).rstrip("/")
     from_video_path = url_to_local_path(from_video_url, base_url)
     to_video_path = url_to_local_path(to_video_url, base_url)
+    from_frame_source_type = "video_frame"
+    to_frame_source_type = "video_frame"
+    from_frame_error = ""
+    to_frame_error = ""
     try:
         try:
             from_frame_path = await ffmpeg.extract_last_frame(
@@ -1330,6 +1416,8 @@ async def generate_transition(
                 exc,
             )
             from_frame_url = from_image_url
+            from_frame_source_type = "storyboard_image_fallback"
+            from_frame_error = str(exc)
 
         try:
             to_frame_path = await ffmpeg.extract_first_frame(
@@ -1348,6 +1436,8 @@ async def generate_transition(
                 exc,
             )
             to_frame_url = to_image_url
+            to_frame_source_type = "storyboard_image_fallback"
+            to_frame_error = str(exc)
 
         transition_video = await video.generate_transition_video(
             transition_id=transition_id,
@@ -1370,6 +1460,22 @@ async def generate_transition(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"过渡视频生成失败: {exc}") from exc
 
+    first_frame_source = _build_transition_frame_source(
+        shot_id=req.from_shot_id,
+        video_url=from_video_url,
+        frame_role="from_last",
+        extracted_image_url=from_frame_url,
+        source_type=from_frame_source_type,
+        extraction_error=from_frame_error,
+    )
+    last_frame_source = _build_transition_frame_source(
+        shot_id=req.to_shot_id,
+        video_url=to_video_url,
+        frame_role="to_first",
+        extracted_image_url=to_frame_url,
+        source_type=to_frame_source_type,
+        extraction_error=to_frame_error,
+    )
     result = {
         "transition_id": transition_id,
         "from_shot_id": req.from_shot_id,
@@ -1377,18 +1483,9 @@ async def generate_transition(
         "prompt": transition_prompt,
         "duration_seconds": req.duration_seconds,
         "video_url": transition_video["video_url"],
-        "first_frame_source": {
-            "shot_id": req.from_shot_id,
-            "video_url": from_video_url,
-            "frame_role": "from_last",
-            "extracted_image_url": from_frame_url,
-        },
-        "last_frame_source": {
-            "shot_id": req.to_shot_id,
-            "video_url": to_video_url,
-            "frame_role": "to_first",
-            "extracted_image_url": to_frame_url,
-        },
+        "first_frame_source": first_frame_source,
+        "last_frame_source": last_frame_source,
+        "diagnostic_summary": _build_transition_diagnostic_summary(first_frame_source, last_frame_source),
     }
 
     existing_transitions = dict(merged_runtime_generated_files.get("transitions") or {})

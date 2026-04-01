@@ -16,7 +16,12 @@ from app.schemas.storyboard import AudioReference, CameraSetup, Shot, VisualElem
 from app.services import story_context_service
 from app.services import story_repository as repo
 from app.routers.image import _build_basic_payload
-from app.services.story_context_service import prepare_story_context, _parse_json
+from app.services.story_context_service import (
+    APPEARANCE_CACHE_SCHEMA_VERSION,
+    SCENE_STYLE_CACHE_SCHEMA_VERSION,
+    _parse_json,
+    prepare_story_context,
+)
 from app.services.storyboard import _build_scene_mapping, parse_script_to_storyboard
 
 
@@ -130,6 +135,30 @@ class StoryContextTests(unittest.TestCase):
         self.assertIn("dark blue robe", payload["image_prompt"])
         self.assertIn("black bamboo hat", payload["image_prompt"])
         self.assertIn("signature accessories", payload["image_prompt"])
+
+    def test_build_generation_payload_adds_video_execution_guidance_for_identity_and_motion(self):
+        story = {
+            "characters": [
+                {
+                    "id": "char_li_ming",
+                    "name": "Li Ming",
+                    "description": "young man, short black hair, wearing a dark blue robe.",
+                }
+            ]
+        }
+        shot = {
+            "shot_id": "scene1_shot1",
+            "characters": ["Li Ming"],
+            "storyboard_description": "Li Ming pauses at the doorway, then steps into the room.",
+            "camera_setup": {"shot_size": "MS", "camera_angle": "Eye-level", "movement": "Slow Dolly in"},
+            "image_prompt": "Medium shot. Li Ming pauses at the doorway.",
+            "final_video_prompt": "Medium shot. Slow Dolly in. Li Ming steps into the room.",
+        }
+
+        payload = build_generation_payload(shot, build_story_context(story), story=story)
+
+        self.assertIn("Keep the same face, hairstyle, primary outfit silhouette", payload["final_video_prompt"])
+        self.assertIn("Make the camera move clearly readable and smooth", payload["final_video_prompt"])
 
     def test_scene_reference_prompt_uses_chinese_anchor_for_cjk_shot(self):
         story = {
@@ -349,6 +378,101 @@ class StoryContextTests(unittest.TestCase):
         self.assertNotEqual(payload["image_prompt"], payload["final_video_prompt"])
         self.assertNotIn("Character anchor:", payload["image_prompt"])
 
+    def test_build_generation_payload_aligns_prompts_with_opening_frame_and_transition_state(self):
+        story = {
+            "art_style": "cinematic watercolor",
+            "characters": [
+                {
+                    "id": "char_li_ming",
+                    "name": "Li Ming",
+                    "role": "lead",
+                    "description": "young man, short black hair, wearing a dark blue robe.",
+                }
+            ],
+        }
+        shot = {
+            "shot_id": "scene1_shot2",
+            "storyboard_description": (
+                "Li Ming pauses at the half-open wooden door, his right hand still braced on the door edge. "
+                "Warm lantern light hangs behind him and rain glints on the stone threshold. "
+                "Then he lifts his gaze into the room."
+            ),
+            "transition_from_previous": (
+                "Camera cuts tighter from the exterior medium shot. "
+                "Li Ming's right hand is still braced on the half-open door. "
+                "Warm lantern light and rain sheen stay unchanged."
+            ),
+            "image_prompt": "Medium shot. Li Ming pauses at the half-open doorway.",
+            "final_video_prompt": "Medium shot. Static camera. Li Ming lifts his gaze into the teahouse interior.",
+        }
+
+        payload = build_generation_payload(shot, build_story_context(story))
+
+        self.assertIn("Match this exact opening frame:", payload["image_prompt"])
+        self.assertIn("Li Ming pauses at the half-open wooden door", payload["image_prompt"])
+        self.assertIn("Keep the carried-over pose, prop state, and spatial continuity:", payload["image_prompt"])
+        self.assertIn("Li Ming's right hand is still braced on the half-open door", payload["image_prompt"])
+        self.assertNotIn("Camera cuts tighter", payload["image_prompt"])
+        self.assertIn("Start from this exact opening frame:", payload["final_video_prompt"])
+        self.assertIn("Preserve the carried-over state before motion:", payload["final_video_prompt"])
+
+    def test_build_generation_payload_keeps_image_framing_compatible_with_video_motion(self):
+        shot = Shot(
+            shot_id="scene1_shot1",
+            storyboard_description="Li Ming braces one hand on the half-open wooden door before stepping inside.",
+            camera_setup=CameraSetup(shot_size="MS", camera_angle="Eye-level", movement="Static"),
+            visual_elements=VisualElements(
+                subject_and_clothing="Li Ming in a dark blue robe at the doorway",
+                action_and_expression="one hand braces on the door before he steps inside",
+                environment_and_props="wooden door, wet threshold, warm lantern",
+                lighting_and_color="soft overcast daylight with warm lantern fill",
+            ),
+            image_prompt="Close portrait. Li Ming's face in rain mist at the doorway.",
+            final_video_prompt="Medium shot. Static camera. Li Ming pushes the wooden door open with one hand and steps inside.",
+        )
+
+        payload = build_generation_payload(
+            shot,
+            build_story_context(
+                {
+                    "characters": [
+                        {
+                            "id": "char_li_ming",
+                            "name": "Li Ming",
+                            "description": "young man, short black hair, wearing a dark blue robe.",
+                        }
+                    ]
+                }
+            ),
+        )
+
+        self.assertTrue(payload["image_prompt"].startswith("Medium shot."))
+        self.assertIn("video opening frame", payload["image_prompt"])
+        self.assertIn("face-only portrait crop", payload["image_prompt"])
+        self.assertIn("acting hands, arms, and interacted prop", payload["image_prompt"])
+        self.assertIn("Do not suddenly reveal missing hands, props", payload["final_video_prompt"])
+
+    def test_build_generation_payload_marks_nonfirst_shot_as_same_scene_continuation(self):
+        shot = {
+            "shot_id": "scene1_shot2",
+            "scene_position": "development",
+            "storyboard_description": "Li Ming turns from the doorway toward Boss Zhao across the teahouse counter.",
+            "camera_setup": {"shot_size": "MS", "camera_angle": "Eye-level", "movement": "Static"},
+            "visual_elements": {
+                "subject_and_clothing": "Li Ming in a dark blue robe, Boss Zhao behind the counter",
+                "action_and_expression": "Li Ming turns and answers, Boss Zhao watches without moving",
+                "environment_and_props": "teahouse counter, abacus, warm lanterns",
+                "lighting_and_color": "warm lantern fill over rainy daylight",
+            },
+            "image_prompt": "Medium shot. Li Ming turns toward Boss Zhao.",
+            "final_video_prompt": "Medium shot. Static camera. Li Ming answers while Boss Zhao watches from behind the counter.",
+        }
+
+        payload = build_generation_payload(shot, build_story_context({}))
+
+        self.assertIn("continuing beat inside the same scene", payload["image_prompt"])
+        self.assertIn("continuous beat in the same scene timeline", payload["final_video_prompt"])
+
     def test_sanitize_non_physical_character_cache_before_injection(self):
         story = {
             "characters": [
@@ -400,6 +524,110 @@ class StoryContextTests(unittest.TestCase):
         self.assertIn("alongside", payload["image_prompt"])
         self.assertNotIn("Character anchor:", payload["image_prompt"])
 
+    def test_cache_metadata_fields_do_not_change_runtime_prompt_consumption(self):
+        story = {
+            "genre": "古风",
+            "characters": [
+                {
+                    "id": "char_li_ming",
+                    "name": "Li Ming",
+                    "description": "young man, short black hair, wearing a dark blue robe.",
+                }
+            ],
+            "meta": {
+                "character_appearance_cache": {
+                    "char_li_ming": {
+                        "body": "young man, short black hair",
+                        "clothing": "dark blue robe",
+                        "negative_prompt": "modern clothing",
+                        "schema_version": APPEARANCE_CACHE_SCHEMA_VERSION,
+                        "source_provider": "openai",
+                        "source_model": "gpt-4o-mini",
+                        "updated_at": "2026-03-31T12:00:00+00:00",
+                    }
+                },
+                "scene_style_cache": [
+                    {
+                        "keywords": ["teahouse"],
+                        "image_extra": "jiangnan teahouse, rain mist",
+                        "video_extra": "jiangnan teahouse, rain mist",
+                        "negative_prompt": "cars, neon signs",
+                        "schema_version": SCENE_STYLE_CACHE_SCHEMA_VERSION,
+                        "source_provider": "openai",
+                        "source_model": "gpt-4o-mini",
+                        "updated_at": "2026-03-31T12:00:00+00:00",
+                    }
+                ],
+            },
+        }
+        shot = {
+            "storyboard_description": "Li Ming pauses at the teahouse doorway.",
+            "image_prompt": "Medium shot. Li Ming pauses at the teahouse doorway.",
+            "final_video_prompt": "Medium shot. Static camera. Li Ming pushes the wooden door inward.",
+        }
+
+        payload = build_generation_payload(shot, build_story_context(story))
+
+        self.assertIn("dark blue robe", payload["image_prompt"])
+        self.assertIn("jiangnan teahouse", payload["image_prompt"])
+        self.assertIn("modern clothing", payload["negative_prompt"])
+        self.assertIn("cars", payload["negative_prompt"])
+        self.assertIn("neon signs", payload["negative_prompt"])
+
+    def test_future_cache_schema_versions_are_ignored_by_runtime_payload(self):
+        story = {
+            "genre": "古风",
+            "characters": [
+                {
+                    "id": "char_li_ming",
+                    "name": "Li Ming",
+                    "description": "young man, short black hair, wearing a dark blue robe.",
+                }
+            ],
+            "character_images": {
+                "char_li_ming": {
+                    "visual_dna": "young man, short black hair",
+                    "character_id": "char_li_ming",
+                    "character_name": "Li Ming",
+                }
+            },
+            "meta": {
+                "character_appearance_cache": {
+                    "char_li_ming": {
+                        "body": "silver android with glowing eyes",
+                        "clothing": "neon armored coat",
+                        "negative_prompt": "rust",
+                        "schema_version": APPEARANCE_CACHE_SCHEMA_VERSION + 1,
+                    }
+                },
+                "scene_style_cache": [
+                    {
+                        "keywords": ["teahouse"],
+                        "image_extra": "futuristic megamall, neon escalators",
+                        "video_extra": "futuristic megamall, neon escalators",
+                        "negative_prompt": "ancient wood",
+                        "schema_version": SCENE_STYLE_CACHE_SCHEMA_VERSION + 1,
+                    }
+                ],
+            },
+        }
+        shot = {
+            "storyboard_description": "Li Ming pauses at the teahouse doorway.",
+            "image_prompt": "Medium shot. Li Ming pauses at the teahouse doorway.",
+            "final_video_prompt": "Medium shot. Static camera. Li Ming pushes the wooden door inward.",
+        }
+
+        payload = build_generation_payload(shot, build_story_context(story))
+
+        expected_style = (_GENRE_STYLE_RULES.get(story["genre"]) or next(iter(_GENRE_STYLE_RULES.values())))[0]
+        self.assertIn("short black hair", payload["image_prompt"])
+        self.assertIn("dark blue robe", payload["image_prompt"])
+        self.assertIn(expected_style, payload["image_prompt"])
+        self.assertNotIn("silver android", payload["image_prompt"])
+        self.assertNotIn("neon armored coat", payload["image_prompt"])
+        self.assertNotIn("futuristic megamall", payload["image_prompt"])
+        self.assertNotIn("rust", payload["negative_prompt"])
+
     def test_character_matching_avoids_substring_false_positive(self):
         story = {
             "characters": [
@@ -423,7 +651,11 @@ class StoryContextTests(unittest.TestCase):
 
         self.assertFalse(character_appears_in_shot("Ann", shot))
         self.assertTrue(character_appears_in_shot("Anna", shot))
-        self.assertEqual(payload["negative_prompt"], "low quality, blur, anna-only")
+        self.assertIn("low quality", payload["negative_prompt"])
+        self.assertIn("blur", payload["negative_prompt"])
+        self.assertIn("anna-only", payload["negative_prompt"])
+        self.assertIn("wrong face", payload["negative_prompt"])
+        self.assertIn("different primary outfit", payload["negative_prompt"])
 
     def test_character_matching_prefers_structured_names(self):
         shot = {
@@ -432,6 +664,17 @@ class StoryContextTests(unittest.TestCase):
         }
         self.assertTrue(character_appears_in_shot("Li Ming", shot))
         self.assertFalse(character_appears_in_shot("Li", shot))
+
+    def test_character_matching_uses_structured_names_when_text_only_has_pronoun(self):
+        shot = {
+            "storyboard_description": "他停在门口，回头看向屋内。",
+            "image_prompt": "Medium shot. He pauses at the doorway.",
+            "final_video_prompt": "Medium shot. Static camera. He turns his gaze into the room.",
+            "characters": ["李明"],
+        }
+
+        self.assertTrue(character_appears_in_shot("李明", shot))
+        self.assertFalse(character_appears_in_shot("顾北辰", shot))
 
     def test_character_matching_ignores_environment_only_name_mentions(self):
         shot = {
@@ -509,6 +752,45 @@ class StoryContextTests(unittest.TestCase):
         payload = build_generation_payload(shot, build_story_context(story))
 
         self.assertIn("wearing a dark blue robe", payload["image_prompt"])
+
+    def test_build_generation_payload_uses_structured_character_name_for_pronoun_only_shot(self):
+        story = {
+            "characters": [
+                {
+                    "id": "char_li_ming",
+                    "name": "Li Ming",
+                    "description": "young man, short black hair, wearing a dark blue robe.",
+                },
+                {
+                    "id": "char_boss_zhao",
+                    "name": "Boss Zhao",
+                    "description": "middle-aged man, moustache, wearing a brown robe.",
+                },
+            ],
+            "character_images": {
+                "char_li_ming": {
+                    "image_url": "/media/characters/li_ming.png",
+                    "image_path": "media/characters/li_ming.png",
+                },
+                "char_boss_zhao": {
+                    "image_url": "/media/characters/boss_zhao.png",
+                    "image_path": "media/characters/boss_zhao.png",
+                },
+            },
+        }
+        shot = {
+            "storyboard_description": "他停在门口，右手还扶着木门。",
+            "image_prompt": "Medium shot. He pauses at the doorway.",
+            "final_video_prompt": "Medium shot. Static camera. He looks into the room.",
+            "characters": ["Li Ming"],
+        }
+
+        payload = build_generation_payload(shot, build_story_context(story), story=story)
+
+        self.assertIn("Li Ming", payload["image_prompt"])
+        self.assertIn("dark blue robe", payload["image_prompt"])
+        self.assertEqual(len(payload["reference_images"]), 1)
+        self.assertEqual(payload["reference_images"][0]["image_url"], "/media/characters/li_ming.png")
 
 
 class ParseStoryboardOverrideTests(unittest.IsolatedAsyncioTestCase):
@@ -621,6 +903,119 @@ class ParseStoryboardOverrideTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(shots), 1)
         self.assertEqual(shots[0].camera_setup.camera_angle, "High angle")
+
+    async def test_parse_script_to_storyboard_preserves_structured_characters_for_pronoun_shot(self):
+        response = """
+        [
+          {
+            "shot_id": "scene1_shot1",
+            "characters": ["李明", "路人"],
+            "storyboard_description": "他停在茶馆门口，右手还扶着木门。",
+            "camera_setup": {"shot_size": "MS", "camera_angle": "Eye-level", "movement": "Static"},
+            "visual_elements": {
+              "subject_and_clothing": "青年男子，深蓝长衫",
+              "action_and_expression": "停在门口，抬眼看向屋内",
+              "environment_and_props": "茶馆木门与灯笼",
+              "lighting_and_color": "暖色灯笼与阴天自然光"
+            },
+            "image_prompt": "Medium shot. He pauses at the wooden doorway.",
+            "final_video_prompt": "Medium shot. Static camera. He lifts his gaze into the teahouse."
+          }
+        ]
+        """.strip()
+
+        class FakeProvider:
+            async def complete_messages_with_usage(self, messages, system: str = "", temperature: float = 0.3, **kwargs):
+                return response, {"prompt_tokens": 10, "completion_tokens": 5}
+
+        with patch("app.services.storyboard.get_llm_provider", return_value=FakeProvider()):
+            shots, _ = await parse_script_to_storyboard(
+                "【环境】茶馆门口\n【画面】李明停在门口，随后他看向屋内。",
+                provider="openai",
+            )
+
+        self.assertEqual(len(shots), 1)
+        self.assertEqual(shots[0].characters, ["李明"])
+        self.assertTrue(character_appears_in_shot("李明", shots[0]))
+
+    async def test_parse_script_to_storyboard_normalizes_audio_speaker_for_narration(self):
+        response = """
+        [
+          {
+            "shot_id": "scene1_shot1",
+            "characters": ["李明"],
+            "storyboard_description": "他停在门口，旁白落下。",
+            "camera_setup": {"shot_size": "MS", "camera_angle": "Eye-level", "movement": "Static"},
+            "visual_elements": {
+              "subject_and_clothing": "青年男子，深蓝长衫",
+              "action_and_expression": "停在门口，抬眼看向屋内",
+              "environment_and_props": "茶馆木门与灯笼",
+              "lighting_and_color": "暖色灯笼与阴天自然光"
+            },
+            "image_prompt": "Medium shot. He pauses at the doorway.",
+            "final_video_prompt": "Medium shot. Static camera. He looks into the teahouse.",
+            "audio_reference": {
+              "type": "voiceover",
+              "speaker": "Narrator",
+              "content": "他知道，门后的一切都会改变。"
+            }
+          }
+        ]
+        """.strip()
+
+        class FakeProvider:
+            async def complete_messages_with_usage(self, messages, system: str = "", temperature: float = 0.3, **kwargs):
+                return response, {"prompt_tokens": 10, "completion_tokens": 5}
+
+        with patch("app.services.storyboard.get_llm_provider", return_value=FakeProvider()):
+            shots, _ = await parse_script_to_storyboard(
+                "【环境】茶馆门口\n【画面】李明停在门口。\n【旁白】他知道，门后的一切都会改变。",
+                provider="openai",
+            )
+
+        self.assertEqual(len(shots), 1)
+        self.assertEqual(shots[0].audio_reference.type, "narration")
+        self.assertEqual(shots[0].audio_reference.speaker, "旁白")
+        self.assertEqual(shots[0].audio_reference.content, "他知道，门后的一切都会改变。")
+
+    async def test_parse_script_to_storyboard_preserves_dialogue_speaker_name(self):
+        response = """
+        [
+          {
+            "shot_id": "scene1_shot1",
+            "characters": ["李明"],
+            "storyboard_description": "他停在门口，说出一句提醒。",
+            "camera_setup": {"shot_size": "MS", "camera_angle": "Eye-level", "movement": "Static"},
+            "visual_elements": {
+              "subject_and_clothing": "青年男子，深蓝长衫",
+              "action_and_expression": "停在门口，开口说话",
+              "environment_and_props": "茶馆木门与灯笼",
+              "lighting_and_color": "暖色灯笼与阴天自然光"
+            },
+            "image_prompt": "Medium shot. He pauses at the doorway.",
+            "final_video_prompt": "Medium shot. Static camera. He speaks while holding the door.",
+            "audio_reference": {
+              "speaker": "李明",
+              "content": "别进去。"
+            }
+          }
+        ]
+        """.strip()
+
+        class FakeProvider:
+            async def complete_messages_with_usage(self, messages, system: str = "", temperature: float = 0.3, **kwargs):
+                return response, {"prompt_tokens": 10, "completion_tokens": 5}
+
+        with patch("app.services.storyboard.get_llm_provider", return_value=FakeProvider()):
+            shots, _ = await parse_script_to_storyboard(
+                "【环境】茶馆门口\n【画面】李明停在门口。\n【李明】别进去。",
+                provider="openai",
+            )
+
+        self.assertEqual(len(shots), 1)
+        self.assertEqual(shots[0].audio_reference.type, "dialogue")
+        self.assertEqual(shots[0].audio_reference.speaker, "李明")
+        self.assertEqual(shots[0].audio_reference.content, "别进去。")
 
     async def test_parse_script_to_storyboard_tolerates_minor_schema_drift(self):
         response = """
@@ -773,11 +1168,39 @@ class StoryContextPreparationTests(unittest.IsolatedAsyncioTestCase):
                 story["meta"]["character_appearance_cache"][story["characters"][0]["id"]]["body"],
                 "young man, short black hair, slim build",
             )
+            self.assertEqual(
+                story["meta"]["character_appearance_cache"][story["characters"][0]["id"]]["schema_version"],
+                APPEARANCE_CACHE_SCHEMA_VERSION,
+            )
+            self.assertEqual(
+                story["meta"]["character_appearance_cache"][story["characters"][0]["id"]]["source_provider"],
+                "openai",
+            )
+            self.assertEqual(
+                story["meta"]["character_appearance_cache"][story["characters"][0]["id"]]["source_model"],
+                "gpt-4o-mini",
+            )
+            self.assertTrue(
+                story["meta"]["character_appearance_cache"][story["characters"][0]["id"]]["updated_at"],
+            )
             self.assertEqual(story.get("character_images", {}), {})
             self.assertEqual(
                 story["meta"]["scene_style_cache"][0]["video_extra"],
                 "jiangnan river town, rain mist, warm lantern glow",
             )
+            self.assertEqual(
+                story["meta"]["scene_style_cache"][0]["schema_version"],
+                SCENE_STYLE_CACHE_SCHEMA_VERSION,
+            )
+            self.assertEqual(
+                story["meta"]["scene_style_cache"][0]["source_provider"],
+                "openai",
+            )
+            self.assertEqual(
+                story["meta"]["scene_style_cache"][0]["source_model"],
+                "gpt-4o-mini",
+            )
+            self.assertTrue(story["meta"]["scene_style_cache"][0]["updated_at"])
             shot = {
                 "shot_id": "scene1_shot1",
                 "storyboard_description": "李明在茶馆门口停下。",
@@ -956,6 +1379,152 @@ class StoryContextPreparationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 story["character_images"]["char_a_yue"]["visual_dna"],
                 "young woman, long black hair, slim build",
+            )
+
+    async def test_prepare_story_context_refreshes_future_schema_cache_versions(self):
+        async with self.session_factory() as session:
+            await repo.save_story(
+                session,
+                "story-ctx-refresh-future-schema",
+                {
+                    "idea": "test",
+                    "genre": "历史",
+                    "tone": "沉稳",
+                    "selected_setting": "江南古镇，临河茶馆，细雨薄雾。",
+                    "characters": [
+                        {
+                            "id": "char_li_ming",
+                            "name": "李明",
+                            "role": "主角",
+                            "description": "25岁青年男子，黑色短发，身形清瘦，穿着深蓝长衫。",
+                        }
+                    ],
+                    "meta": {
+                        "character_appearance_cache": {
+                            "char_li_ming": {
+                                "body": "silver android",
+                                "clothing": "neon armor",
+                                "negative_prompt": "rust",
+                                "schema_version": APPEARANCE_CACHE_SCHEMA_VERSION + 1,
+                            }
+                        },
+                        "scene_style_cache": [
+                            {
+                                "keywords": ["teahouse"],
+                                "image_extra": "futuristic megamall",
+                                "video_extra": "futuristic megamall",
+                                "negative_prompt": "ancient wood",
+                                "schema_version": SCENE_STYLE_CACHE_SCHEMA_VERSION + 1,
+                            }
+                        ],
+                    },
+                },
+            )
+
+            class FakeProvider:
+                async def complete_messages_with_usage(self, messages, system: str = "", temperature: float = 0.3, **kwargs):
+                    if "stable visual anchors" in system:
+                        return (
+                            '{"characters":[{"id":"char_li_ming","body":"young man, short black hair, slim build","clothing":"dark blue robe","negative_prompt":"modern clothing"}]}',
+                            {"prompt_tokens": 20, "completion_tokens": 8},
+                        )
+                    return (
+                        '{"styles":[{"keywords":["teahouse"],"image_extra":"jiangnan teahouse, rain mist","video_extra":"jiangnan teahouse, rain mist","negative_prompt":"cars"}]}',
+                        {"prompt_tokens": 8, "completion_tokens": 4},
+                    )
+
+            with patch("app.services.story_context_service.get_llm_provider", return_value=FakeProvider()):
+                story, ctx = await prepare_story_context(
+                    session,
+                    "story-ctx-refresh-future-schema",
+                    provider="openai",
+                    model="gpt-4o-mini",
+                    api_key="test-key",
+                    base_url="https://example.com/v1",
+                )
+
+            self.assertIsNotNone(ctx)
+            self.assertEqual(
+                story["meta"]["character_appearance_cache"]["char_li_ming"]["body"],
+                "young man, short black hair, slim build",
+            )
+            self.assertEqual(
+                story["meta"]["character_appearance_cache"]["char_li_ming"]["schema_version"],
+                APPEARANCE_CACHE_SCHEMA_VERSION,
+            )
+            self.assertEqual(
+                story["meta"]["scene_style_cache"][0]["image_extra"],
+                "jiangnan teahouse, rain mist",
+            )
+            self.assertEqual(
+                story["meta"]["scene_style_cache"][0]["schema_version"],
+                SCENE_STYLE_CACHE_SCHEMA_VERSION,
+            )
+
+    async def test_prepare_story_context_does_not_pollute_existing_cache_when_appearance_refresh_fails(self):
+        async with self.session_factory() as session:
+            await repo.save_story(
+                session,
+                "story-ctx-appearance-refresh-failure",
+                {
+                    "idea": "test",
+                    "genre": "历史",
+                    "tone": "沉稳",
+                    "selected_setting": "江南古镇，石桥，细雨。",
+                    "characters": [
+                        {
+                            "id": "char_li_ming",
+                            "name": "李明",
+                            "role": "主角",
+                            "description": "25岁青年男子，黑色短发，穿着深蓝长衫。",
+                        },
+                        {
+                            "id": "char_a_yue",
+                            "name": "阿月",
+                            "role": "配角",
+                            "description": "20岁年轻女子，长发，穿着浅青色襦裙。",
+                        },
+                    ],
+                    "meta": {
+                        "character_appearance_cache": {
+                            "char_li_ming": {
+                                "body": "young man, short black hair",
+                                "clothing": "dark blue robe",
+                                "negative_prompt": "modern clothing",
+                                "schema_version": APPEARANCE_CACHE_SCHEMA_VERSION,
+                            }
+                        }
+                    },
+                },
+            )
+
+            class FakeProvider:
+                async def complete_messages_with_usage(self, messages, system: str = "", temperature: float = 0.3, **kwargs):
+                    if "stable visual anchors" in system:
+                        raise RuntimeError("appearance extraction failed")
+                    return (
+                        '{"styles":[{"keywords":["bridge"],"image_extra":"ancient bridge, rain mist","video_extra":"ancient bridge, rain mist"}]}',
+                        {"prompt_tokens": 8, "completion_tokens": 4},
+                    )
+
+            with patch("app.services.story_context_service.get_llm_provider", return_value=FakeProvider()):
+                story, _ = await prepare_story_context(
+                    session,
+                    "story-ctx-appearance-refresh-failure",
+                    provider="openai",
+                    model="gpt-4o-mini",
+                    api_key="test-key",
+                    base_url="https://example.com/v1",
+                )
+
+            self.assertEqual(
+                story["meta"]["character_appearance_cache"]["char_li_ming"]["body"],
+                "young man, short black hair",
+            )
+            self.assertNotIn("char_a_yue", story["meta"]["character_appearance_cache"])
+            self.assertEqual(
+                story["meta"]["scene_style_cache"][0]["image_extra"],
+                "ancient bridge, rain mist",
             )
 
     async def test_prepare_story_context_uses_env_backfill_credentials(self):

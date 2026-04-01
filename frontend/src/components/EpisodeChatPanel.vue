@@ -100,6 +100,8 @@ async function send() {
           episode: props.episode.episode,
           title: props.episode.title,
           summary: props.episode.summary,
+          beats: props.episode.beats,
+          scene_list: props.episode.scene_list,
         },
         outline: store.outline,
       },
@@ -129,28 +131,53 @@ async function confirmApply() {
       store.storyId,
       'episode',
       messages.value,
-      { episode: currentEp.episode, title: currentEp.title, summary: currentEp.summary },
+      {
+        episode: currentEp.episode,
+        title: currentEp.title,
+        summary: currentEp.summary,
+        beats: currentEp.beats,
+        scene_list: currentEp.scene_list,
+      },
       null,
       store.outline
     )
-    if (!res || (!res.title && !res.summary)) {
+    if (!res || (!res.title && !res.summary && !Array.isArray(res.beats) && !Array.isArray(res.scene_list))) {
       error.value = '未能获取修改结果，请重试'
       return
     }
     const previousTitle = currentEp.title
     const previousSummary = currentEp.summary
+    const previousBeats = Array.isArray(currentEp.beats) ? currentEp.beats : []
+    const previousSceneList = Array.isArray(currentEp.scene_list) ? currentEp.scene_list : []
     const nextTitle = res.title ?? currentEp.title
     const nextSummary = res.summary ?? currentEp.summary
-    store.updateOutlineEpisode(
-      currentEp.episode,
-      nextTitle,
-      nextSummary
-    )
-    if (nextTitle !== previousTitle || nextSummary !== previousSummary) {
+    const nextBeats = Array.isArray(res.beats) && res.beats.length > 0 ? res.beats : previousBeats
+    const nextSceneList = Array.isArray(res.scene_list) && res.scene_list.length > 0 ? res.scene_list : previousSceneList
+    store.updateOutlineEpisode(currentEp.episode, {
+      ...currentEp,
+      title: nextTitle,
+      summary: nextSummary,
+      beats: nextBeats,
+      scene_list: nextSceneList,
+    })
+    const refineSummaryParts = []
+    if (nextTitle !== previousTitle) {
+      refineSummaryParts.push(`第${currentEp.episode}集标题从「${previousTitle}」改为「${nextTitle}」`)
+    }
+    if (nextSummary !== previousSummary) {
+      refineSummaryParts.push(`剧情从「${previousSummary}」改为「${nextSummary}」`)
+    }
+    if (JSON.stringify(nextBeats) !== JSON.stringify(previousBeats)) {
+      refineSummaryParts.push(`关键节拍从「${previousBeats.join('；') || '无'}」改为「${nextBeats.join('；') || '无'}」`)
+    }
+    if (JSON.stringify(nextSceneList) !== JSON.stringify(previousSceneList)) {
+      refineSummaryParts.push(`场景切分从「${previousSceneList.join('；') || '无'}」改为「${nextSceneList.join('；') || '无'}」`)
+    }
+    if (refineSummaryParts.length > 0) {
       const refineRes = await refineStory(
         store.storyId,
         'episode',
-        `第${currentEp.episode}集标题从「${previousTitle}」改为「${nextTitle}」，剧情从「${previousSummary}」改为「${nextSummary}」`
+        refineSummaryParts.join('；')
       )
       if (refineRes) {
         store.applyRefine(refineRes)

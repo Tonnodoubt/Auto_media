@@ -163,6 +163,63 @@ _CANONICAL_CAMERA_MOVEMENTS = (
     "Crane up",
     "Crane down",
 )
+_GENERIC_CHARACTER_LABELS = {
+    "crowd",
+    "extras",
+    "extra",
+    "bystander",
+    "bystanders",
+    "passerby",
+    "passersby",
+    "pedestrian",
+    "pedestrians",
+    "stranger",
+    "strangers",
+    "background crowd",
+    "background extra",
+    "unnamed extra",
+    "路人",
+    "路人甲",
+    "路人乙",
+    "群众",
+    "行人",
+    "人群",
+    "背景人群",
+    "围观者",
+    "陌生人",
+    "无名角色",
+    "临时路人",
+}
+_GENERIC_SPEAKER_LABELS = {
+    "he",
+    "she",
+    "they",
+    "him",
+    "her",
+    "them",
+    "the man",
+    "the woman",
+    "the boy",
+    "the girl",
+    "that man",
+    "that woman",
+    "person",
+    "someone",
+    "某人",
+    "有人",
+    "他",
+    "她",
+    "他们",
+    "她们",
+    "那人",
+    "那个人",
+    "那个男人",
+    "那个女人",
+    "男人",
+    "女人",
+    "男孩",
+    "女孩",
+}
 
 
 def _strip_terminal_punctuation(text: str) -> str:
@@ -347,20 +404,83 @@ def _normalize_audio_reference(value: Any, legacy_dialogue: Any = None) -> dict[
     if isinstance(value, Mapping):
         content = _stringify_text(value.get("content"))
         raw_type = _collapse_spaces(value.get("type")).lower()
+        raw_speaker = _stringify_text(value.get("speaker") or value.get("character") or value.get("voice"))
+        speaker_lower = raw_speaker.casefold()
+        is_narrator = speaker_lower in {"旁白", "画外音", "解说", "narrator", "narration", "voiceover", "voice over", "voice-over"}
+        speaker = "旁白" if is_narrator else (raw_speaker or None)
         if raw_type in {"dialogue", "dialog", "speech", "spoken"}:
             ref_type = "dialogue"
         elif raw_type in {"narration", "voiceover", "voice over", "voice-over", "narrator"}:
             ref_type = "narration"
         elif raw_type in {"sfx", "sound effect", "sound-effect", "fx"}:
             ref_type = "sfx"
+        elif is_narrator and content:
+            ref_type = "narration"
+        elif speaker and content:
+            ref_type = "dialogue"
         else:
             ref_type = "dialogue" if content and legacy_dialogue else None
-        return {"type": ref_type, "content": content or None} if (ref_type or content) else None
+        if ref_type == "dialogue" and is_narrator:
+            ref_type = "narration"
+        if ref_type == "sfx":
+            speaker = None
+        return {"type": ref_type, "speaker": speaker, "content": content or None} if (ref_type or speaker or content) else None
 
     dialogue = _stringify_text(legacy_dialogue)
     if dialogue:
-        return {"type": "dialogue", "content": dialogue}
+        return {"type": "dialogue", "speaker": None, "content": dialogue}
     return None
+
+
+def _finalize_audio_reference(
+    audio_reference: dict[str, Any] | None,
+    *,
+    characters: list[str] | None = None,
+) -> dict[str, Any] | None:
+    if not audio_reference:
+        return None
+
+    normalized = dict(audio_reference)
+    ref_type = _stringify_text(normalized.get("type")).lower() or None
+    speaker = _stringify_text(normalized.get("speaker")) or None
+    content = _stringify_text(normalized.get("content")) or None
+
+    if speaker and speaker.casefold() in _GENERIC_SPEAKER_LABELS:
+        speaker = None
+
+    if ref_type == "narration":
+        speaker = "旁白"
+    elif ref_type == "sfx":
+        speaker = None
+    elif ref_type == "dialogue" and not speaker and characters and len(characters) == 1:
+        speaker = characters[0]
+
+    return {"type": ref_type, "speaker": speaker, "content": content} if (ref_type or speaker or content) else None
+
+
+def _normalize_character_mentions(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+
+    if isinstance(value, str):
+        raw_items = re.split(r"[,，/、\n]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        return None
+
+    names: list[str] = []
+    for item in raw_items:
+        candidate = item.get("name") if isinstance(item, Mapping) else item
+        normalized = _stringify_text(candidate)
+        if not normalized:
+            continue
+        if normalized.lower() in _GENERIC_CHARACTER_LABELS:
+            continue
+        if normalized not in names:
+            names.append(normalized)
+
+    return names or None
 
 
 def _fallback_storyboard_description(item: Mapping[str, Any], shot_number: int) -> str:
@@ -424,11 +544,22 @@ def _normalize_shot_item(
         mapped_scene_key = (scene_mapping or {}).get(shot_scene_index)
         source_scene_key = mapped_scene_key or source_scene_key or f"scene{shot_scene_index}"
 
-    audio_reference = _normalize_audio_reference(item.get("audio_reference"), legacy_dialogue=item.get("dialogue"))
+    characters = (
+        _normalize_character_mentions(item.get("characters"))
+        or _normalize_character_mentions(item.get("character_names"))
+        or _normalize_character_mentions(item.get("mentioned_characters"))
+        or _normalize_character_mentions(item.get("cast"))
+        or _normalize_character_mentions(item.get("participants"))
+    )
+    audio_reference = _finalize_audio_reference(
+        _normalize_audio_reference(item.get("audio_reference"), legacy_dialogue=item.get("dialogue")),
+        characters=characters,
+    )
 
     normalized = {
         "shot_id": shot_id,
         "source_scene_key": source_scene_key or None,
+        "characters": characters,
         "estimated_duration": _coerce_estimated_duration(item.get("estimated_duration", 4)),
         "scene_intensity": _normalize_scene_intensity(item.get("scene_intensity", "low")),
         "storyboard_description": storyboard_description,
@@ -464,6 +595,13 @@ def _build_minimal_valid_shot_item(
     return {
         "shot_id": shot_id,
         "source_scene_key": mapped_scene_key or _stringify_text(item.get("source_scene_key")) or None,
+        "characters": (
+            _normalize_character_mentions(item.get("characters"))
+            or _normalize_character_mentions(item.get("character_names"))
+            or _normalize_character_mentions(item.get("mentioned_characters"))
+            or _normalize_character_mentions(item.get("cast"))
+            or _normalize_character_mentions(item.get("participants"))
+        ),
         "estimated_duration": 4,
         "scene_intensity": "low",
         "storyboard_description": fallback_description,
@@ -481,7 +619,16 @@ def _build_minimal_valid_shot_item(
         "image_prompt": _stringify_text(item.get("image_prompt")) or fallback_description,
         "final_video_prompt": _stringify_text(item.get("final_video_prompt")) or _stringify_text(item.get("image_prompt")) or fallback_description,
         "last_frame_prompt": None,
-        "audio_reference": _normalize_audio_reference(item.get("audio_reference"), legacy_dialogue=item.get("dialogue")),
+        "audio_reference": _finalize_audio_reference(
+            _normalize_audio_reference(item.get("audio_reference"), legacy_dialogue=item.get("dialogue")),
+            characters=(
+                _normalize_character_mentions(item.get("characters"))
+                or _normalize_character_mentions(item.get("character_names"))
+                or _normalize_character_mentions(item.get("mentioned_characters"))
+                or _normalize_character_mentions(item.get("cast"))
+                or _normalize_character_mentions(item.get("participants"))
+            ),
+        ),
         "mood": _stringify_text(item.get("mood")) or None,
         "scene_position": None,
         "transition_from_previous": _stringify_text(item.get("transition_from_previous")) or None,
@@ -896,12 +1043,346 @@ def _build_scene_mapping_section(script: str) -> str:
     return "\n".join(lines)
 
 
+def _core_transition_hint(previous_item: Mapping[str, Any], current_item: Mapping[str, Any]) -> str:
+    current_text = " ".join(
+        [
+            _stringify_text(current_item.get("storyboard_description")),
+            _stringify_text(current_item.get("image_prompt")),
+            _stringify_text(current_item.get("final_video_prompt")),
+        ]
+    )
+    lang = "zh" if re.search(r"[\u4e00-\u9fff]", current_text) else "en"
+    prev_characters = _normalize_character_mentions(previous_item.get("characters")) or []
+    current_characters = _normalize_character_mentions(current_item.get("characters")) or []
+    shared_characters = [name for name in current_characters if name in prev_characters]
+
+    if lang == "zh":
+        if shared_characters:
+            subject = "、".join(shared_characters)
+            return f"承接上一核心镜头，保持{subject}的人物外观与主衣物不变，沿用同一场景布局与光线，只衔接到当前动作起点。"
+        return "承接上一核心镜头，保持同一场景布局与光线逻辑，只衔接到当前动作起点。"
+
+    if shared_characters:
+        subject = ", ".join(shared_characters)
+        return (
+            f"Continue from the previous core shot, keeping {subject} on-model with the same primary outfit, "
+            "while preserving the same environment layout and lighting logic before the next action begins."
+        )
+    return (
+        "Continue from the previous core shot, preserving the same environment layout and lighting logic "
+        "before the next action begins."
+    )
+
+
+def _scene_core_middle_score(item: Mapping[str, Any], original_index: int, group_size: int) -> tuple[int, float]:
+    scene_position = _stringify_text(item.get("scene_position")).lower()
+    scene_intensity = _stringify_text(item.get("scene_intensity")).lower()
+    audio_reference = item.get("audio_reference") if isinstance(item.get("audio_reference"), Mapping) else {}
+    audio_type = _stringify_text(audio_reference.get("type")).lower()
+
+    score = 0
+    if scene_position == "climax":
+        score += 60
+    elif scene_position == "development":
+        score += 45
+    elif scene_position == "resolution":
+        score += 35
+    elif scene_position == "establishing":
+        score += 10
+
+    if scene_intensity == "high":
+        score += 18
+    if audio_type in {"dialogue", "narration"}:
+        score += 10
+
+    center = (group_size - 1) / 2
+    distance_penalty = abs(original_index - center)
+    return score, -distance_penalty
+
+
+def _split_text_units(text: Any) -> list[str]:
+    cleaned = _collapse_spaces(_stringify_text(text))
+    if not cleaned:
+        return []
+
+    parts = re.split(r"(?:[。！？!?；;]+|\.\s+|\n+)", cleaned)
+    units: list[str] = []
+    for part in parts:
+        normalized = _strip_terminal_punctuation(part)
+        if not normalized:
+            continue
+        if re.fullmatch(r"(?:镜头|shot)\s*[一二三四五六七八九十百千万0-9]+", normalized, flags=re.IGNORECASE):
+            continue
+        lowered = normalized.casefold()
+        if any(lowered in existing.casefold() or existing.casefold() in lowered for existing in units):
+            continue
+        units.append(normalized)
+    return units
+
+
+def _join_text_units(units: list[str]) -> str:
+    if not units:
+        return ""
+    if _contains_cjk(" ".join(units)):
+        return "。".join(units) + "。"
+    return ". ".join(units) + "."
+
+
+def _merge_text_units(base: Any, extra: Any, *, max_units: int | None = None) -> str:
+    merged = list(_split_text_units(base))
+    for unit in _split_text_units(extra):
+        lowered = unit.casefold()
+        if any(lowered in existing.casefold() or existing.casefold() in lowered for existing in merged):
+            continue
+        merged.append(unit)
+    if max_units is not None and len(merged) > max_units:
+        merged = merged[:max_units]
+    return _join_text_units(merged)
+
+
+def _merge_character_lists(base: Any, extra: Any) -> list[str] | None:
+    merged: list[str] = []
+    for candidate in (_normalize_character_mentions(base) or []) + (_normalize_character_mentions(extra) or []):
+        if candidate not in merged:
+            merged.append(candidate)
+    return merged or None
+
+
+def _audio_reference_story_note(audio_reference: Mapping[str, Any] | None) -> str:
+    if not isinstance(audio_reference, Mapping):
+        return ""
+
+    content = _stringify_text(audio_reference.get("content"))
+    if not content:
+        return ""
+
+    speaker = _stringify_text(audio_reference.get("speaker"))
+    audio_type = _stringify_text(audio_reference.get("type")).lower()
+    if audio_type == "narration" or speaker == "旁白":
+        return f"同时旁白补充：{content}" if _contains_cjk(content) else f"Narration adds: {content}"
+    if speaker:
+        return f"同时{speaker}开口说：{content}" if _contains_cjk(content + speaker) else f"{speaker} speaks: {content}"
+    return content
+
+
+def _merge_audio_references(
+    target_audio: Mapping[str, Any] | None,
+    source_audio: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(source_audio, Mapping):
+        return dict(target_audio) if isinstance(target_audio, Mapping) else None
+    if not isinstance(target_audio, Mapping):
+        return dict(source_audio)
+
+    target_type = _stringify_text(target_audio.get("type")).lower()
+    source_type = _stringify_text(source_audio.get("type")).lower()
+    target_speaker = _stringify_text(target_audio.get("speaker"))
+    source_speaker = _stringify_text(source_audio.get("speaker"))
+    if target_type != source_type or target_speaker != source_speaker:
+        return dict(target_audio)
+
+    merged = dict(target_audio)
+    merged["content"] = _merge_text_units(
+        target_audio.get("content"),
+        source_audio.get("content"),
+        max_units=2,
+    ) or _stringify_text(target_audio.get("content")) or _stringify_text(source_audio.get("content")) or None
+    return merged
+
+
+def _score_merge_target(
+    *,
+    source_index: int,
+    source_item: Mapping[str, Any],
+    target_index: int,
+    target_item: Mapping[str, Any],
+) -> tuple[int, int, int, int]:
+    distance = abs(source_index - target_index)
+    score = -distance * 10
+
+    source_audio = source_item.get("audio_reference") if isinstance(source_item.get("audio_reference"), Mapping) else None
+    target_audio = target_item.get("audio_reference") if isinstance(target_item.get("audio_reference"), Mapping) else None
+    if source_audio:
+        if not target_audio:
+            score += 8
+        elif (
+            _stringify_text(source_audio.get("type")).lower() == _stringify_text(target_audio.get("type")).lower()
+            and _stringify_text(source_audio.get("speaker")) == _stringify_text(target_audio.get("speaker"))
+        ):
+            score += 6
+        else:
+            score -= 6
+
+    source_position = _stringify_text(source_item.get("scene_position")).lower()
+    target_position = _stringify_text(target_item.get("scene_position")).lower()
+    if source_position and source_position == target_position:
+        score += 2
+    if source_position in {"development", "climax", "resolution"} and target_position == "establishing":
+        score -= 12
+    if source_position in {"development", "climax"} and target_position in {"development", "climax"}:
+        score += 4
+    if source_position == "resolution" and target_position == "resolution":
+        score += 4
+
+    direction_bias = 1 if target_index >= source_index else 0
+    return score, -distance, direction_bias, target_index
+
+
+def _merge_core_shot_item(target_item: dict[str, Any], source_item: Mapping[str, Any]) -> dict[str, Any]:
+    merged = dict(target_item)
+    merged["characters"] = _merge_character_lists(merged.get("characters"), source_item.get("characters"))
+
+    merged["storyboard_description"] = _merge_text_units(
+        merged.get("storyboard_description"),
+        source_item.get("storyboard_description"),
+        max_units=4,
+    ) or _stringify_text(merged.get("storyboard_description"))
+
+    target_visuals = dict(merged.get("visual_elements") or {})
+    source_visuals = dict(source_item.get("visual_elements") or {})
+    for field_name, max_units in (
+        ("subject_and_clothing", 3),
+        ("action_and_expression", 3),
+        ("environment_and_props", 3),
+        ("lighting_and_color", 2),
+    ):
+        target_visuals[field_name] = _merge_text_units(
+            target_visuals.get(field_name),
+            source_visuals.get(field_name),
+            max_units=max_units,
+        ) or _stringify_text(target_visuals.get(field_name))
+    merged["visual_elements"] = target_visuals
+
+    merged["image_prompt"] = _merge_text_units(
+        merged.get("image_prompt"),
+        source_item.get("image_prompt"),
+        max_units=4,
+    ) or _stringify_text(merged.get("image_prompt")) or None
+    merged["final_video_prompt"] = _merge_text_units(
+        merged.get("final_video_prompt"),
+        source_item.get("final_video_prompt"),
+        max_units=4,
+    ) or _stringify_text(merged.get("final_video_prompt"))
+
+    original_target_audio = merged.get("audio_reference") if isinstance(merged.get("audio_reference"), Mapping) else None
+    source_audio = source_item.get("audio_reference") if isinstance(source_item.get("audio_reference"), Mapping) else None
+    merged_audio = _merge_audio_references(original_target_audio, source_audio)
+    merged["audio_reference"] = merged_audio
+    if source_audio and merged_audio == original_target_audio:
+        merged["storyboard_description"] = _merge_text_units(
+            merged.get("storyboard_description"),
+            _audio_reference_story_note(source_audio),
+            max_units=4,
+        ) or _stringify_text(merged.get("storyboard_description"))
+
+    if _normalize_scene_intensity(source_item.get("scene_intensity", "low")) == "high":
+        merged["scene_intensity"] = "high"
+
+    merged["estimated_duration"] = min(
+        5,
+        max(
+            _coerce_estimated_duration(merged.get("estimated_duration")),
+            _coerce_estimated_duration(source_item.get("estimated_duration")),
+        ),
+    )
+    merged["mood"] = _merge_text_units(
+        merged.get("mood"),
+        source_item.get("mood"),
+        max_units=2,
+    ) or _stringify_text(merged.get("mood")) or _stringify_text(source_item.get("mood")) or None
+    return merged
+
+
+def _limit_core_shot_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(items) <= 3:
+        return items
+
+    grouped_items: list[tuple[str, list[tuple[int, dict[str, Any]]]]] = []
+    group_lookup: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    for original_index, item in enumerate(items):
+        scene_key = _stringify_text(item.get("source_scene_key"))
+        if not scene_key:
+            shot_scene_index = _extract_scene_index_from_shot_id(_stringify_text(item.get("shot_id")))
+            scene_key = f"scene{shot_scene_index}" if shot_scene_index is not None else f"scene_group_{original_index + 1}"
+        bucket = group_lookup.get(scene_key)
+        if bucket is None:
+            bucket = []
+            group_lookup[scene_key] = bucket
+            grouped_items.append((scene_key, bucket))
+        bucket.append((original_index, item))
+
+    limited: list[dict[str, Any]] = []
+    for group_order, (_, group) in enumerate(grouped_items, start=1):
+        if len(group) <= 3:
+            limited.extend(item for _, item in group)
+            continue
+
+        first_entry = group[0]
+        last_entry = group[-1]
+        middle_candidates = group[1:-1]
+        middle_entry = max(
+            middle_candidates,
+            key=lambda entry: _scene_core_middle_score(entry[1], entry[0], len(group)),
+        )
+        selected = [first_entry, middle_entry, last_entry]
+        selected.sort(key=lambda entry: entry[0])
+        selected_items = [(original_index, dict(raw_item)) for original_index, raw_item in selected]
+        selected_original_indices = {original_index for original_index, _ in selected}
+        omitted_items = [
+            (original_index, raw_item)
+            for original_index, raw_item in group
+            if original_index not in selected_original_indices
+        ]
+        for omitted_index, omitted_item in omitted_items:
+            best_selected_position = max(
+                range(len(selected_items)),
+                key=lambda selected_position: _score_merge_target(
+                    source_index=omitted_index,
+                    source_item=omitted_item,
+                    target_index=selected_items[selected_position][0],
+                    target_item=selected_items[selected_position][1],
+                ),
+            )
+            target_index, target_item = selected_items[best_selected_position]
+            selected_items[best_selected_position] = (
+                target_index,
+                _merge_core_shot_item(target_item, omitted_item),
+            )
+
+        original_scene_index = _extract_scene_index_from_shot_id(_stringify_text(group[0][1].get("shot_id")))
+        scene_index = original_scene_index or group_order
+
+        previous_selected_item: dict[str, Any] | None = None
+        previous_original_index: int | None = None
+        for new_position, (original_index, raw_item) in enumerate(selected_items, start=1):
+            updated = dict(raw_item)
+            updated["shot_id"] = f"scene{scene_index}_shot{new_position}"
+            if new_position == 1:
+                updated["transition_from_previous"] = None
+            elif previous_selected_item is not None:
+                if previous_original_index is not None and original_index == previous_original_index + 1:
+                    existing_transition = _stringify_text(updated.get("transition_from_previous"))
+                    updated["transition_from_previous"] = existing_transition or _core_transition_hint(previous_selected_item, updated)
+                else:
+                    updated["transition_from_previous"] = _core_transition_hint(previous_selected_item, updated)
+            if not _stringify_text(updated.get("scene_position")):
+                updated["scene_position"] = ("establishing", "development", "climax")[min(new_position - 1, 2)]
+            limited.append(updated)
+            previous_selected_item = updated
+            previous_original_index = original_index
+
+    return limited
+
+
 def _parse_shots(raw: str, *, scene_mapping: Optional[dict[int, str]] = None) -> List[Shot]:
     """解析 LLM 输出为 Shot 列表，兼容新旧两种 JSON 格式。"""
-    data = _load_storyboard_items(raw)
+    data = [
+        _normalize_shot_item(raw_item, shot_number=shot_number, scene_mapping=scene_mapping)
+        for shot_number, raw_item in enumerate(_load_storyboard_items(raw), start=1)
+    ]
+    data = _limit_core_shot_items(data)
     shots = []
-    for shot_number, raw_item in enumerate(data, start=1):
-        item = _normalize_shot_item(raw_item, shot_number=shot_number, scene_mapping=scene_mapping)
+    for shot_number, item in enumerate(data, start=1):
         try:
             shots.append(_postprocess_shot(Shot(**item)))
             continue

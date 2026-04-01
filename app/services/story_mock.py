@@ -1,3 +1,5 @@
+# ruff: noqa: RUF001
+
 import asyncio
 import uuid
 from typing import AsyncGenerator, Optional
@@ -29,6 +31,8 @@ MOCK_OUTLINE = {
         "genre": "现代都市",
         "episodes": 6,
         "theme": "在命运的安排下，两个截然不同的人相遇、相知、相爱",
+        "logline": "独立设计师林晓雨误闯科技发布会后，被迫与高冷 CEO 顾北辰合作，在冲突与误会中一步步确认彼此心意。",
+        "visual_tone": "都市情感电影感，冷暖光对比下的高压职场与私密情绪空间。",
     },
     "characters": [
         {"name": "林晓雨", "role": "女主角", "description": "28岁独立设计师，外表冷静内心细腻，曾经历感情创伤"},
@@ -41,12 +45,48 @@ MOCK_OUTLINE = {
         {"source": "苏糖", "target": "顾北辰", "label": "撮合"},
     ],
     "outline": [
-        {"episode": 1, "title": "意外相遇", "summary": "林晓雨因项目失误闯入顾北辰的发布会，两人第一次相遇充满火花"},
-        {"episode": 2, "title": "冤家路窄", "summary": "命运弄人，林晓雨接到的新项目甲方正是顾北辰的公司"},
-        {"episode": 3, "title": "渐生情愫", "summary": "合作过程中两人互相了解，顾北辰开始主动接近林晓雨"},
-        {"episode": 4, "title": "误会横生", "summary": "前任的出现引发误会，两人关系跌入冰点"},
-        {"episode": 5, "title": "真相大白", "summary": "苏糖帮助解开误会，顾北辰向林晓雨坦白心意"},
-        {"episode": 6, "title": "幸福终章", "summary": "两人携手面对各自的过去，共同走向新的未来"},
+        {
+            "episode": 1,
+            "title": "意外相遇",
+            "summary": "林晓雨因项目失误闯入顾北辰的发布会，两人第一次相遇充满火花。",
+            "beats": ["林晓雨误入高规格发布会现场。", "顾北辰当众拦下她，两人第一次正面碰撞。", "这次尴尬相遇为后续合作埋下伏笔。"],
+            "scene_list": ["Scene 1: [夜] [室内] [科技发布会现场] - 林晓雨误闯会场，与台上的顾北辰正面相遇。"],
+        },
+        {
+            "episode": 2,
+            "title": "冤家路窄",
+            "summary": "命运弄人，林晓雨接到的新项目甲方正是顾北辰的公司。",
+            "beats": ["林晓雨在会议室做提案。", "顾北辰突然现身，揭示两人必须合作。", "双方压下情绪，关系被迫进入新的阶段。"],
+            "scene_list": ["Scene 1: [白天] [室内] [设计公司会议室] - 提案现场被顾北辰打断，合作关系正式成立。"],
+        },
+        {
+            "episode": 3,
+            "title": "渐生情愫",
+            "summary": "合作过程中两人互相了解，顾北辰开始主动接近林晓雨。",
+            "beats": ["加班后的短暂独处打破职场距离。", "顾北辰主动示好，态度明显不同。", "林晓雨对他的印象开始松动。"],
+            "scene_list": ["Scene 1: [傍晚] [室外] [公司楼顶花园] - 顾北辰递上咖啡，与林晓雨共享片刻宁静。"],
+        },
+        {
+            "episode": 4,
+            "title": "误会横生",
+            "summary": "前任的出现引发误会，两人关系跌入冰点。",
+            "beats": ["林晓雨撞见顾北辰与另一名女子亲密交谈。", "她情绪失控后转身离开。", "顾北辰追出时已经错过解释时机。"],
+            "scene_list": ["Scene 1: [夜] [室内] [高档餐厅包间] - 林晓雨误会顾北辰，转身离开。"],
+        },
+        {
+            "episode": 5,
+            "title": "真相大白",
+            "summary": "苏糖帮助解开误会，顾北辰向林晓雨坦白心意。",
+            "beats": ["苏糖说明误会真相。", "林晓雨开始动摇并产生悔意。", "顾北辰带着花来到门口直接表白。"],
+            "scene_list": ["Scene 1: [下午] [室内] [苏糖家客厅] - 误会被解开，顾北辰携花现身。"],
+        },
+        {
+            "episode": 6,
+            "title": "幸福终章",
+            "summary": "两人携手面对各自的过去，共同走向新的未来。",
+            "beats": ["两人关系正式稳定。", "林晓雨说出自己的担忧。", "顾北辰给出承诺，两人走向未来。"],
+            "scene_list": ["Scene 1: [夜] [室外] [城市街头] - 两人并肩漫步，在烟花下确认未来。"],
+        },
     ],
 }
 
@@ -57,8 +97,18 @@ MOCK_SCENES = [
         "scenes": [
             {
                 "scene_number": 1,
+                "scene_heading": "[夜] [室内] [科技发布会现场]",
+                "environment_anchor": "科技发布会现场",
                 "environment": "夜晚，赛博朋克风格的科技发布会现场，蓝紫色霓虹灯光，人群涌动，全息投影屏幕悬浮空中。",
+                "lighting": "蓝紫色霓虹主光混合舞台冷白顶光",
+                "mood": "闯入后的失控与对峙",
+                "emotion_tags": [
+                    {"target": "林晓雨", "emotion": "慌张", "intensity": 0.8},
+                    {"target": "顾北辰", "emotion": "压迫", "intensity": 0.6},
+                ],
+                "key_props": ["文件夹", "全息投影屏幕"],
                 "visual": "林晓雨手持文件夹，神色慌张地推开会场大门。台上顾北辰正在演讲，两人四目相对，空气瞬间凝固。镜头从顾北辰视角推近林晓雨惊慌的脸。",
+                "key_actions": ["林晓雨推开会场大门", "顾北辰停下演讲看向她", "两人在人群前对视"],
                 "audio": [
                     {"character": "林晓雨", "line": "不好意思，请问这里是……"},
                     {"character": "顾北辰", "line": "这位女士，你闯入了私人发布会。"},
@@ -73,8 +123,18 @@ MOCK_SCENES = [
         "scenes": [
             {
                 "scene_number": 1,
+                "scene_heading": "[白天] [室内] [设计公司会议室]",
+                "environment_anchor": "设计公司会议室",
                 "environment": "白天，现代化设计公司会议室，落地窗透入自然光，白色简约风格。",
+                "lighting": "窗外自然天光为主，室内会议照明均匀补光",
+                "mood": "职场压力下的克制对峙",
+                "emotion_tags": [
+                    {"target": "林晓雨", "emotion": "紧绷", "intensity": 0.7},
+                    {"target": "顾北辰", "emotion": "审视", "intensity": 0.5},
+                ],
+                "key_props": ["投影屏幕", "提案文件"],
                 "visual": "林晓雨站在投影屏幕前做提案，PPT 切换到关键页面。会议室门突然打开，顾北辰走进来，两人同时愣住，气氛瞬间凝固。",
+                "key_actions": ["林晓雨切换提案页面", "顾北辰推门进入会议室", "两人停顿后重新进入对话"],
                 "audio": [
                     {"character": "顾北辰", "line": "林设计师？"},
                     {"character": "林晓雨", "line": "顾总，这次的项目就拜托您了。"},
@@ -88,8 +148,18 @@ MOCK_SCENES = [
         "scenes": [
             {
                 "scene_number": 1,
+                "scene_heading": "[傍晚] [室外] [公司楼顶花园]",
+                "environment_anchor": "公司楼顶花园",
                 "environment": "傍晚，公司楼顶花园，夕阳将天空染成橙红色，微风吹动植物。",
+                "lighting": "暖橙夕阳侧光配合楼顶环境自然反射光",
+                "mood": "关系松动后的暧昧试探",
+                "emotion_tags": [
+                    {"target": "顾北辰", "emotion": "温柔", "intensity": 0.6},
+                    {"target": "林晓雨", "emotion": "松动", "intensity": 0.5},
+                ],
+                "key_props": ["咖啡杯", "栏杆"],
                 "visual": "顾北辰走向独自站在栏杆边的林晓雨，递出一杯咖啡。林晓雨接过，嘴角微微上扬，两人并肩望向城市天际线。",
+                "key_actions": ["顾北辰递出咖啡", "林晓雨接过咖啡", "两人并肩望向天际线"],
                 "audio": [
                     {"character": "顾北辰", "line": "你今天加班很辛苦。"},
                     {"character": "林晓雨", "line": "没想到顾总也会关心员工。"},
@@ -104,8 +174,18 @@ MOCK_SCENES = [
         "scenes": [
             {
                 "scene_number": 1,
+                "scene_heading": "[夜] [室内] [高档餐厅包间]",
+                "environment_anchor": "高档餐厅包间",
                 "environment": "夜晚，高档餐厅包间，暖黄色烛光，玫瑰花装饰。",
+                "lighting": "暖黄色烛光混合包间顶灯，走廊区域稍暗",
+                "mood": "误会爆发前的压抑和刺痛",
+                "emotion_tags": [
+                    {"target": "林晓雨", "emotion": "受伤", "intensity": 0.8},
+                    {"target": "顾北辰", "emotion": "错愕", "intensity": 0.6},
+                ],
+                "key_props": ["玫瑰花装饰", "包间门"],
                 "visual": "林晓雨站在包间门口，看到顾北辰与一名女子亲密交谈，眼眶泛红。她缓缓转身离开。顾北辰追出来，只看到她消失在走廊尽头的背影。",
+                "key_actions": ["林晓雨停在包间门口", "她转身离开", "顾北辰追到走廊"],
                 "audio": [
                     {"character": "顾北辰", "line": "林晓雨！"},
                     {"character": "旁白", "line": "有些误会，在开口之前，已经造成了无法挽回的距离。"},
@@ -119,8 +199,18 @@ MOCK_SCENES = [
         "scenes": [
             {
                 "scene_number": 1,
+                "scene_heading": "[下午] [室内] [苏糖家客厅]",
+                "environment_anchor": "苏糖家客厅",
                 "environment": "下午，苏糖家温馨客厅，暖色调，沙发上摆着抱枕。",
+                "lighting": "客厅暖色自然光配合室内柔和补光",
+                "mood": "真相揭开后的迟疑与决心",
+                "emotion_tags": [
+                    {"target": "林晓雨", "emotion": "悔意", "intensity": 0.7},
+                    {"target": "顾北辰", "emotion": "坚定", "intensity": 0.8},
+                ],
+                "key_props": ["抱枕", "白玫瑰"],
                 "visual": "苏糖拉着林晓雨坐在沙发上，认真解释。林晓雨愣住，眼中闪过悔意。此时门铃响起，顾北辰出现在门口，手捧一束白玫瑰，眼神坚定。",
+                "key_actions": ["苏糖拉林晓雨坐下解释", "林晓雨愣住后沉默", "顾北辰手捧白玫瑰出现在门口"],
                 "audio": [
                     {"character": "苏糖", "line": "那个女人是他表姐，你误会了！"},
                     {"character": "林晓雨", "line": "我……"},
@@ -135,8 +225,18 @@ MOCK_SCENES = [
         "scenes": [
             {
                 "scene_number": 1,
+                "scene_heading": "[夜] [室外] [城市街头]",
+                "environment_anchor": "城市街头",
                 "environment": "夜晚，繁华城市街头，万家灯火，远处烟花绽放。",
+                "lighting": "城市街灯与远处烟花冷暖交错",
+                "mood": "和解后的安定与温柔",
+                "emotion_tags": [
+                    {"target": "林晓雨", "emotion": "安心", "intensity": 0.6},
+                    {"target": "顾北辰", "emotion": "承诺", "intensity": 0.6},
+                ],
+                "key_props": ["烟花", "街边灯光"],
                 "visual": "两人手牵手漫步，林晓雨靠在顾北辰肩上。镜头缓缓拉远，两人身影融入城市灯光之中。",
+                "key_actions": ["两人手牵手向前走", "林晓雨靠向顾北辰肩头", "两人继续走入街灯深处"],
                 "audio": [
                     {"character": "林晓雨", "line": "以后不许再让我误会了。"},
                     {"character": "顾北辰", "line": "好，我会一直在你身边。"},

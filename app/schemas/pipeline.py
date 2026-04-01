@@ -121,6 +121,9 @@ class TransitionFrameSource(BaseModel):
     video_url: str
     frame_role: Literal["from_last", "to_first"]
     extracted_image_url: str
+    source_type: Literal["video_frame", "storyboard_image_fallback"] = "video_frame"
+    diagnostic_note: Optional[str] = None
+    extraction_error: Optional[str] = None
 
 
 class TransitionResult(BaseModel):
@@ -132,6 +135,7 @@ class TransitionResult(BaseModel):
     video_url: str
     first_frame_source: TransitionFrameSource
     last_frame_source: TransitionFrameSource
+    diagnostic_summary: Optional[str] = None
 
 
 class TimelineItem(BaseModel):

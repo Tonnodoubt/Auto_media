@@ -4,7 +4,7 @@ import logging
 import re
 import time
 from collections import OrderedDict
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -27,6 +27,61 @@ def _versioned_media_name(stem: str, suffix: str) -> str:
     safe_stem = re.sub(r"[^A-Za-z0-9_-]", "_", stem)
     safe_stem = re.sub(r"_+", "_", safe_stem).strip("_") or "asset"
     return f"{safe_stem}_{token}{suffix}"
+
+
+def _collapse_spaces(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def _merge_reference_images(*sources: Any) -> list[Any]:
+    merged: list[Any] = []
+    seen: set[tuple[str, ...]] = set()
+
+    for source in sources:
+        if not isinstance(source, list):
+            continue
+        for item in source:
+            if isinstance(item, dict):
+                image_url = _collapse_spaces(str(item.get("image_url", "")))
+                image_path = _collapse_spaces(str(item.get("image_path", "")))
+                identity = ("mapping", image_url, image_path)
+                if not image_url and not image_path:
+                    fallback_identity = _collapse_spaces(str(item.get("id", ""))) or _collapse_spaces(str(item.get("kind", "")))
+                    if not fallback_identity:
+                        continue
+                    identity = ("mapping-fallback", fallback_identity)
+                normalized_item = dict(item)
+            else:
+                raw_value = _collapse_spaces(str(item))
+                if not raw_value:
+                    continue
+                identity = ("raw", raw_value)
+                normalized_item = item
+            if identity in seen:
+                continue
+            seen.add(identity)
+            merged.append(normalized_item)
+
+    return merged
+
+
+def _previous_shot_reference(previous_result: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not previous_result:
+        return []
+
+    image_url = _collapse_spaces(str(previous_result.get("image_url", "")))
+    image_path = _collapse_spaces(str(previous_result.get("image_path", "")))
+    if not image_url and not image_path:
+        return []
+
+    return [
+        {
+            "kind": "previous_shot_image",
+            "image_url": image_url,
+            "image_path": image_path,
+            "weight": 0.38,
+        }
+    ]
 
 
 async def _generate_remote_video(
@@ -256,10 +311,15 @@ async def generate_videos_chained(
 
     async def _process_scene(scene_key: str, scene_shots: list[dict]) -> list[dict]:
         results = []
+        previous_image_result: dict[str, str] | None = None
         for idx, shot in enumerate(scene_shots):
             shot_id = shot["shot_id"]
             image_prompt = shot.get("image_prompt") or shot.get("visual_prompt") or shot.get("final_video_prompt", "")
             video_prompt = shot.get("final_video_prompt") or shot.get("visual_prompt", "")
+            effective_reference_images = _merge_reference_images(
+                shot.get("reference_images"),
+                _previous_shot_reference(previous_image_result),
+            )
 
             if on_progress:
                 await on_progress(scene_key, idx, len(scene_shots), shot_id)
@@ -271,8 +331,9 @@ async def generate_videos_chained(
                 image_api_key=image_api_key,
                 image_base_url=image_base_url,
                 negative_prompt=shot.get("negative_prompt", ""),
-                reference_images=shot.get("reference_images"),
+                reference_images=effective_reference_images or None,
             )
+            previous_image_result = img_result
             image_url_for_video = f"{base_url}{img_result['image_url']}"
             local_image_url = img_result["image_url"]
 

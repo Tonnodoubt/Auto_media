@@ -1,6 +1,6 @@
 # AutoMedia 功能文档
 
-> 更新日期：2026-03-27
+> 更新日期：2026-04-01
 >
 > 当前口径：只写仓库中已经落地并通过回归验证的能力，不把设计态内容写成已实现功能。
 
@@ -22,7 +22,7 @@
 3. 大纲、角色、关系、流式剧本
 4. 角色设定图与画风持久化
 5. 按集生成共享环境图组
-6. 剧本导出、分镜解析、手动视频生成
+6. 剧本导出、`storyboard-script` 序列化、分镜解析、手动视频生成
 7. 过渡视频生成与时间线拼接
 8. 历史恢复与数据库状态追踪
 
@@ -79,6 +79,7 @@
 | `POST` | `/api/v1/story/patch` | ✅ | 持久化角色、大纲、画风 |
 | `POST` | `/api/v1/story/{story_id}/scene-reference/generate` | ✅ | 生成本集环境图组 |
 | `POST` | `/api/v1/story/{story_id}/finalize` | ✅ | 导出分镜可消费文本 |
+| `POST` | `/api/v1/story/{story_id}/storyboard-script` | ✅ | 按所选场景导出统一 storyboard 输入文本 |
 
 ### 3.2 Pipeline API
 
@@ -306,6 +307,10 @@
 - `uv run python -m unittest discover -s tests -q`
 - `node --test frontend/src/utils/storyChat.test.js frontend/src/utils/storyChat.multiline-sections.test.js frontend/src/utils/storyChat.numbering.test.js`
 - `npm --prefix frontend run build`
+
+当前仍待执行的人工验收：
+
+- `docs/phase3-manual-acceptance-runbook.md`
 
 ---
 

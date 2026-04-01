@@ -28,6 +28,28 @@ _LIGHT_HINTS = (
     "light", "lighting", "shadow", "sunlight", "sun", "glow", "rim", "contrast", "warm",
     "cool", "blue", "golden", "dark", "bright", "chiaroscuro", "volumetric", "neon",
 )
+_IDENTITY_HINTS = (
+    "identity", "canon", "same face", "face", "hairstyle", "hair", "same person", "same character",
+    "same appearance", "outfit", "clothing", "costume", "wardrobe", "silhouette", "accessories",
+    "primary outfit", "signature accessories", "same outfit", "unchanged", "consistent appearance",
+    "同一张脸", "同一人物", "同一角色", "同一发型", "衣物", "服装", "配饰", "主衣物", "外观一致",
+)
+_MOTION_GUIDANCE_HINTS = (
+    "visible", "readable", "body travel", "cloth", "follow-through", "anatomy", "limb", "hand",
+    "camera move", "camera movement", "motion amplitude", "smooth easing", "interpolate", "middle frames",
+    "gradually", "动作幅度", "清晰可见", "主体位移", "布料", "解剖", "四肢", "手部", "运镜", "中段", "中间帧", "渐进",
+)
+_NEGATIVE_GUARDRAIL_RULES = (
+    (("identity drift", "wrong face"), "identity drift"),
+    (("changed hairstyle",), "hairstyle drift"),
+    (("different primary outfit", "changed costume colors", "changed costume material", "outfit drift", "modern clothing"), "outfit drift"),
+    (("missing signature accessories",), "missing accessories"),
+    (("warped anatomy", "limb distortion", "extra limbs"), "warped anatomy"),
+    (("background morphing", "wrong location layout", "environment swap"), "background morphing"),
+    (("prop teleportation",), "prop teleportation"),
+    (("lighting flicker",), "lighting flicker"),
+    (("camera jitter", "snap zoom", "abrupt cut"), "camera jitter"),
+)
 
 
 def _collapse_spaces(text: str) -> str:
@@ -75,48 +97,106 @@ def _split_prompt_segments(text: str) -> list[str]:
     return segments
 
 
-def optimize_doubao_prompt(prompt: str, has_last_frame: bool = False) -> str:
+def _pick_best_segment(
+    segments: list[str],
+    keywords: tuple[str, ...],
+    *,
+    exclude: tuple[str, ...] = (),
+) -> str:
+    ranked: list[tuple[int, int, str]] = []
+    excluded = {segment for segment in exclude if segment}
+    for segment in segments:
+        if segment in excluded or not _contains_any(segment, keywords):
+            continue
+        lowered = segment.lower()
+        keyword_hits = sum(1 for keyword in keywords if keyword.lower() in lowered)
+        ranked.append((keyword_hits, len(segment.split()), segment))
+    if not ranked:
+        return ""
+    return max(ranked)[2]
+
+
+def _negative_guardrail_text(negative_prompt: str) -> str:
+    lowered = (negative_prompt or "").lower()
+    selected: list[str] = []
+    for matches, label in _NEGATIVE_GUARDRAIL_RULES:
+        if any(match in lowered for match in matches) and label not in selected:
+            selected.append(label)
+        if len(selected) >= 4:
+            break
+    if not selected:
+        return ""
+    return f"Avoid {', '.join(selected)}"
+
+
+def optimize_doubao_prompt(prompt: str, has_last_frame: bool = False, negative_prompt: str = "") -> str:
     """
     Seedance 更适合短、明确、单动作的提示词。
     这里把 storyboard 产出的长 prompt 压缩成更适合 I2V/F1F2V 的版本。
     """
     segments = _split_prompt_segments(prompt)
     if not segments:
-        base = "Single subject performs one clear natural motion."
+        base = "Single subject performs one clear continuous motion with visible movement."
         if has_last_frame:
-            return f"{base} End exactly at the provided last frame."
-        return f"{base} Keep framing stable and consistent."
+            fallback_parts = [
+                base,
+                "Bridge smoothly from the first anchor frame to the exact last anchor frame.",
+                "Keep identity, outfit, props, background, and anatomy stable.",
+            ]
+        else:
+            fallback_parts = [
+                base,
+                "Keep the same person and outfit from the first frame.",
+                "Make the motion and camera change clearly readable on screen.",
+            ]
+        negative_guardrail = _negative_guardrail_text(negative_prompt)
+        if negative_guardrail:
+            fallback_parts.append(negative_guardrail)
+        return _trim_words(". ".join(fallback_parts), 90)
 
-    camera = _extract_camera_phrase(segments[0])
+    camera = _extract_camera_phrase(" ".join(segments[:4]) or " ".join(segments))
     action = next((seg for seg in segments if _contains_any(seg, _ACTION_HINTS)), "")
     candidates = [
         seg for seg in segments[1:]
-        if not _contains_any(seg, _ENV_HINTS) and not _contains_any(seg, _LIGHT_HINTS)
+        if not _contains_any(seg, _ENV_HINTS) and not _contains_any(seg, _LIGHT_HINTS) and not _contains_any(seg, _IDENTITY_HINTS)
     ]
     if not action or (camera and action == segments[0] and candidates):
         action = max(candidates, key=lambda seg: len(seg.split()), default=segments[1] if camera and len(segments) > 1 else segments[0])
+    identity = _pick_best_segment(segments, _IDENTITY_HINTS, exclude=(action,))
+    motion_guidance = _pick_best_segment(segments, _MOTION_GUIDANCE_HINTS, exclude=(action, identity))
     environment = next((seg for seg in segments if seg != action and _contains_any(seg, _ENV_HINTS)), "")
     lighting = next((seg for seg in segments if seg not in (action, environment) and _contains_any(seg, _LIGHT_HINTS)), "")
+    negative_guardrail = _negative_guardrail_text(negative_prompt)
 
     pieces = []
     if camera:
-        pieces.append(_trim_words(camera, 8))
-    pieces.append(_trim_words(action, 18))
+        pieces.append(_trim_words(camera, 10))
+    pieces.append(_trim_words(action, 22))
+    if identity:
+        pieces.append(_trim_words(identity, 22))
+    if motion_guidance:
+        pieces.append(_trim_words(motion_guidance, 22))
     if environment:
         pieces.append(_trim_words(environment, 14))
     if lighting:
         pieces.append(_trim_words(lighting, 10))
 
     if has_last_frame:
-        pieces.append("Smoothly transition from the first frame to the exact last-frame pose.")
-        pieces.append("Keep identity, clothing, and composition consistent.")
+        pieces.append("Bridge continuously from the first anchor frame to the exact last anchor frame with smooth easing through the middle frames.")
+        pieces.append("Keep the same face, outfit, props, background, lighting, and stable anatomy.")
     else:
-        pieces.append("Keep one clear natural motion only.")
-        pieces.append("No extra movement or scene changes.")
+        if camera and "static" not in camera.lower():
+            pieces.append("Make both the subject motion and camera move clearly readable on screen, not tiny or hesitant.")
+        else:
+            pieces.append("Even on a static camera, keep the action clearly visible on screen instead of tiny barely visible motion.")
+        pieces.append("Keep the same face, hairstyle, outfit silhouette, costume colors, and signature accessories from the first frame.")
+        pieces.append("Keep anatomy natural with stable limbs and hands.")
+    if negative_guardrail:
+        pieces.append(negative_guardrail)
 
     optimized = ". ".join(piece.strip(" ,.;") for piece in pieces if piece).strip()
     optimized = _collapse_spaces(optimized)
-    return _trim_words(optimized, 65)
+    return _trim_words(optimized, 100 if has_last_frame else 95)
 
 
 async def _to_data_url(image_url: str) -> str:
@@ -200,9 +280,6 @@ class DoubaoVideoProvider(BaseVideoProvider):
         Returns:
             视频URL
         """
-        # Seedance does not provide a native negative prompt field. Keep this
-        # parameter for provider compatibility but ignore it here.
-        del negative_prompt
         effective_base = base_url or DEFAULT_BASE_URL
         async with httpx.AsyncClient(timeout=30) as client:
             task_id = await self._submit(
@@ -213,7 +290,8 @@ class DoubaoVideoProvider(BaseVideoProvider):
                 model,
                 api_key,
                 effective_base,
-                duration_seconds,
+                negative_prompt=negative_prompt,
+                duration_seconds=duration_seconds,
             )
         async with httpx.AsyncClient(timeout=30) as client:
             return await self._poll(client, task_id, api_key, effective_base)
@@ -227,6 +305,7 @@ class DoubaoVideoProvider(BaseVideoProvider):
         model: str,
         api_key: str,
         base_url: str,
+        negative_prompt: str = "",
         duration_seconds: int | None = None,
     ) -> str:
         """提交视频生成任务。
@@ -244,7 +323,11 @@ class DoubaoVideoProvider(BaseVideoProvider):
             任务ID
         """
         url = f"{base_url}{_SUBMIT_PATH}"
-        optimized_prompt = optimize_doubao_prompt(prompt, has_last_frame=bool(last_frame_url))
+        optimized_prompt = optimize_doubao_prompt(
+            prompt,
+            has_last_frame=bool(last_frame_url),
+            negative_prompt=negative_prompt,
+        )
 
         # 解析首帧图片
         resolved_first = await _to_data_url(image_url)

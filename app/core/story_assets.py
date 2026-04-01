@@ -91,6 +91,27 @@ def get_character_visual_dna(
     return _normalize_text(entry.get("visual_dna", ""))
 
 
+def get_character_appearance_cache_entry(
+    appearance_cache: Mapping[str, Any] | None,
+    identifier: str = "",
+    *,
+    name: str = "",
+) -> dict[str, Any]:
+    if not isinstance(appearance_cache, Mapping):
+        return {}
+
+    normalized_identifier = _normalize_text(identifier)
+    normalized_name = _normalize_text(name)
+    entry: Any = None
+
+    if normalized_identifier:
+        entry = appearance_cache.get(normalized_identifier)
+    if not isinstance(entry, Mapping) and normalized_name:
+        entry = appearance_cache.get(normalized_name)
+
+    return dict(entry) if isinstance(entry, Mapping) else {}
+
+
 def get_character_design_prompt(
     character_images: Mapping[str, Any] | None,
     identifier: str = "",

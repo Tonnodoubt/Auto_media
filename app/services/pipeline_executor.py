@@ -2,8 +2,10 @@
 自动化流水线执行器 - 支持多种生成策略
 """
 import asyncio
+import logging
+from copy import deepcopy
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas.storyboard import Shot
 from app.schemas.pipeline import GenerationStrategy, PipelineStatus
@@ -16,7 +18,13 @@ from app.core.pipeline_runtime import (
     build_runtime_strategy_metadata,
     get_runtime_strategy_note,
 )
+from app.services.storyboard_state import (
+    persist_storyboard_generation_state,
+    serialize_shot_for_storage,
+)
 from app.services.story_context_service import prepare_story_context
+
+logger = logging.getLogger(__name__)
 
 
 class PipelineExecutor:
@@ -43,6 +51,83 @@ class PipelineExecutor:
         self.story: Optional[dict] = None
         self.strategy: GenerationStrategy = GenerationStrategy.SEPARATED
         self.runtime_strategy_metadata: dict[str, object] = {}
+        self.tts_results: dict[str, dict[str, Any]] = {}
+        self.image_results: dict[str, dict[str, Any]] = {}
+        self.video_results: dict[str, dict[str, Any]] = {}
+        self._latest_generated_files: dict[str, Any] | None = None
+
+    def _serialize_storyboard_shots(self) -> list[dict[str, Any]]:
+        return [serialize_shot_for_storage(shot) for shot in self.shots]
+
+    def _build_generated_files_snapshot(self) -> dict[str, Any]:
+        snapshot: dict[str, Any] = {
+            "meta": dict(self.runtime_strategy_metadata),
+        }
+        storyboard_shots = self._serialize_storyboard_shots()
+        if storyboard_shots:
+            snapshot["storyboard"] = {"shots": storyboard_shots}
+        if self.tts_results:
+            snapshot["tts"] = deepcopy(self.tts_results)
+        if self.image_results:
+            snapshot["images"] = deepcopy(self.image_results)
+        if self.video_results:
+            snapshot["videos"] = deepcopy(self.video_results)
+        if self.results:
+            snapshot["shots"] = [deepcopy(result) for result in self.results]
+        return snapshot
+
+    def _refresh_video_results_from_stitched_outputs(self) -> None:
+        for result in self.results:
+            shot_id = str(result.get("shot_id", "")).strip()
+            if not shot_id:
+                continue
+            entry = deepcopy(dict(self.video_results.get(shot_id) or {}))
+            video_url = str(result.get("final_video_url") or result.get("video_url") or "").strip()
+            if video_url:
+                entry["shot_id"] = shot_id
+                entry["video_url"] = video_url
+            video_path = str(result.get("video_path") or entry.get("video_path") or "").strip()
+            if video_path:
+                entry["video_path"] = video_path
+            if entry:
+                self.video_results[shot_id] = entry
+
+    async def _persist_storyboard_generation_snapshot(self, generated_files: dict[str, Any]) -> None:
+        if self.db is None or not self.story_id:
+            return
+        try:
+            story = await repo.get_story(self.db, self.story_id)
+            if not story:
+                return
+            await persist_storyboard_generation_state(
+                self.db,
+                story_id=self.story_id,
+                story=story,
+                shots=self._serialize_storyboard_shots(),
+                partial_shots=False,
+                generated_files=generated_files,
+                pipeline_id=self.pipeline_id,
+                project_id=self.project_id,
+                replace_generated_files=True,
+                prune_generated_files_to_shots=True,
+                clear_final_video=True,
+            )
+        except Exception:
+            try:
+                await self.db.rollback()
+            except Exception:
+                logger.exception(
+                    "Auto pipeline storyboard persistence rollback failed project=%s pipeline_id=%s story_id=%s",
+                    self.project_id,
+                    self.pipeline_id,
+                    self.story_id,
+                )
+            logger.exception(
+                "Auto pipeline storyboard persistence failed project=%s pipeline_id=%s story_id=%s",
+                self.project_id,
+                self.pipeline_id,
+                self.story_id,
+            )
 
     async def run_full_pipeline(
         self,
@@ -75,6 +160,9 @@ class PipelineExecutor:
         self.results = []
         self.story_context = None
         self.story = None
+        self.tts_results = {}
+        self.image_results = {}
+        self.video_results = {}
         effective_story_id = (story_id or self.story_id or "").strip()
         if effective_story_id:
             self.story_id = effective_story_id
@@ -85,6 +173,9 @@ class PipelineExecutor:
                 api_key=llm_api_key,
                 base_url=llm_base_url,
             )
+        self._latest_generated_files = {
+            "meta": dict(self.runtime_strategy_metadata),
+        }
         try:
             # Step 1: 分镜解析
             await self._update_state(
@@ -107,6 +198,7 @@ class PipelineExecutor:
                 15,
                 f"分镜解析完成，共 {len(self.shots)} 个镜头",
                 {"step": "storyboard", "current": len(self.shots), "total": len(self.shots), "message": "分镜解析完成"},
+                generated_files=self._build_generated_files_snapshot(),
             )
 
             await asyncio.sleep(0.5)
@@ -133,10 +225,7 @@ class PipelineExecutor:
                 PipelineStatus.COMPLETE,
                 100,
                 "视频生成完成",
-                generated_files={
-                    "shots": self.results,
-                    "meta": dict(self.runtime_strategy_metadata),
-                },
+                generated_files=self._build_generated_files_snapshot(),
             )
 
         except Exception as e:
@@ -200,12 +289,18 @@ class PipelineExecutor:
             voice=voice,
         )
         tts_map = {r["shot_id"]: r for r in tts_results}
+        self.tts_results = {
+            shot_id: deepcopy(result)
+            for shot_id, result in tts_map.items()
+            if shot_id
+        }
 
         await self._update_state(
             PipelineStatus.GENERATING_ASSETS,
             40,
             f"语音生成完成 {len(tts_results)} 个",
             {"step": "tts", "current": total, "total": total, "message": "语音生成完成"},
+            generated_files=self._build_generated_files_snapshot(),
         )
 
         await asyncio.sleep(0.3)
@@ -226,12 +321,18 @@ class PipelineExecutor:
             art_style=self.art_style,
         )
         image_map = {r["shot_id"]: r for r in image_results}
+        self.image_results = {
+            shot_id: deepcopy(result)
+            for shot_id, result in image_map.items()
+            if shot_id
+        }
 
         await self._update_state(
             PipelineStatus.GENERATING_ASSETS,
             65,
             f"图片生成完成 {len(image_results)} 个",
             {"step": "image", "current": total, "total": total, "message": "图片生成完成"},
+            generated_files=self._build_generated_files_snapshot(),
         )
 
         await asyncio.sleep(0.3)
@@ -255,6 +356,7 @@ class PipelineExecutor:
                     "image_url": image_map[shot.shot_id]["image_url"],
                     "final_video_prompt": payload["final_video_prompt"],
                     "negative_prompt": payload.get("negative_prompt", ""),
+                    "reference_images": payload.get("reference_images", []),
                 }
             )
 
@@ -268,6 +370,11 @@ class PipelineExecutor:
             art_style=self.art_style,
         )
         video_map = {r["shot_id"]: r for r in video_results}
+        self.video_results = {
+            shot_id: deepcopy(result)
+            for shot_id, result in video_map.items()
+            if shot_id
+        }
 
         # 组装结果
         for shot in self.shots:
@@ -285,6 +392,7 @@ class PipelineExecutor:
             85,
             f"视频生成完成 {len(video_results)} 个",
             {"step": "video", "current": total, "total": total, "message": "视频生成完成"},
+            generated_files=self._build_generated_files_snapshot(),
         )
 
     @staticmethod
@@ -382,6 +490,7 @@ class PipelineExecutor:
                     story_character_info = {
                         "characters": characters,
                         "character_images": character_images or {},
+                        "meta": self.story.get("meta") or {},
                     }
             fallback_payload = {
                 "shot_id": payload.get("shot_id", shot.shot_id),
@@ -452,12 +561,18 @@ class PipelineExecutor:
             voice=voice,
         )
         tts_map = {r["shot_id"]: r for r in tts_results}
+        self.tts_results = {
+            shot_id: deepcopy(result)
+            for shot_id, result in tts_map.items()
+            if shot_id
+        }
 
         await self._update_state(
             PipelineStatus.GENERATING_ASSETS,
             35,
             f"语音生成完成 {len(tts_results)} 个",
             {"step": "tts", "current": total, "total": total, "message": "语音生成完成"},
+            generated_files=self._build_generated_files_snapshot(),
         )
 
         # Step 3+4: 链式图片+视频生成
@@ -503,6 +618,24 @@ class PipelineExecutor:
             on_progress=on_progress,
         )
         chained_map = {r["shot_id"]: r for r in chained_results}
+        self.image_results = {
+            str(result.get("shot_id", "")).strip(): {
+                "shot_id": str(result.get("shot_id", "")).strip(),
+                "image_url": result.get("image_url"),
+                "image_path": result.get("image_path"),
+            }
+            for result in chained_results
+            if str(result.get("shot_id", "")).strip()
+        }
+        self.video_results = {
+            str(result.get("shot_id", "")).strip(): {
+                "shot_id": str(result.get("shot_id", "")).strip(),
+                "video_url": result.get("video_url"),
+                "video_path": result.get("video_path"),
+            }
+            for result in chained_results
+            if str(result.get("shot_id", "")).strip()
+        }
 
         # 组装结果（格式与 separated 一致）
         for shot in self.shots:
@@ -520,6 +653,7 @@ class PipelineExecutor:
             85,
             f"链式视频生成完成 {len(chained_results)} 个",
             {"step": "video_chained", "current": total, "total": total, "message": "链式视频生成完成"},
+            generated_files=self._build_generated_files_snapshot(),
         )
 
     async def _run_integrated_strategy(
@@ -556,12 +690,18 @@ class PipelineExecutor:
             art_style=self.art_style,
         )
         image_map = {r["shot_id"]: r for r in image_results}
+        self.image_results = {
+            shot_id: deepcopy(result)
+            for shot_id, result in image_map.items()
+            if shot_id
+        }
 
         await self._update_state(
             PipelineStatus.GENERATING_ASSETS,
             50,
             f"图片生成完成 {len(image_results)} 个",
             {"step": "image", "current": total, "total": total, "message": "图片生成完成"},
+            generated_files=self._build_generated_files_snapshot(),
         )
 
         await asyncio.sleep(0.3)
@@ -592,6 +732,7 @@ class PipelineExecutor:
                     "image_url": image_map[shot.shot_id]["image_url"],
                     "final_video_prompt": payload["final_video_prompt"],
                     "negative_prompt": payload.get("negative_prompt", ""),
+                    "reference_images": payload.get("reference_images", []),
                 }
             )
 
@@ -605,6 +746,11 @@ class PipelineExecutor:
             art_style=self.art_style,
         )
         video_map = {r["shot_id"]: r for r in video_results}
+        self.video_results = {
+            shot_id: deepcopy(result)
+            for shot_id, result in video_map.items()
+            if shot_id
+        }
 
         # 组装结果
         for shot in self.shots:
@@ -628,6 +774,7 @@ class PipelineExecutor:
                 "total": total,
                 "message": "integrated 策略 fallback 执行完成",
             },
+            generated_files=self._build_generated_files_snapshot(),
         )
 
     async def _stitch_videos(self):
@@ -641,6 +788,7 @@ class PipelineExecutor:
         )
 
         self.results = await ffmpeg.stitch_batch(self.results, base_url=self.base_url)
+        self._refresh_video_results_from_stitched_outputs()
 
         stitched = sum(1 for r in self.results if r.get("final_video_url"))
         await self._update_state(
@@ -648,6 +796,7 @@ class PipelineExecutor:
             95,
             f"音视频合成完成（{stitched}/{total}）",
             {"step": "stitch", "current": total, "total": total, "message": "合成完成"},
+            generated_files=self._build_generated_files_snapshot(),
         )
 
     async def _update_state(
@@ -660,11 +809,16 @@ class PipelineExecutor:
         generated_files: Optional[dict] = None,
     ):
         """更新流水线状态到数据库"""
+        effective_generated_files = deepcopy(generated_files) if generated_files is not None else deepcopy(self._latest_generated_files)
+        if generated_files is not None:
+            self._latest_generated_files = deepcopy(generated_files)
         await repo.save_pipeline(self.db, self.pipeline_id, self.story_id, {
             "status": status,
             "progress": progress,
             "current_step": current_step,
             "error": error,
             "progress_detail": progress_detail,
-            "generated_files": generated_files,
+            "generated_files": effective_generated_files,
         })
+        if generated_files is not None:
+            await self._persist_storyboard_generation_snapshot(generated_files)

@@ -1,12 +1,13 @@
 # Auto_media 视频生成与视觉一致性统一文档
 
-> 更新日期：2026-03-27
+> 更新日期：2026-04-01
 >
 > 文档定位：本文件是视频生成主链路、视觉一致性资产层、场景参考图、首帧生成、历史链式方案的统一入口。
 >
 > 状态说明：
 >
 > - 当前主链路已落地 `StoryContext`、分字段 prompt 组装、场景参考图资产、`scene reference -> shot first frame -> single-frame I2V`。
+> - 当前已补齐 Phase 3 固定样本、seed 脚本与人工验收 runbook；真实 provider 串行验收仍待执行。
 > - DSPy 提取器、VLM 质检闭环、Prompt Caching 深化、独立数字资产库仍属于后续增强。
 > - “链式视频生成”保留为历史/备选方案，不是当前默认实现路径。
 >
@@ -23,7 +24,8 @@
 2. 场景参考图资产
    - 按集生成共享环境组，为首帧图片提供稳定环境基准
 3. 分字段 prompt 组装
-   - `image_prompt`、`final_video_prompt`、`last_frame_prompt` 各司其职
+   - 主链路字段是 `image_prompt`、`final_video_prompt`、`negative_prompt`
+   - `last_frame_prompt` 只保留兼容/特殊终态场景，不进入普通主镜头运行期
 4. 单帧主链路
    - 当前主镜头生成已经收口为 `scene reference -> shot first frame -> image-to-video`
 
@@ -52,8 +54,8 @@
   ├─ 2. 生成 payload
   │     ├─ image_prompt
   │     ├─ final_video_prompt
-  │     ├─ last_frame_prompt
-  │     └─ negative_prompt
+  │     ├─ negative_prompt
+  │     └─ reference_images
   │
   ├─ 3. 首帧图片生成
   │     └─ scene reference + shot image prompt
@@ -70,8 +72,8 @@
 当前最重要的设计边界是：
 
 - 图片阶段消费 `image_prompt`
-- 视频阶段消费 `final_video_prompt`
-- 终态补图或特殊镜头才消费 `last_frame_prompt`
+- 视频阶段消费 `image_url + final_video_prompt`
+- `last_frame_prompt` 不属于普通主镜头 mainline；transition 使用的是后端提取的双帧 URL
 - `negative_prompt` 作为独立字段或 provider 参数处理，不回退成正向 prompt 的机械拼接
 
 ---
@@ -352,9 +354,9 @@ first frame + last frame
 
 当前已经明确拆分：
 
-- `image_prompt`：首帧静态内容、构图、环境、定格姿态
-- `final_video_prompt`：动作、运镜、短时运动执行
-- `last_frame_prompt`：少数需要终态参考的镜头
+- `image_prompt`：首帧静态内容、构图、环境、定格姿态，以及视频必须一开始就看见的人体范围、手部、关键道具、空间关系
+- `final_video_prompt`：动作、运镜、短时运动执行，默认建立在首帧已经满足主体信息的前提上
+- `last_frame_prompt`：兼容字段，普通主镜头不再消费
 
 因此一致性层不能再回退成一个“大一统 prompt”。
 
@@ -364,8 +366,8 @@ first frame + last frame
 payload = {
     "image_prompt": "...",
     "final_video_prompt": "...",
-    "last_frame_prompt": "...",   # optional
     "negative_prompt": "...",     # optional
+    "reference_images": [...],    # optional
 }
 ```
 
@@ -377,10 +379,13 @@ payload = {
 
 视频正向 prompt:
   [干净角色块] + [final_video_prompt] + [scene_style video extra] + [art_style]
-
-尾帧正向 prompt:
-  [干净角色块] + [last_frame_prompt] + [scene_style image extra] + [art_style]
 ```
+
+当前额外约束是：
+
+1. 首帧图片是主镜头视频的起始状态，不能和 `final_video_prompt` 打架。
+2. 如果视频要求至少半身、双手、道具或明确空间关系，这些内容必须优先落在首帧里，不能指望视频“凭空补出来”。
+3. 同一场景相邻镜头虽然单独生成，但剧情上必须视作连续动作；后一镜首帧不能无故重置成独立海报或纯脸部特写。
 
 负向 prompt 规则：
 
@@ -393,7 +398,7 @@ payload = {
 相较旧稿，当前仓库已经完成这些关键修正：
 
 1. 自动流水线、手动 `/pipeline/*`、单镜头 `/image/*` 与 `/video/*` 统一复用主入口
-2. `Shot` 已拆为 `image_prompt / final_video_prompt / last_frame_prompt`
+2. `Shot` schema 仍兼容 `last_frame_prompt`，但运行时主 bundle 已收口为 `image_prompt / final_video_prompt / negative_prompt / reference_images`
 3. `_postprocess_shot()` 优先保留分镜 LLM 产物，只做轻量归一化
 4. 运行时优先读取 `StoryContext`，而不是回灌原始角色设定图 prompt
 5. 图片链路中的 `negative_prompt` 已与 `art_style` 解耦
@@ -521,10 +526,10 @@ payload = {
 
 ## 十、当前验收结论
 
-截至 2026-03-27，当前主链路已经满足：
+截至 2026-04-01，当前主链路已经满足：
 
 1. 角色一致性不再依赖原始设定图 prompt 直接回灌
-2. `image_prompt / final_video_prompt / last_frame_prompt` 已明确分工
+2. 主镜头运行时 bundle 已收口为 `image_prompt / final_video_prompt / negative_prompt / reference_images`
 3. 场景参考图已具备按集分组、复用、展示、持久化能力
 4. 主镜头链路已收口为“场景参考图 -> 首帧图 -> 单帧 I2V”
 5. 旧 `wide / close` 环境双图结构不再是正式目标态
@@ -534,7 +539,8 @@ payload = {
 1. DSPy 提取器
 2. VLM 自动质检与重试闭环
 3. 真正独立的数字资产库
-4. 将链式模式作为正式默认策略
+4. 基于真实 provider 的 Phase 3 人工串行验收闭环
+5. 将链式模式作为正式默认策略
 
 ---
 

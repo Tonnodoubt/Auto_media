@@ -21,6 +21,7 @@ _COMMON_BINARY_DIRS = (
     Path("/opt/local/bin"),
     Path.home() / ".local/bin",
 )
+_LAST_FRAME_SEEK_SECONDS = 0.04
 
 
 def _binary_candidates(binary_name: str) -> tuple[str, ...]:
@@ -154,29 +155,6 @@ def _resolve_image_output_path(output_name: str | None, default_name: str) -> st
     )
     return str(IMAGE_DIR / sanitized_name)
 
-    if output_name is None:
-        return str(IMAGE_DIR / default_name)
-
-    raw_name = str(output_name).strip()
-    if not raw_name:
-        raise ValueError("output_name 不能为空")
-
-    candidate = Path(raw_name)
-    if (
-        candidate.is_absolute()
-        or "/" in raw_name
-        or "\\" in raw_name
-        or ".." in candidate.parts
-        or "." in candidate.parts[:-1]
-    ):
-        raise ValueError(f"非法 output_name: {output_name}")
-
-    sanitized_name = candidate.name
-    if not sanitized_name or sanitized_name in {".", ".."}:
-        raise ValueError(f"非法 output_name: {output_name}")
-
-    return str(IMAGE_DIR / sanitized_name)
-
 
 async def extract_last_frame(video_path: str, shot_id: str, output_name: str | None = None) -> str:
     """
@@ -196,7 +174,9 @@ async def extract_last_frame(video_path: str, shot_id: str, output_name: str | N
         RuntimeError: ffmpeg 执行失败
     """
     output_path = _resolve_image_output_path(output_name, f"{shot_id}_lastframe.png")
-    return await _extract_frame(video_path, output_path, "-sseof", "-0.1")
+    # Seek inside the final frame interval instead of 100ms earlier; this reduces
+    # visible seam risk when the last shot is still moving near the cut point.
+    return await _extract_frame(video_path, output_path, "-sseof", f"-{_LAST_FRAME_SEEK_SECONDS:.2f}")
 
 
 async def extract_first_frame(video_path: str, shot_id: str, output_name: str | None = None) -> str:

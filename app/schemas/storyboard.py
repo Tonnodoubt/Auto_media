@@ -20,12 +20,17 @@ class VisualElements(BaseModel):
 class AudioReference(BaseModel):
     """音频关联，支持台词/旁白/音效三种类型，便于 TTS 支路分发。"""
     type: Optional[Literal["dialogue", "narration", "sfx"]] = Field(default=None, description="dialogue/narration/sfx；null 时整体置 None")
+    speaker: Optional[str] = Field(default=None, description="说话者的规范名称；角色台词填角色名，旁白统一填“旁白”，纯音效可为 null")
     content: Optional[str] = Field(default=None, description="原文台词或音效描述")
 
 
 class Shot(BaseModel):
     shot_id: str = Field(description="scene{N}_shot{M}")
     source_scene_key: Optional[str] = Field(default=None, description="原始剧本场景键，例如 ep01_scene03，用于命中场景参考图")
+    characters: Optional[List[str]] = Field(
+        default=None,
+        description="当前镜头中明确可见、且身份已确认的已命名角色列表。只写故事内的正式角色名，不包含路人、群众或未确认身份的人。",
+    )
     estimated_duration: int = Field(default=4, description="时长（秒），3-5")
     scene_intensity: Literal["low", "high"] = Field(default="low", description="low=日常过场 / high=高潮核心")
     storyboard_description: str = Field(description="中文画面简述，供前端展示（2-4句具体描述）")

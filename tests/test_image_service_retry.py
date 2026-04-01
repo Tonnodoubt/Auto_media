@@ -169,3 +169,44 @@ class ImageReferenceRetryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(results[0]["dropped_reference_count"], 2)
         self.assertFalse(results[0]["reference_images_applied"])
+
+    async def test_generate_images_batch_chains_previous_image_within_same_scene_only(self):
+        async def _fake_generate_image(**kwargs):
+            shot_id = kwargs["shot_id"]
+            return {
+                "shot_id": shot_id,
+                "image_path": f"media/images/{shot_id}.png",
+                "image_url": f"/media/images/{shot_id}.png",
+                "reference_images_applied": bool(kwargs.get("reference_images")),
+                "dropped_reference_count": 0,
+            }
+
+        with patch("app.services.image.generate_image", new=AsyncMock(side_effect=_fake_generate_image)) as generate_mock:
+            results = await generate_images_batch(
+                [
+                    {"shot_id": "scene1_shot1", "image_prompt": "Shot 1"},
+                    {"shot_id": "scene1_shot2", "image_prompt": "Shot 2"},
+                    {"shot_id": "scene2_shot1", "image_prompt": "Shot 3"},
+                ],
+                model="test-model",
+            )
+
+        calls_by_shot_id = {
+            call.kwargs["shot_id"]: call.kwargs
+            for call in generate_mock.await_args_list
+        }
+
+        self.assertIsNone(calls_by_shot_id["scene1_shot1"]["reference_images"])
+        self.assertEqual(
+            calls_by_shot_id["scene1_shot2"]["reference_images"],
+            [
+                {
+                    "kind": "previous_shot_image",
+                    "image_url": "/media/images/scene1_shot1.png",
+                    "image_path": "media/images/scene1_shot1.png",
+                    "weight": 0.38,
+                }
+            ],
+        )
+        self.assertIsNone(calls_by_shot_id["scene2_shot1"]["reference_images"])
+        self.assertEqual([result["shot_id"] for result in results], ["scene1_shot1", "scene1_shot2", "scene2_shot1"])

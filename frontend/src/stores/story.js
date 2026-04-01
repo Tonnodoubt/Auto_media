@@ -560,11 +560,17 @@ export const useStoryStore = defineStore('story', {
         clearGeneratedFiles: true,
       })
     },
-    updateOutlineEpisode(episode, title, summary) {
+    updateOutlineEpisode(episode, titleOrFields, summary) {
       const ep = this.outline.find(e => e.episode === episode)
       if (ep) {
-        ep.title = title
-        ep.summary = summary
+        const nextFields = (
+          titleOrFields && typeof titleOrFields === 'object'
+            ? titleOrFields
+            : { title: titleOrFields, summary }
+        )
+        Object.entries(nextFields).forEach(([key, value]) => {
+          if (value !== undefined) ep[key] = value
+        })
         this.invalidateGeneratedScript()
       }
     },

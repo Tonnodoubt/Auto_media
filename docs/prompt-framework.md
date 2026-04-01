@@ -1,6 +1,6 @@
 # AutoMedia 提示词框架文档
 
-> 更新日期：2026-03-27
+> 更新日期：2026-04-01
 >
 > 当前口径：按仓库现有代码同步，区分“已落地默认行为”和“兼容字段/回退行为”。
 
@@ -244,6 +244,7 @@ Step 6   过渡视频
 - `image_prompt` 与 `final_video_prompt` 必须分离
 - `image_prompt` 负责静态首帧
 - `final_video_prompt` 负责短视频运动
+- 若视频要求半身、双手、关键道具或明确空间关系，`image_prompt` 必须先把这些内容落进首帧，不能把缺失信息留给视频阶段“补全”
 - `source_scene_key` 必须跟随 `SCENE SOURCE MAP`
 - 若脚本或角色参考明确给出正面/侧面/背面朝向，必须保留
 - 正常主镜头不围绕双帧设计
@@ -305,6 +306,7 @@ Step 6   过渡视频
 
 - 当前主镜头链路已经明确收口到单首帧 I2V
 - `last_frame_*` 只剩兼容字段，不再是运行期主数据
+- 真正的 transition 双帧输入来自相邻主镜头视频抽帧，而不是 storyboard 里的 `last_frame_prompt / last_frame_url`
 
 ---
 
@@ -378,6 +380,13 @@ Step 6   过渡视频
 }
 ```
 
+主镜头 mainline 刻意不再输出 `last_frame_prompt`。当前真实运行时输入是：
+
+- `image_prompt`
+- `final_video_prompt`
+- `negative_prompt`
+- `reference_images`
+
 ### 8.3 当前拼装逻辑
 
 `build_generation_payload()` 当前会同时处理：
@@ -389,6 +398,7 @@ Step 6   过渡视频
 5. `source_scene_key`
 6. 命中的场景参考图
 7. 参考图列表 `reference_images`
+8. 首帧与视频约束对齐，避免视频要求的主体范围、手部或关键道具缺失在首帧之外
 
 ### 8.4 场景参考图如何进入主链路
 
@@ -462,7 +472,7 @@ Step 6   过渡视频
 
 ### 10.3 与主镜头的边界
 
-- 主镜头：`image_prompt + final_video_prompt`
+- 主镜头：`image_prompt + final_video_prompt + negative_prompt + reference_images`
 - 过渡视频：提取 `from_last` 和 `to_first` 两张帧图后，再调用双帧视频接口
 
 ---
