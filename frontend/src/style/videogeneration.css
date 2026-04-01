@@ -789,7 +789,6 @@ button {
   transition: background 0.2s;
 }
 
-<<<<<<< HEAD
 button:hover:where(:not(:disabled)) {
   background: #5a52e0;
 }
