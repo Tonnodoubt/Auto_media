@@ -225,25 +225,82 @@
   }
 
   .step-indicator {
-    max-width: none;
-    overflow-x: auto;
-    padding-bottom: 10px;
-    justify-content: flex-start;
+    overflow: visible;
+    padding-top: 4px;
   }
 
   .step-item {
-    min-width: 140px;
-    flex: 0 0 140px;
+    min-width: 0;
+    flex: 1 1 0;
+    padding: 0 6px;
   }
 }
 
 @media (max-width: 720px) {
-  .step-label {
+  .step-indicator::before,
+  .step-line {
+    top: 15px;
+    left: calc(10% + 15px);
+    right: calc(10% + 15px);
+    height: 3px;
+  }
+
+  .step-item {
+    gap: 8px;
+    padding: 0 2px;
+  }
+
+  .step-dot {
+    width: 30px;
+    height: 30px;
+    border-width: 2px;
     font-size: 12px;
+  }
+
+  .step-text {
+    padding: 0;
+    gap: 3px;
+  }
+
+  .step-kicker {
+    font-size: 8px;
+    letter-spacing: 0.04em;
+  }
+
+  .step-label {
+    font-size: 11px;
+    line-height: 1.25;
   }
 
   .usage-badge {
     width: 100%;
     justify-content: center;
+  }
+}
+
+@media (max-width: 480px) {
+  .step-indicator::before,
+  .step-line {
+    top: 14px;
+    left: calc(10% + 13px);
+    right: calc(10% + 13px);
+  }
+
+  .step-item {
+    padding: 0 1px;
+  }
+
+  .step-dot {
+    width: 26px;
+    height: 26px;
+    font-size: 11px;
+  }
+
+  .step-kicker {
+    font-size: 7px;
+  }
+
+  .step-label {
+    font-size: 10px;
   }
 }

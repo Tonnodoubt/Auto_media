@@ -1,15 +1,5 @@
 <template>
   <div class="step-wrapper">
-    <div class="top-actions">
-      <div class="usage-badge">
-        <span class="usage-icon">⚡</span>
-        <span class="usage-num">{{ store.totalTokens.toLocaleString() }}</span>
-        <span class="usage-unit">tokens</span>
-        <span class="usage-detail">↑{{ store.usage.prompt_tokens.toLocaleString() }} ↓{{ store.usage.completion_tokens.toLocaleString() }}</span>
-      </div>
-      <button v-if="current > 1" class="back-top-btn" @click="goBack" :disabled="loading">← 上一步</button>
-      <button class="settings-btn" @click="router.push('/settings')" :disabled="loading">⚙ 设置</button>
-    </div>
     <div class="step-indicator">
       <button
         v-for="step in steps"
@@ -32,6 +22,16 @@
         </span>
       </button>
       <div class="step-line" :style="{ transform: lineTransform }"></div>
+    </div>
+    <div class="top-actions">
+      <div class="usage-badge">
+        <span class="usage-icon">⚡</span>
+        <span class="usage-num">{{ store.totalTokens.toLocaleString() }}</span>
+        <span class="usage-unit">tokens</span>
+        <span class="usage-detail">↑{{ store.usage.prompt_tokens.toLocaleString() }} ↓{{ store.usage.completion_tokens.toLocaleString() }}</span>
+      </div>
+      <button v-if="current > 1" class="back-top-btn" @click="goBack" :disabled="loading">← 上一步</button>
+      <button class="settings-btn" @click="router.push('/settings')" :disabled="loading">⚙ 设置</button>
     </div>
   </div>
 </template>
