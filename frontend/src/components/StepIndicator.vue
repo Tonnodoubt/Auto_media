@@ -19,9 +19,10 @@
         :class="{
           active: current === step.id,
           done: current > step.id,
-          clickable: !loading && current !== step.id,
+          clickable: !loading && current !== step.id && canGoStep(step),
         }"
-        :disabled="loading"
+        :aria-current="current === step.id ? 'step' : undefined"
+        :disabled="loading || !canGoStep(step)"
         @click="goStep(step)"
       >
         <span class="step-dot">{{ current > step.id ? '✓' : step.id }}</span>
@@ -39,6 +40,7 @@
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useStoryStore } from '../stores/story.js'
+import { canAccessStep } from '../utils/stepAccess.js'
 
 const props = defineProps({ current: Number, loading: Boolean })
 const steps = [
@@ -48,7 +50,7 @@ const steps = [
   { id: 4, label: '预览导出', route: '/step4' },
   { id: 5, label: '视频生成', route: '/video-generation' },
 ]
-const lineTransform = computed(() => `scaleX(${(props.current - 1) / (steps.length - 1)})`)
+const lineTransform = computed(() => `scaleX(${Math.max(0, (props.current - 1) / (steps.length - 1))})`)
 
 const router = useRouter()
 const store = useStoryStore()
@@ -61,9 +63,13 @@ function goBack() {
 }
 
 function goStep(step) {
-  if (!step || props.loading) return
+  if (!step || props.loading || !canGoStep(step)) return
   store.setStep(step.id)
   router.push(step.route)
+}
+
+function canGoStep(step) {
+  return canAccessStep(store, step?.id)
 }
 </script>
 

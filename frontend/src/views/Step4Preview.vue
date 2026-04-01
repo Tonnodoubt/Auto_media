@@ -63,13 +63,17 @@ import SceneStream from '../components/SceneStream.vue'
 import ExportPanel from '../components/ExportPanel.vue'
 import { generateEpisodeSceneReference } from '../api/story.js'
 import { useStoryStore } from '../stores/story.js'
+import { canAccessStep, getStepRedirectPath } from '../utils/stepAccess.js'
 
 const router = useRouter()
 const store = useStoryStore()
 const currentEpisodeIndex = ref(0)
 
 onMounted(() => {
-  if (!store.meta || !store.scenes.length) router.replace('/step1')
+  if (!canAccessStep(store, 4)) {
+    router.replace(getStepRedirectPath(store, 4))
+    return
+  }
   store.ensureSceneReferenceAssets()
 })
 

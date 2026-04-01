@@ -86,7 +86,7 @@
 </template>
 
 <script setup>
-import { computed, ref, onUnmounted, watch } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import StepIndicator from '../components/StepIndicator.vue'
 import OutlinePreview from '../components/OutlinePreview.vue'
@@ -99,6 +99,7 @@ import ArtStyleSelector from '../components/ArtStyleSelector.vue'
 import { useStoryStore } from '../stores/story.js'
 import { useSettingsStore } from '../stores/settings.js'
 import { streamScript } from '../api/story.js'
+import { canAccessStep, getStepRedirectPath } from '../utils/stepAccess.js'
 
 const router = useRouter()
 const store = useStoryStore()
@@ -121,6 +122,11 @@ const canGoNext = computed(() => currentEpisodeIndex.value < episodeCount.value 
 
 let scriptAbortController = null
 onUnmounted(() => { scriptAbortController?.abort() })
+onMounted(() => {
+  if (!canAccessStep(store, 3)) {
+    router.replace(getStepRedirectPath(store, 3))
+  }
+})
 
 watch(
   () => store.scenes.length,
