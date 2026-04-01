@@ -1,0 +1,122 @@
+{
+  "idea": "雨夜茶馆送信",
+  "genre": "古风",
+  "tone": "克制",
+  "art_style": "cinematic watercolor, restrained ancient-Chinese drama mood",
+  "characters": [
+    {
+      "id": "char_li_ming",
+      "name": "Li Ming",
+      "role": "lead",
+      "description": "young man, short black hair, slim build, wearing a dark blue robe."
+    },
+    {
+      "id": "char_boss_zhao",
+      "name": "Boss Zhao",
+      "role": "support",
+      "description": "middle-aged man, moustache, average build, wearing a brown robe."
+    }
+  ],
+  "character_images": {
+    "char_li_ming": {
+      "character_id": "char_li_ming",
+      "character_name": "Li Ming",
+      "visual_dna": "young man, short black hair, dark blue robe"
+    },
+    "char_boss_zhao": {
+      "character_id": "char_boss_zhao",
+      "character_name": "Boss Zhao",
+      "visual_dna": "middle-aged man, moustache, brown robe"
+    }
+  },
+  "meta": {
+    "character_appearance_cache": {
+      "char_li_ming": {
+        "body": "young man, short black hair, slim build",
+        "clothing": "dark blue robe",
+        "negative_prompt": "modern clothing",
+        "schema_version": 1,
+        "source_provider": "manual_fixture",
+        "source_model": "phase3_manual_acceptance",
+        "updated_at": "2026-04-01T00:00:00Z"
+      },
+      "char_boss_zhao": {
+        "body": "middle-aged man, moustache, average build",
+        "clothing": "brown robe",
+        "negative_prompt": "modern clothing",
+        "schema_version": 1,
+        "source_provider": "manual_fixture",
+        "source_model": "phase3_manual_acceptance",
+        "updated_at": "2026-04-01T00:00:00Z"
+      }
+    },
+    "scene_style_cache": [
+      {
+        "keywords": [
+          "teahouse",
+          "river town"
+        ],
+        "image_extra": "jiangnan teahouse doorway, wooden counter, rain mist, warm lantern glow",
+        "video_extra": "jiangnan teahouse interior continuity, rain mist, warm lantern glow",
+        "negative_prompt": "modern buildings, neon signs",
+        "always_apply": true,
+        "schema_version": 1,
+        "source_provider": "manual_fixture",
+        "source_model": "phase3_manual_acceptance",
+        "updated_at": "2026-04-01T00:00:00Z"
+      }
+    ]
+  },
+  "scenes": [
+    {
+      "episode": 1,
+      "title": "雨夜送信",
+      "scenes": [
+        {
+          "scene_number": 1,
+          "scene_heading": "[夜] [外/内] [江南茶馆门口到柜台]",
+          "environment_anchor": "江南茶馆门口到柜台的同一空间轴线",
+          "environment": "雨夜江南茶馆门口到内堂柜台保持同一空间轴线：木门半开，湿润门槛、灯笼、柜台与算盘从门外到门内都能连续辨认。",
+          "lighting": "雨夜冷天光与暖色灯笼补光并存",
+          "mood": "restrained tension",
+          "emotion_tags": [
+            {
+              "target": "Li Ming",
+              "emotion": "hesitant",
+              "intensity": 0.65
+            },
+            {
+              "target": "scene",
+              "emotion": "tense",
+              "intensity": 0.55
+            },
+            {
+              "target": "Boss Zhao",
+              "emotion": "guarded",
+              "intensity": 0.45
+            }
+          ],
+          "key_props": [
+            "木门",
+            "湿油纸伞",
+            "密封信",
+            "灯笼",
+            "算盘"
+          ],
+          "key_actions": [
+            "李明站在门槛外，右手扶住半开的木门，左手握着湿油纸伞和密封信",
+            "李明保持同一身位推进到柜台边，把密封信放下，赵掌柜隔着算盘抬眼回应"
+          ],
+          "visual": "李明在门槛外停住，右手扶着半开的木门，左手握着湿油纸伞和密封信；随后他保持同一服装和同一动作线推进到柜台边，把信放下，赵掌柜隔着算盘抬眼看他。这个场景必须清楚看见李明上半身、双手、木门边、湿油纸伞、密封信与柜台的空间关系，不能拍成只剩脸部的肖像式特写。",
+          "transition_from_previous": "同一人物、同一服装、同一空间轴线，动作从门槛停顿连续推进到入内放信，右手扶门与左手信件状态必须自然延续，不能中途突然补出原先没建立的手、伞或信件。",
+          "audio": [
+            {
+              "character": "李明",
+              "line": "打扰了，我来送信。"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

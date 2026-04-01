@@ -77,6 +77,7 @@ def resolve_binary(binary_name, env):
     def _is_executable_file(path: Path) -> bool:
         return path.is_file() and os.access(path, os.X_OK)
 
+    is_windows = platform.system().lower() == "windows"
     env_name = f"{binary_name.upper()}_PATH"
     configured = env.get(env_name, "").strip()
     if configured:
@@ -95,15 +96,16 @@ def resolve_binary(binary_name, env):
         if resolved:
             return resolved
 
+    if is_windows:
+        winget_binary = _find_winget_binary(binary_name, env)
+        if winget_binary:
+            return winget_binary
+
     for candidate_name in _binary_candidates(binary_name):
         for directory in COMMON_BINARY_DIRS:
             candidate = directory / candidate_name
             if _is_executable_file(candidate):
                 return str(candidate)
-
-    winget_binary = _find_winget_binary(binary_name, env)
-    if winget_binary:
-        return winget_binary
 
     raise FileNotFoundError(f"未找到 {binary_name} 可执行文件")
 

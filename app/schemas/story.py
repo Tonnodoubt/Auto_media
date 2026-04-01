@@ -1,5 +1,5 @@
 from pydantic import BaseModel, model_validator
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 
 class AnalyzeIdeaRequest(BaseModel):
@@ -36,6 +36,8 @@ class OutlineScene(BaseModel):
     episode: int
     title: str
     summary: str
+    beats: Optional[List[str]] = None
+    scene_list: Optional[List[str]] = None
 
 
 class Relationship(BaseModel):
@@ -63,6 +65,49 @@ class ChatRequest(BaseModel):
 
 class GenerateScriptRequest(BaseModel):
     story_id: str
+
+
+class StoryboardScriptRequest(BaseModel):
+    selected_scenes: Optional[Dict[str, List[int]]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_selected_scenes(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        raw_selected_scenes = data.get("selected_scenes")
+        if not isinstance(raw_selected_scenes, dict):
+            return data
+
+        normalized: dict[str, list[int]] = {}
+        for episode_key, scene_numbers in raw_selected_scenes.items():
+            episode = str(episode_key).strip()
+            if not episode:
+                continue
+
+            selected_scene_numbers: list[int] = []
+            if isinstance(scene_numbers, dict):
+                for scene_number, is_selected in scene_numbers.items():
+                    if not is_selected:
+                        continue
+                    try:
+                        selected_scene_numbers.append(int(scene_number))
+                    except (TypeError, ValueError):
+                        continue
+            elif isinstance(scene_numbers, (list, tuple, set)):
+                for scene_number in scene_numbers:
+                    try:
+                        selected_scene_numbers.append(int(scene_number))
+                    except (TypeError, ValueError):
+                        continue
+            else:
+                continue
+
+            if selected_scene_numbers:
+                normalized[episode] = selected_scene_numbers
+
+        return {**data, "selected_scenes": normalized}
 
 
 class ChatMessage(BaseModel):
@@ -132,13 +177,23 @@ class AudioLine(BaseModel):
     line: str
 
 
+class EmotionTag(BaseModel):
+    target: str
+    emotion: str
+    intensity: float
+
+
 class ScriptScene(BaseModel):
     scene_number: int
     environment: str
     visual: str
     audio: List[AudioLine]
+    scene_heading: Optional[str] = None
+    environment_anchor: Optional[str] = None
     mood: Optional[str] = None
     lighting: Optional[str] = None
+    emotion_tags: Optional[List[EmotionTag]] = None
+    key_props: Optional[List[str]] = None
     key_actions: Optional[List[str]] = None
     shot_suggestions: Optional[List[str]] = None
     transition_from_previous: Optional[str] = None

@@ -414,7 +414,11 @@ def _scene_place_anchors(scene: Mapping[str, Any]) -> list[str]:
     anchors = scene.get("place_anchors")
     if isinstance(anchors, list) and anchors:
         return [value for value in anchors if _collapse_spaces(value)]
-    return _extract_place_anchors(scene.get("environment", ""), scene.get("visual", ""))
+    environment_anchor = _collapse_spaces(scene.get("environment_anchor", ""))
+    extracted = _extract_place_anchors(environment_anchor, scene.get("environment", ""), scene.get("visual", ""))
+    if environment_anchor:
+        return _unique_normalized([environment_anchor, *extracted], limit=6)
+    return extracted
 
 
 def _scene_object_anchors(scene: Mapping[str, Any]) -> list[str]:
@@ -428,8 +432,9 @@ def _scene_environment_signature(scene: Mapping[str, Any]) -> str:
     signature = _collapse_spaces(scene.get("environment_signature", ""))
     if signature:
         return signature
+    environment_anchor = _collapse_spaces(scene.get("environment_anchor", ""))
     return _build_environment_signature(
-        _collapse_spaces(scene.get("environment", "")),
+        environment_anchor or _collapse_spaces(scene.get("environment", "")),
         _collapse_spaces(scene.get("visual", "")),
     )
 
@@ -540,6 +545,12 @@ def _group_environment_anchors(group_scenes: list[Mapping[str, Any]]) -> tuple[l
 
 
 def _group_environment_descriptions(group_scenes: list[Mapping[str, Any]], *, limit: int = 2) -> list[str]:
+    stable_anchors = _unique_normalized(
+        [scene.get("environment_anchor", "") for scene in group_scenes],
+        limit=1,
+    )
+    if stable_anchors:
+        return stable_anchors
     return _unique_normalized(
         [scene.get("environment", "") for scene in group_scenes],
         limit=limit,
@@ -601,19 +612,24 @@ def _anchor_similarity(left: list[str], right: list[str]) -> float:
 
 def _normalize_scene_record(scene: Mapping[str, Any], episode: int) -> dict[str, Any]:
     scene_number = int(scene.get("scene_number", 0))
+    environment_anchor = _collapse_spaces(scene.get("environment_anchor", ""))
     environment = _collapse_spaces(scene.get("environment", ""))
     visual = _collapse_spaces(scene.get("visual", ""))
+    place_anchors = _extract_place_anchors(environment_anchor, environment, visual)
+    if environment_anchor:
+        place_anchors = _unique_normalized([environment_anchor, *place_anchors], limit=6)
     return {
         "episode": episode,
         "scene_number": scene_number,
         "scene_key": build_scene_key(episode, scene_number),
+        "environment_anchor": environment_anchor,
         "environment": environment,
         "visual": visual,
         "lighting": _collapse_spaces(scene.get("lighting", "")),
         "mood": _collapse_spaces(scene.get("mood", "")),
-        "place_anchors": _extract_place_anchors(environment, visual),
+        "place_anchors": place_anchors,
         "object_anchors": _extract_object_anchors(environment, visual),
-        "environment_signature": _build_environment_signature(environment, visual),
+        "environment_signature": _build_environment_signature(environment_anchor or environment, visual),
         "raw": dict(scene),
     }
 

@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from app.services.ffmpeg import _resolve_image_output_path, extract_last_frame, resolve_media_binary
 
@@ -70,3 +70,13 @@ class ExtractFramePathTests(unittest.IsolatedAsyncioTestCase):
     async def test_extract_last_frame_rejects_path_traversal_output_name(self):
         with self.assertRaisesRegex(ValueError, "非法 output_name"):
             await extract_last_frame("media/videos/input.mp4", "scene1_shot1", "../escape.png")
+
+    async def test_extract_last_frame_uses_tighter_seek_window_near_video_end(self):
+        with patch(
+            "app.services.ffmpeg._extract_frame",
+            new=AsyncMock(return_value="media/images/scene1_shot1_lastframe.png"),
+        ) as extract_mock:
+            result = await extract_last_frame("media/videos/input.mp4", "scene1_shot1")
+
+        self.assertEqual(result, "media/images/scene1_shot1_lastframe.png")
+        self.assertEqual(extract_mock.await_args.args[2:], ("-sseof", "-0.04"))

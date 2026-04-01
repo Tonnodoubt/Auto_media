@@ -69,6 +69,7 @@ async def generate_videos(
                     **shot,
                     "final_video_prompt": payload["final_video_prompt"],
                     "negative_prompt": payload.get("negative_prompt", ""),
+                    "reference_images": payload.get("reference_images", []),
                 }
             )
     except HTTPException:

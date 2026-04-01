@@ -1,13 +1,16 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from fastapi import Request
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
 
+from app.core.database import get_db
 from app.routers.story import (
     SceneReferenceGenerateRequest,
     api_generate_script,
     api_patch,
     generate_scene_reference,
+    router,
 )
 from app.schemas.story import Character, GenerateScriptRequest, OutlineScene, PatchStoryRequest
 
@@ -34,6 +37,7 @@ class StoryRouterStreamTests(unittest.IsolatedAsyncioTestCase):
         save_story = AsyncMock()
         with (
             patch("app.routers.story.generate_script", new=fake_generate_script),
+            patch("app.routers.story.repo.get_story", new=AsyncMock(return_value={"outline": [{"episode": 1, "title": "Ep1", "summary": "摘要"}]})),
             patch("app.routers.story.repo.save_story", new=save_story),
         ):
             response = await api_generate_script(
@@ -56,6 +60,7 @@ class StoryRouterStreamTests(unittest.IsolatedAsyncioTestCase):
         save_story = AsyncMock()
         with (
             patch("app.routers.story.generate_script", new=fake_generate_script),
+            patch("app.routers.story.repo.get_story", new=AsyncMock(return_value={"outline": [{"episode": 1, "title": "Ep1", "summary": "摘要"}]})),
             patch("app.routers.story.repo.save_story", new=save_story),
         ):
             response = await api_generate_script(
@@ -135,6 +140,83 @@ class StoryRouterPatchTests(unittest.IsolatedAsyncioTestCase):
             appearance=True,
             scene_style=False,
         )
+
+
+class StoryRouterStoryboardScriptTests(unittest.TestCase):
+    def setUp(self):
+        self.app = FastAPI()
+        self.app.include_router(router)
+
+        async def fake_db():
+            yield None
+
+        self.app.dependency_overrides[get_db] = fake_db
+        self.client = TestClient(self.app)
+
+        self.story = {
+            "scenes": [
+                {
+                    "episode": 1,
+                    "title": "测试集",
+                    "scenes": [
+                        {
+                            "scene_number": 1,
+                            "environment": "场景一环境",
+                            "visual": "场景一画面",
+                            "audio": [],
+                        },
+                        {
+                            "scene_number": 2,
+                            "environment": "场景二环境",
+                            "visual": "场景二画面",
+                            "audio": [],
+                        },
+                    ],
+                }
+            ],
+        }
+
+    def tearDown(self):
+        self.app.dependency_overrides.clear()
+
+    def test_storyboard_script_route_accepts_boolean_selection_map(self):
+        with patch("app.routers.story.repo.get_story", new=AsyncMock(return_value=self.story)):
+            response = self.client.post(
+                "/api/v1/story/story-1/storyboard-script",
+                json={"selected_scenes": {"1": {"1": False, "2": True}}},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["story_id"], "story-1")
+        self.assertIn("场景二环境", payload["script"])
+        self.assertNotIn("场景一环境", payload["script"])
+
+    def test_storyboard_script_route_accepts_list_selection_map(self):
+        with patch("app.routers.story.repo.get_story", new=AsyncMock(return_value=self.story)):
+            response = self.client.post(
+                "/api/v1/story/story-2/storyboard-script",
+                json={"selected_scenes": {"1": [2]}},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["story_id"], "story-2")
+        self.assertIn("场景二环境", payload["script"])
+        self.assertNotIn("场景一环境", payload["script"])
+
+    def test_storyboard_script_route_does_not_422_for_unexpected_selected_scenes_shape(self):
+        with patch("app.routers.story.repo.get_story", new=AsyncMock(return_value=self.story)):
+            response = self.client.post(
+                "/api/v1/story/story-3/storyboard-script",
+                json={"selected_scenes": "invalid-shape"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["story_id"], "story-3")
+        self.assertIn("场景一环境", payload["script"])
+        self.assertIn("场景二环境", payload["script"])
 
 
 class StoryRouterSceneReferenceTests(unittest.IsolatedAsyncioTestCase):

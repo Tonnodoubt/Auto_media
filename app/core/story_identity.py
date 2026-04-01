@@ -4,6 +4,9 @@ from copy import deepcopy
 from typing import Any, Mapping
 from uuid import uuid4
 
+from app.core.character_profile import sanitize_character_profile_description
+from app.core.consistency_cache import coerce_cache_schema_version
+
 
 def _normalize_text(value: Any) -> str:
     return str(value or "").strip()
@@ -17,13 +20,32 @@ def _new_character_id() -> str:
     return f"char_{uuid4().hex[:12]}"
 
 
+def _normalize_cache_metadata(entry: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = deepcopy(dict(entry or {}))
+
+    schema_version = coerce_cache_schema_version(normalized.get("schema_version"))
+    if schema_version is None:
+        normalized.pop("schema_version", None)
+    else:
+        normalized["schema_version"] = schema_version
+
+    for key in ("source_provider", "source_model", "updated_at"):
+        value = _normalize_text(normalized.get(key))
+        if value:
+            normalized[key] = value
+        else:
+            normalized.pop(key, None)
+
+    return normalized
+
+
 def _coerce_character(record: Mapping[str, Any] | None) -> dict[str, Any]:
     data = dict(record or {})
     return {
         "id": _normalize_text(data.get("id")),
         "name": _normalize_text(data.get("name")),
         "role": _normalize_text(data.get("role")),
-        "description": _normalize_text(data.get("description")),
+        "description": sanitize_character_profile_description(_normalize_text(data.get("description"))),
     }
 
 
@@ -220,13 +242,49 @@ def normalize_character_appearance_cache(
 
     normalized: dict[str, Any] = {}
     for raw_key, raw_value in appearance_cache.items():
+        if not isinstance(raw_value, Mapping):
+            continue
         key = _normalize_text(raw_key)
         target_id = key if key in chars_by_id else ""
         if not target_id:
             candidate_ids = ids_by_name.get(_normalize_name_key(key), [])
             if len(candidate_ids) == 1:
                 target_id = candidate_ids[0]
-        normalized[target_id or key] = deepcopy(raw_value)
+        normalized_entry = _normalize_cache_metadata(raw_value)
+        for field in ("body", "clothing", "negative_prompt"):
+            value = _normalize_text(normalized_entry.get(field))
+            if value:
+                normalized_entry[field] = value
+            else:
+                normalized_entry.pop(field, None)
+        normalized[target_id or key] = normalized_entry
+    return normalized
+
+
+def normalize_scene_style_cache(scene_style_cache: list[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+    if not isinstance(scene_style_cache, list):
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    for raw_entry in scene_style_cache:
+        if not isinstance(raw_entry, Mapping):
+            continue
+        entry = _normalize_cache_metadata(raw_entry)
+        keywords = raw_entry.get("keywords") or []
+        if isinstance(keywords, list):
+            entry["keywords"] = [_normalize_text(keyword) for keyword in keywords if _normalize_text(keyword)]
+        else:
+            entry["keywords"] = []
+        for field in ("image_extra", "video_extra", "negative_prompt"):
+            value = _normalize_text(raw_entry.get(field))
+            if value:
+                entry[field] = value
+            else:
+                entry.pop(field, None)
+        if "always_apply" in raw_entry:
+            entry["always_apply"] = bool(raw_entry.get("always_apply"))
+        if entry.get("image_extra") or entry.get("video_extra") or entry.get("negative_prompt"):
+            normalized.append(entry)
     return normalized
 
 
@@ -267,6 +325,8 @@ def normalize_story_record(
             meta.get("character_appearance_cache"),
             characters=story.get("characters"),
         )
+    if "scene_style_cache" in meta:
+        meta["scene_style_cache"] = normalize_scene_style_cache(meta.get("scene_style_cache"))
     if meta or "meta" in story:
         story["meta"] = meta
 

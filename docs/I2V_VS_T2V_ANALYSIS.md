@@ -1,5 +1,7 @@
 # I2V vs T2V 技术对比分析
 
+> 文档状态：历史分析稿。本文用于记录方案比较，不作为当前实现真相源；交接开发请优先阅读 `README.md`、`docs/video-pipeline.md` 与 `docs/prompt-framework.md`。
+
 > **评估日期**：2026-03-25
 > **适用场景**：AutoMedia视频生成管线
 > **当前方案**：I2V（使用豆包Seedance 1.5 Pro）

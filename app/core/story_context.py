@@ -6,9 +6,15 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from app.core.api_keys import inject_art_style
+from app.core.character_profile import sanitize_character_profile_description
+from app.core.consistency_cache import (
+    is_appearance_cache_entry_compatible,
+    is_scene_style_cache_entry_compatible,
+)
 from app.core.story_assets import (
     extract_scene_index_from_shot_id,
     get_character_asset_entry,
+    get_character_appearance_cache_entry,
     get_character_design_prompt,
     get_character_visual_dna,
     get_scene_reference_asset,
@@ -109,6 +115,106 @@ _VIEW_HINT_PATTERNS: dict[str, tuple[str, ...]] = {
         "背对",
     ),
 }
+_SHOT_SIZE_LABELS: dict[str, tuple[str, str]] = {
+    "EWS": ("远大全景", "Extreme wide shot"),
+    "WS": ("全景", "Wide shot"),
+    "MWS": ("中远景", "Medium wide shot"),
+    "MS": ("中景", "Medium shot"),
+    "MCU": ("中近景", "Medium close-up"),
+    "CU": ("近景", "Close-up"),
+    "ECU": ("特写", "Extreme close-up"),
+    "OTS": ("过肩镜头", "Over-the-shoulder shot"),
+}
+_LEADING_FRAMING_PATTERNS_EN = (
+    r"^(?:extreme wide shot|wide shot|medium wide shot|medium shot|medium close[- ]up|close[- ]up|extreme close[- ]up|over[- ]the[- ]shoulder(?: shot)?|tight portrait|close portrait|portrait close[- ]up|head[- ]and[- ]shoulders portrait)\b[.,:; ]*",
+)
+_LEADING_FRAMING_PATTERNS_ZH = (
+    r"^(?:远大全景|全景|中远景|中景|中近景|近景|特写|过肩镜头)[，。,：； ]*",
+)
+_HAND_ACTION_HINTS = (
+    "hand",
+    "hands",
+    "arm",
+    "arms",
+    "finger",
+    "fingers",
+    "palm",
+    "wrist",
+    "push",
+    "pull",
+    "open",
+    "close",
+    "grab",
+    "hold",
+    "holding",
+    "touch",
+    "reach",
+    "raise",
+    "lower",
+    "pick up",
+    "put down",
+    "pick",
+    "place",
+    "扶",
+    "手",
+    "手臂",
+    "抬手",
+    "抬起",
+    "抬臂",
+    "推",
+    "拉",
+    "开门",
+    "关门",
+    "握",
+    "抓",
+    "拿",
+    "放下",
+    "触",
+    "碰",
+)
+_BODY_MOTION_HINTS = (
+    "walk",
+    "step",
+    "turn",
+    "enter",
+    "leave",
+    "sit",
+    "stand",
+    "kneel",
+    "rise",
+    "run",
+    "lean",
+    "crouch",
+    "fall",
+    "walks",
+    "steps",
+    "turns",
+    "enters",
+    "leaves",
+    "sits",
+    "stands",
+    "kneels",
+    "rises",
+    "runs",
+    "leans",
+    "crouches",
+    "falls",
+    "走",
+    "迈",
+    "进入",
+    "离开",
+    "转身",
+    "坐下",
+    "站起",
+    "起身",
+    "俯身",
+    "弯腰",
+    "蹲",
+    "跪",
+    "跑",
+    "后退",
+    "前进",
+)
 _PHYSICAL_HINTS = (
     "year-old",
     "young",
@@ -472,6 +578,7 @@ def _clean_design_prompt_anchor_source(design_prompt: str) -> str:
     cleanup_patterns = (
         r"^Standard three-view character turnaround sheet for [^,，]+,\s*",
         r"^Full-body character design sheet for [^,，]+,\s*",
+        r"\brole reference:\s*[^,，]+(?:,\s*)?",
         r"\b(?:villain, sinister expression, dark presence|protagonist, determined expression, heroic bearing|supporting character, approachable expression)\b",
         r"character description:\s*",
         rf"(?:^|,\s*|;\s*)(?:{_DESIGN_PROMPT_ANCHOR_BOUNDARY}).*$",
@@ -525,6 +632,7 @@ def build_character_reference_anchor(
     *,
     character_id: str = "",
     description: str = "",
+    appearance_entry: Mapping[str, Any] | None = None,
 ) -> str:
     def _merge_visual_bits(*bits: str) -> str:
         merged: list[str] = []
@@ -538,7 +646,9 @@ def build_character_reference_anchor(
             merged.append(normalized_bit)
         return "; ".join(merged)
 
-    normalized_description = _collapse_spaces(description)
+    normalized_description = _collapse_spaces(
+        sanitize_character_profile_description(description, keep_original_if_empty=False)
+    )
     visual_dna_body = sanitize_body_features(
         get_character_visual_dna(character_images, character_id, name=name),
         fallback_description=normalized_description,
@@ -549,6 +659,23 @@ def build_character_reference_anchor(
         name=name,
         description=normalized_description,
     )
+    cached_entry = dict(appearance_entry or {}) if is_appearance_cache_entry_compatible(appearance_entry) else {}
+    cached_body = sanitize_body_features(
+        str(cached_entry.get("body", "")),
+        fallback_description=normalized_description,
+    ) if cached_entry else ""
+    cached_clothing = sanitize_default_clothing(
+        str(cached_entry.get("clothing", "")),
+        fallback_description=prompt_fallback_description,
+    ) if cached_entry else ""
+    if cached_body or cached_clothing:
+        merged = _merge_visual_bits(
+            cached_body or sanitize_body_features("", fallback_description=prompt_fallback_description),
+            cached_clothing or sanitize_default_clothing("", fallback_description=prompt_fallback_description),
+        )
+        if merged:
+            return merged
+
     if visual_dna_body:
         clothing = sanitize_default_clothing(
             "",
@@ -595,7 +722,7 @@ def _build_scene_styles(story: Mapping[str, Any]) -> list[SceneStyle]:
 
     if isinstance(cached_styles, list):
         for entry in cached_styles:
-            if not isinstance(entry, Mapping):
+            if not is_scene_style_cache_entry_compatible(entry):
                 continue
             keywords = entry.get("keywords") or []
             if not isinstance(keywords, list):
@@ -626,16 +753,20 @@ def build_clean_character_section(character_locks: dict[str, CharacterLock], cha
         char_id = character.get("id", "")
         name = character.get("name", "")
         role = character.get("role", "")
-        desc = character.get("description", "")
+        desc = sanitize_character_profile_description(character.get("description", ""))
         if not char_id or not name:
             continue
 
         lock = character_locks.get(char_id, CharacterLock(name=name))
-        lines.append(f"- **{name}**（{role}）：{desc}")
+        if desc:
+            lines.append(f"- **{name}**（{role}）：{desc}")
+        else:
+            lines.append(f"- **{name}**（{role}）")
 
         visual_bits = [bit for bit in (lock.body_features, lock.default_clothing) if bit]
         if visual_bits:
             lines.append(f"  Visual DNA: {'; '.join(visual_bits)}")
+            lines.append("  Wardrobe Lock: keep the same primary outfit silhouette, colors, materials, headwear, and signature accessories unless the script explicitly shows a wardrobe change")
         else:
             lines.append("  Visual DNA: use the character description conservatively; do not invent new traits")
 
@@ -655,8 +786,12 @@ def build_story_context(story: Mapping[str, Any]) -> StoryContext:
         if not char_id or not name:
             continue
 
-        cached_entry = cached_appearance.get(char_id) or {}
-        description = _collapse_spaces(str(character.get("description", "")))
+        cached_entry = get_character_appearance_cache_entry(cached_appearance, char_id, name=name)
+        if not is_appearance_cache_entry_compatible(cached_entry):
+            cached_entry = {}
+        description = _collapse_spaces(
+            sanitize_character_profile_description(str(character.get("description", "")))
+        )
         fallback_description = _character_asset_fallback_description(
             character_images,
             character_id=char_id,
@@ -728,6 +863,18 @@ def _get_visual_field(shot: ShotLike, field: str) -> str:
     if not visual_elements:
         return ""
     return _collapse_spaces(str(getattr(visual_elements, field, "")))
+
+
+def _get_camera_setup_field(shot: ShotLike, field: str) -> str:
+    if isinstance(shot, Mapping):
+        camera_setup = shot.get("camera_setup") or {}
+        if isinstance(camera_setup, Mapping):
+            return _collapse_spaces(str(camera_setup.get(field, "")))
+        return ""
+    camera_setup = getattr(shot, "camera_setup", None)
+    if not camera_setup:
+        return ""
+    return _collapse_spaces(str(getattr(camera_setup, field, "")))
 
 
 ShotLike = Any
@@ -928,9 +1075,48 @@ def _join_natural_phrases(items: list[str], lang: str) -> str:
     return ", ".join(items[:-1]) + f", and {items[-1]}"
 
 
+def _normalize_anchor_clothing(clothing: str, *, lang: str) -> str:
+    normalized = _collapse_spaces(clothing)
+    if not normalized:
+        return ""
+    if lang == "zh":
+        normalized = re.sub(r"^(?:穿着|身穿|穿|戴着)\s*", "", normalized)
+        return _collapse_spaces(normalized)
+    normalized = re.sub(r"^(?:wearing|dressed in|dressed with|in)\s+", "", normalized, flags=re.IGNORECASE)
+    return _collapse_spaces(normalized)
+
+
+def _strip_redundant_clothing_from_body(body: str, clothing: str, *, lang: str) -> str:
+    normalized_body = _collapse_spaces(body)
+    normalized_clothing = _normalize_anchor_clothing(clothing, lang=lang)
+    if not normalized_body or not normalized_clothing:
+        return normalized_body
+
+    if lang == "zh":
+        patterns = (
+            rf"(?:，|,)?\s*穿着{re.escape(normalized_clothing)}",
+            rf"(?:，|,)?\s*身穿{re.escape(normalized_clothing)}",
+            rf"(?:，|,)?\s*戴着{re.escape(normalized_clothing)}",
+        )
+    else:
+        patterns = (
+            rf"(?:,\s*)?wearing {re.escape(normalized_clothing)}",
+            rf"(?:,\s*)?dressed in {re.escape(normalized_clothing)}",
+            rf"(?:,\s*)?dressed with {re.escape(normalized_clothing)}",
+            rf"(?:,\s*)?in {re.escape(normalized_clothing)}",
+        )
+
+    cleaned = normalized_body
+    for pattern in patterns:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
+    return _collapse_spaces(cleaned).strip(" ,.;:!?，。；：！？、")
+
+
 def _format_character_anchor(name: str, lock: CharacterLock, *, lang: str, include_clothing: bool) -> str:
     body = sanitize_body_features(lock.body_features)
     clothing = sanitize_default_clothing(lock.default_clothing)
+    clothing = _normalize_anchor_clothing(clothing, lang=lang)
+    body = _strip_redundant_clothing_from_body(body, clothing, lang=lang)
     if lang == "zh":
         if body and include_clothing and clothing:
             return f"{name}保持{body}，穿着{clothing}"
@@ -978,9 +1164,9 @@ def _appearance_prefix(shot: ShotLike, ctx: StoryContext, include_clothing: bool
     prefix = "保持角色外观一致：" if lang == "zh" else "Maintain consistent appearance: "
     suffix = "。" if lang == "zh" else "."
     continuity_clause = (
-        "除非镜头明确写了换装，否则保持服饰颜色、材质、帽子、发型和标志性配件一致。"
+        "除非镜头明确写了换装，否则保持主衣物轮廓、外层服装、服饰颜色、材质、帽子、发型和标志性配件一致。"
         if lang == "zh"
-        else "Keep outfit colors, materials, headwear, hairstyle, and signature accessories unchanged unless the shot explicitly shows a wardrobe change."
+        else "Keep the primary outfit silhouette, outer layer, colors, materials, headwear, hairstyle, and signature accessories unchanged unless the shot explicitly shows a wardrobe change."
     )
     return f"{prefix}{_join_natural_phrases(appearance_lines, lang)}{suffix} {continuity_clause}"
 
@@ -1025,6 +1211,30 @@ def _split_negative_terms(negative: str) -> list[str]:
     ]
 
 
+_CHARACTER_CONSISTENCY_NEGATIVE_TERMS = (
+    "wrong face",
+    "changed hairstyle",
+    "different primary outfit",
+    "changed costume colors",
+    "changed costume material",
+    "missing signature accessories",
+    "warped anatomy",
+    "extra limbs",
+    "duplicate person",
+)
+
+
+def _character_consistency_negative_prompt(shot: ShotLike, ctx: StoryContext | None) -> str:
+    if not ctx:
+        return ""
+    if not any(
+        lock.name and character_appears_in_shot(lock.name, shot)
+        for lock in ctx.character_locks.values()
+    ):
+        return ""
+    return ", ".join(_CHARACTER_CONSISTENCY_NEGATIVE_TERMS)
+
+
 def build_negative_prompt(shot: ShotLike, ctx: StoryContext | None) -> str:
     shot_negative_prompt = _collapse_spaces(str(_shot_field(shot, "negative_prompt", "")))
     if not ctx:
@@ -1041,6 +1251,9 @@ def build_negative_prompt(shot: ShotLike, ctx: StoryContext | None) -> str:
             continue
         if character_appears_in_shot(name, shot) and lock.negative_prompt:
             negatives.append(lock.negative_prompt)
+    character_consistency_negative = _character_consistency_negative_prompt(shot, ctx)
+    if character_consistency_negative:
+        negatives.append(character_consistency_negative)
     normalized_terms: list[str] = []
     for negative in negatives:
         normalized_terms.extend(_split_negative_terms(negative))
@@ -1113,6 +1326,47 @@ def _scene_reference_prompt_extra(asset: Mapping[str, Any] | None, shot: ShotLik
         parts.append(f"沿用环境光线：{lighting_anchor}" if lang == "zh" else f"Keep the scene lighting direction and color logic: {lighting_anchor}")
     separator = "；" if lang == "zh" else ". "
     return _sentence(separator.join(parts), lang)
+
+
+def _character_reference_prompt_extra(story: Mapping[str, Any] | None, shot: ShotLike) -> str:
+    references = _matched_character_reference_images(story, shot)
+    if not references:
+        return ""
+
+    preferred_prompt_text = " ".join(
+        [
+            str(_shot_field(shot, "image_prompt", "")),
+            str(_shot_field(shot, "final_video_prompt", "")),
+        ]
+    )
+    fallback_text = str(_shot_field(shot, "storyboard_description", ""))
+    lang = "zh" if _contains_cjk(preferred_prompt_text or fallback_text) else "en"
+
+    if lang == "zh":
+        return _sentence(
+            "把关联人设参考图当作人物身份基准，保持脸部特征、发型、主衣物轮廓、颜色、材质、帽饰与标志配件一致，不要换脸或换装。",
+            lang,
+        )
+
+    return _sentence(
+        "Treat the linked character reference image as identity canon. Keep facial features, hairstyle, primary outfit silhouette, colors, materials, headwear, and signature accessories unchanged.",
+        lang,
+    )
+
+
+def _character_reference_negative_prompt(story: Mapping[str, Any] | None, shot: ShotLike) -> str:
+    if not _matched_character_reference_images(story, shot):
+        return ""
+    return ", ".join(
+        [
+            "wrong face",
+            "changed hairstyle",
+            "different primary outfit",
+            "changed costume colors",
+            "changed costume material",
+            "missing signature accessories",
+        ]
+    )
 
 
 def _merge_negative_prompt_parts(*values: str) -> str:
@@ -1252,19 +1506,315 @@ def _merge_reference_images(*sources: Any) -> list[Any]:
     return merged
 
 
+def _infer_prompt_language(shot: ShotLike, *, mode: str) -> str:
+    preferred_fields = (
+        ("image_prompt", "final_video_prompt", "storyboard_description")
+        if mode == "image"
+        else ("final_video_prompt", "image_prompt", "storyboard_description")
+    )
+    for field_name in preferred_fields:
+        candidate = _collapse_spaces(str(_shot_field(shot, field_name, "")))
+        if candidate:
+            return "zh" if _contains_cjk(candidate) else "en"
+    return "en"
+
+
+def _shot_size_label(shot: ShotLike, *, lang: str) -> str:
+    shot_size = _collapse_spaces(_get_camera_setup_field(shot, "shot_size")).upper()
+    labels = _SHOT_SIZE_LABELS.get(shot_size)
+    if not labels:
+        return ""
+    return labels[0] if lang == "zh" else labels[1]
+
+
+def _normalize_prompt_framing(base_prompt: str, shot: ShotLike, *, lang: str) -> str:
+    normalized = _collapse_spaces(base_prompt)
+    if not normalized:
+        return ""
+
+    shot_size_label = _shot_size_label(shot, lang=lang)
+    if not shot_size_label:
+        return normalized
+
+    patterns = _LEADING_FRAMING_PATTERNS_ZH if lang == "zh" else _LEADING_FRAMING_PATTERNS_EN
+    trimmed = normalized
+    for pattern in patterns:
+        trimmed = re.sub(pattern, "", trimmed, count=1, flags=re.IGNORECASE)
+    trimmed = _collapse_spaces(trimmed)
+
+    if lang == "zh":
+        return f"{shot_size_label}，{trimmed}" if trimmed else shot_size_label
+    return f"{shot_size_label}. {trimmed}" if trimmed else shot_size_label
+
+
+def _split_prompt_sentences(text: str) -> list[str]:
+    normalized = _collapse_spaces(text)
+    if not normalized:
+        return []
+    return [
+        fragment.strip(" ,.;:!?，。；：！？、")
+        for fragment in re.split(r"[。！？!?；;]+|(?<=\w)\.(?=\s|$)|\n+", normalized)
+        if fragment and fragment.strip(" ,.;:!?，。；：！？、")
+    ]
+
+
+def _trim_prompt_guidance(text: str, *, lang: str, word_limit: int = 22, char_limit: int = 48) -> str:
+    normalized = _collapse_spaces(text)
+    if not normalized:
+        return ""
+    if lang == "zh":
+        return _trim_chars(normalized, char_limit)
+    return _trim_words(normalized, word_limit)
+
+
+def _extract_opening_frame_anchor(shot: ShotLike, *, lang: str) -> str:
+    description = _collapse_spaces(str(_shot_field(shot, "storyboard_description", "")))
+    sentences = _split_prompt_sentences(description)
+    if not sentences:
+        return ""
+
+    selected: list[str] = []
+    minimum_units = 16 if lang == "zh" else 8
+    joiner = "，" if lang == "zh" else ". "
+    for sentence in sentences[:2]:
+        selected.append(sentence)
+        combined = joiner.join(selected)
+        units = len(combined) if lang == "zh" else len(combined.split())
+        if units >= minimum_units:
+            break
+
+    return _trim_prompt_guidance(joiner.join(selected), lang=lang)
+
+
+def _extract_transition_state_anchor(shot: ShotLike, *, lang: str) -> str:
+    transition = _collapse_spaces(str(_shot_field(shot, "transition_from_previous", "")))
+    if not transition:
+        return ""
+
+    camera_terms = (
+        "camera",
+        "shot",
+        "framing",
+        "angle",
+        "movement",
+        "dolly",
+        "pan",
+        "tilt",
+        "tracking",
+        "crane",
+        "static",
+        "摄像机",
+        "镜头",
+        "机位",
+        "运镜",
+        "景别",
+        "推近",
+        "拉近",
+        "拉远",
+        "左摇",
+        "右摇",
+        "上摇",
+        "下摇",
+        "跟拍",
+        "手持",
+        "升降",
+        "建立镜头",
+        "远景",
+        "中景",
+        "近景",
+        "特写",
+    )
+    filtered: list[str] = []
+    for sentence in _split_prompt_sentences(transition):
+        fragments = [
+            _collapse_spaces(fragment)
+            for fragment in re.split(r"[，,]+", sentence)
+            if _collapse_spaces(fragment)
+        ]
+        kept_fragments = [
+            fragment
+            for fragment in fragments
+            if not any(term in fragment.lower() for term in camera_terms)
+        ]
+        cleaned_sentence = _collapse_spaces("，".join(kept_fragments) if lang == "zh" else ", ".join(kept_fragments))
+        if not cleaned_sentence:
+            continue
+        filtered.append(cleaned_sentence)
+        if len(filtered) >= 2:
+            break
+
+    if not filtered:
+        return ""
+
+    joiner = "，" if lang == "zh" else ". "
+    return _trim_prompt_guidance(joiner.join(filtered), lang=lang)
+
+
+def _scene_shot_number(shot: ShotLike) -> int | None:
+    shot_id = _collapse_spaces(str(_shot_field(shot, "shot_id", "")))
+    match = re.match(r"scene\d+_shot(\d+)$", shot_id, flags=re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _is_scene_continuation_shot(shot: ShotLike) -> bool:
+    shot_number = _scene_shot_number(shot)
+    if shot_number and shot_number > 1:
+        return True
+
+    scene_position = _collapse_spaces(str(_shot_field(shot, "scene_position", ""))).lower()
+    if scene_position in {"development", "climax", "resolution"}:
+        return True
+
+    return bool(_collapse_spaces(str(_shot_field(shot, "transition_from_previous", ""))))
+
+
+def _requires_hand_visibility(shot: ShotLike) -> bool:
+    text = " ".join(
+        [
+            str(_shot_field(shot, "storyboard_description", "")),
+            str(_shot_field(shot, "final_video_prompt", "")),
+            _get_visual_field(shot, "action_and_expression"),
+        ]
+    ).lower()
+    return any(hint in text for hint in _HAND_ACTION_HINTS)
+
+
+def _requires_extended_body_context(shot: ShotLike) -> bool:
+    shot_size = _collapse_spaces(_get_camera_setup_field(shot, "shot_size")).upper()
+    if shot_size in {"MS", "MWS", "WS", "EWS", "OTS"}:
+        return True
+
+    text = " ".join(
+        [
+            str(_shot_field(shot, "storyboard_description", "")),
+            str(_shot_field(shot, "final_video_prompt", "")),
+            _get_visual_field(shot, "action_and_expression"),
+        ]
+    ).lower()
+    return any(hint in text for hint in _BODY_MOTION_HINTS)
+
+
+def _opening_frame_motion_compatibility_extra(shot: ShotLike, *, mode: str, lang: str) -> str:
+    shot_size_label = _shot_size_label(shot, lang=lang)
+    needs_hands = _requires_hand_visibility(shot)
+    needs_body_context = _requires_extended_body_context(shot)
+
+    parts: list[str] = []
+    if lang == "zh":
+        if mode == "image":
+            parts.append("这张图是后续视频的首帧锚点，构图必须能支撑接下来的动作")
+            if shot_size_label:
+                parts.append(f"保持{shot_size_label}可读构图，不要缩成只剩脸部的肖像式特写")
+            if needs_hands:
+                parts.append("起始画面里就要看见后续动作需要用到的手、手臂以及交互道具，不要等视频开始后再突然冒出来")
+            if needs_body_context:
+                parts.append("保留足够的上半身或身体运动空间，让位移和动作路径能自然展开")
+        else:
+            parts.append("后续动作必须从首帧已建立的构图自然长出来")
+            parts.append("不要在运动中突然补出首帧没有建立的手、道具或更大范围身体裁切")
+        return _sentence("；".join(parts), lang) if parts else ""
+
+    if mode == "image":
+        parts.append("This still becomes the video opening frame, so the composition must support the upcoming motion")
+        if shot_size_label:
+            parts.append(f"Keep readable {shot_size_label.lower()} framing instead of collapsing into a face-only portrait crop")
+        if needs_hands:
+            parts.append("Keep the acting hands, arms, and interacted prop already visible in the opening frame")
+        if needs_body_context:
+            parts.append("Keep enough torso or body context for the planned motion path to unfold naturally")
+    else:
+        parts.append("Let the motion grow naturally from the opening-frame composition")
+        parts.append("Do not suddenly reveal missing hands, props, or a much wider body crop that was not established at the start")
+    return _sentence(". ".join(parts), lang) if parts else ""
+
+
+def _scene_continuity_extra(shot: ShotLike, *, mode: str, lang: str) -> str:
+    if not _is_scene_continuation_shot(shot):
+        return ""
+
+    if lang == "zh":
+        if mode == "image":
+            return _sentence(
+                "把这个镜头当作同一场景里的连续时刻，不要重新摆成独立人像、重置姿态，或拍成与前后镜头脱节的新建立镜头",
+                lang,
+            )
+        return _sentence(
+            "把这个镜头当作同一场景时间线里的连续段落，不要演成与前后镜头脱节的重置开场",
+            lang,
+        )
+
+    if mode == "image":
+        return _sentence(
+            "Treat this shot as a continuing beat inside the same scene, not a fresh standalone portrait, reset pose, or unrelated re-establishing frame",
+            lang,
+        )
+    return _sentence(
+        "Treat this shot as a continuous beat in the same scene timeline, not a disconnected reset or fresh re-establishing start",
+        lang,
+    )
+
+
+def _storyboard_alignment_extra(shot: ShotLike, *, mode: str) -> str:
+    lang = _infer_prompt_language(shot, mode=mode)
+    opening_anchor = _extract_opening_frame_anchor(shot, lang=lang)
+    transition_anchor = _extract_transition_state_anchor(shot, lang=lang)
+    parts: list[str] = []
+
+    if opening_anchor:
+        if lang == "zh":
+            prefix = "首帧必须贴合当前镜头画面：" if mode == "image" else "视频必须从这一定格状态开始："
+        else:
+            prefix = "Match this exact opening frame: " if mode == "image" else "Start from this exact opening frame: "
+        parts.append(prefix + opening_anchor)
+
+    if transition_anchor:
+        if lang == "zh":
+            prefix = "延续上一镜头已带入的姿态、道具状态和空间关系：" if mode == "image" else "运动开始前先保持上一镜头延续下来的姿态、道具状态和空间关系："
+        else:
+            prefix = "Keep the carried-over pose, prop state, and spatial continuity: " if mode == "image" else "Preserve the carried-over state before motion: "
+        parts.append(prefix + transition_anchor)
+
+    continuity_extra = _scene_continuity_extra(shot, mode=mode, lang=lang)
+    if continuity_extra:
+        parts.append(continuity_extra.rstrip("。.") )
+
+    motion_extra = _opening_frame_motion_compatibility_extra(shot, mode=mode, lang=lang)
+    if motion_extra:
+        parts.append(motion_extra.rstrip("。.") )
+
+    if not parts:
+        return ""
+
+    separator = "；" if lang == "zh" else ". "
+    return _sentence(separator.join(parts), lang)
+
+
 def build_image_generation_prompt(
     shot: ShotLike,
     ctx: StoryContext | None,
     art_style: str = "",
     scene_reference_extra: str = "",
 ) -> str:
-    base_prompt = str(_shot_field(shot, "image_prompt", "") or _shot_field(shot, "final_video_prompt", ""))
+    lang = _infer_prompt_language(shot, mode="image")
+    base_prompt = _normalize_prompt_framing(
+        str(_shot_field(shot, "image_prompt", "") or _shot_field(shot, "final_video_prompt", "")),
+        shot,
+        lang=lang,
+    )
+    alignment_extra = _storyboard_alignment_extra(shot, mode="image")
     if not ctx:
-        merged = " ".join(part for part in (base_prompt, scene_reference_extra) if _collapse_spaces(part))
+        merged = " ".join(
+            part for part in (base_prompt, alignment_extra, scene_reference_extra) if _collapse_spaces(part)
+        )
         return inject_art_style(merged, art_style)
     scene_bits = [
         part
-        for part in (scene_reference_extra, _scene_style_extra(ctx, shot, "image"))
+        for part in (alignment_extra, scene_reference_extra, _scene_style_extra(ctx, shot, "image"))
         if _collapse_spaces(part)
     ]
     return _merge_prompt(
@@ -1275,19 +1825,62 @@ def build_image_generation_prompt(
     )
 
 
+def _video_execution_extra(shot: ShotLike, ctx: StoryContext | None) -> str:
+    lang = _infer_prompt_language(shot, mode="video")
+    movement = _get_camera_setup_field(shot, "movement").lower()
+    is_static = movement in {"", "static", "固定镜头", "固定", "静止"}
+    has_character = bool(
+        ctx
+        and any(
+            lock.name and character_appears_in_shot(lock.name, shot)
+            for lock in ctx.character_locks.values()
+        )
+    )
+
+    if lang == "zh":
+        parts = []
+        if has_character:
+            parts.append("人物在整段视频里保持同一张脸、同一发型、同一主衣物轮廓、颜色和标志配饰")
+        parts.append("动作幅度必须清晰可见，主体位移、四肢路径、布料跟随和解剖结构保持自然稳定")
+        if is_static:
+            parts.append("即使固定镜头也要让动作清楚完成，不要缩成几乎看不出的轻微抖动")
+        else:
+            parts.append("运镜幅度必须明显可见且平滑，不能缩成几乎静止的小幅试探")
+        return _sentence("；".join(parts), lang)
+
+    parts = []
+    if has_character:
+        parts.append("Keep the same face, hairstyle, primary outfit silhouette, colors, and signature accessories throughout the clip")
+    parts.append("Make the action clearly readable on screen with visible body travel, natural cloth follow-through, and stable limb and hand anatomy")
+    if is_static:
+        parts.append("Even on a static camera, the action must complete clearly instead of shrinking into tiny barely visible motion")
+    else:
+        parts.append("Make the camera move clearly readable and smooth instead of tiny or hesitant")
+    return _sentence(". ".join(parts), lang)
+
+
 def build_video_generation_prompt(
     shot: ShotLike,
     ctx: StoryContext | None,
     art_style: str = "",
     scene_reference_extra: str = "",
 ) -> str:
-    base_prompt = str(_shot_field(shot, "final_video_prompt", "") or _shot_field(shot, "image_prompt", ""))
+    lang = _infer_prompt_language(shot, mode="video")
+    base_prompt = _normalize_prompt_framing(
+        str(_shot_field(shot, "final_video_prompt", "") or _shot_field(shot, "image_prompt", "")),
+        shot,
+        lang=lang,
+    )
+    execution_extra = _video_execution_extra(shot, ctx)
+    alignment_extra = _storyboard_alignment_extra(shot, mode="video")
     if not ctx:
-        merged = " ".join(part for part in (base_prompt, scene_reference_extra) if _collapse_spaces(part))
+        merged = " ".join(
+            part for part in (base_prompt, execution_extra, alignment_extra, scene_reference_extra) if _collapse_spaces(part)
+        )
         return inject_art_style(merged, art_style)
     scene_bits = [
         part
-        for part in (scene_reference_extra, _scene_style_extra(ctx, shot, "video"))
+        for part in (execution_extra, alignment_extra, scene_reference_extra, _scene_style_extra(ctx, shot, "video"))
         if _collapse_spaces(part)
     ]
     return _merge_prompt(
@@ -1321,19 +1914,23 @@ def build_generation_payload(
     source_scene_key = _shot_source_scene_key(shot)
     scene_asset = get_scene_reference_asset(story, source_scene_key, shot_id=str(_shot_field(shot, "shot_id", "")))
     scene_reference_extra = _scene_reference_prompt_extra(scene_asset, shot)
+    character_reference_extra = _character_reference_prompt_extra(story, shot)
+    reference_prompt_extra = " ".join(
+        part for part in (character_reference_extra, scene_reference_extra) if _collapse_spaces(part)
+    )
     payload: dict[str, Any] = {
         "shot_id": str(_shot_field(shot, "shot_id", "")),
         "image_prompt": build_image_generation_prompt(
             shot,
             ctx,
             art_style=art_style,
-            scene_reference_extra=scene_reference_extra,
+            scene_reference_extra=reference_prompt_extra,
         ),
         "final_video_prompt": build_video_generation_prompt(
             shot,
             ctx,
             art_style=art_style,
-            scene_reference_extra=scene_reference_extra,
+            scene_reference_extra=reference_prompt_extra,
         ),
     }
     if source_scene_key:
@@ -1341,6 +1938,7 @@ def build_generation_payload(
 
     negative_prompt = _merge_negative_prompt_parts(
         build_negative_prompt(shot, ctx),
+        _character_reference_negative_prompt(story, shot),
         _scene_reference_negative_prompt(scene_asset),
     )
     if negative_prompt:

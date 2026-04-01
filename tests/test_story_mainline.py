@@ -112,12 +112,15 @@ class StoryMockTests(unittest.IsolatedAsyncioTestCase):
 
 class StoryMainlineFlowTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        self.debug_patch = patch("app.services.story_llm.settings.debug", True)
+        self.debug_patch.start()
         self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False)
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
     async def asyncTearDown(self):
+        self.debug_patch.stop()
         await self.engine.dispose()
 
     async def test_analyze_idea_persists_seed_story(self):
@@ -202,8 +205,14 @@ class StoryMainlineFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("# 角色信息", finalized["script"])
         self.assertIn("Visual DNA:", finalized["script"])
+        self.assertIn("【场景标题】", finalized["script"])
+        self.assertIn("【环境锚点】", finalized["script"])
         self.assertIn("【环境】", finalized["script"])
+        self.assertIn("【光线】", finalized["script"])
+        self.assertIn("【情感标尺】", finalized["script"])
+        self.assertIn("【关键道具】", finalized["script"])
         self.assertIn("【画面】", finalized["script"])
+        self.assertIn("【动作拆解】", finalized["script"])
         self.assertIn("【", finalized["script"])
         self.assertEqual(finalized["story_id"], story_id)
 
@@ -317,6 +326,79 @@ class StoryMainlineFlowTests(unittest.IsolatedAsyncioTestCase):
                 "description": "更新后的角色描述",
             },
         )
+
+    async def test_apply_chat_episode_updates_full_outline_fields(self):
+        async with self.session_factory() as session:
+            await repo.save_story(
+                session,
+                "story-apply-chat-episode",
+                {
+                    "idea": "test",
+                    "outline": [
+                        {
+                            "episode": 1,
+                            "title": "旧标题",
+                            "summary": "旧摘要",
+                            "beats": ["旧节拍1", "旧节拍2"],
+                            "scene_list": ["Scene 1: [夜] [室内] [旧地点] - 旧任务"],
+                        },
+                    ],
+                    "scenes": [{"episode": 1, "title": "旧剧本", "scenes": [{"scene_number": 1}]}],
+                },
+            )
+
+            response = SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content='{"title":"新标题","summary":"新摘要","beats":["新节拍1","新节拍2"],"scene_list":["Scene 1: [夜] [室内] [新地点] - 新任务"]}'
+                        )
+                    )
+                ],
+                usage=None,
+            )
+            fake_create = AsyncMock(return_value=response)
+            fake_client = SimpleNamespace(
+                chat=SimpleNamespace(
+                    completions=SimpleNamespace(create=fake_create)
+                )
+            )
+
+            with patch("app.services.story_llm._make_client", return_value=fake_client):
+                result = await apply_chat(
+                    "story-apply-chat-episode",
+                    "episode",
+                    chat_history=[
+                        SimpleNamespace(role="user", text="把这一集改成更强的反转"),
+                        SimpleNamespace(role="ai", text="当前剧情修改：增加反转\n后续影响：推进主线"),
+                    ],
+                    current_item={
+                        "episode": 1,
+                        "title": "旧标题",
+                        "summary": "旧摘要",
+                    },
+                    db=session,
+                    api_key="fake-key",
+                )
+
+            prompt = fake_create.await_args.kwargs["messages"][0]["content"]
+            story = await repo.get_story(session, "story-apply-chat-episode")
+            episode = story["outline"][0]
+
+        self.assertIn('"beats": ["旧节拍1", "旧节拍2"]', prompt)
+        self.assertIn('"scene_list": ["Scene 1: [夜] [室内] [旧地点] - 旧任务"]', prompt)
+        self.assertEqual(
+            episode,
+            {
+                "episode": 1,
+                "title": "新标题",
+                "summary": "新摘要",
+                "beats": ["新节拍1", "新节拍2"],
+                "scene_list": ["Scene 1: [夜] [室内] [新地点] - 新任务"],
+            },
+        )
+        self.assertEqual(story["scenes"], [])
+        self.assertEqual(result, episode)
 
     async def test_refine_character_keeps_existing_name_and_role(self):
         async with self.session_factory() as session:

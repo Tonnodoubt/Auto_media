@@ -1,5 +1,7 @@
 # 完整视频导出防串片改造说明
 
+> 文档状态：改造方案留档。文中大部分 guardrail 已并入当前实现，交接开发时请优先以 `docs/feature-documentation.md`、`docs/database-persistence-implementation.md` 和 `docs/video-pipeline.md` 为准。
+
 ## 目标
 
 解决两个问题：

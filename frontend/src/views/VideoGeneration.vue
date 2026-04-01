@@ -321,6 +321,9 @@
               </div>
               <div v-if="hasSpeechAudio(item.shot)" class="shot-field">
                 <label>台词 / 旁白</label>
+                <div v-if="formatAudioSpeaker(item.shot)" class="shot-audio-meta">
+                  <span class="tag type">{{ formatAudioSpeaker(item.shot) }}</span>
+                </div>
                 <p>{{ item.shot.audio_reference?.content || item.shot.dialogue }}</p>
               </div>
               <div class="shot-field">
@@ -374,7 +377,16 @@
               </div>
               <div class="transition-preview-strip">
                 <div class="transition-frame">
-                  <div class="transition-frame-label">前镜参考帧</div>
+                  <div class="transition-frame-label">
+                    前镜参考帧
+                    <span
+                      v-if="item.result?.first_frame_source"
+                      class="transition-frame-origin"
+                      :title="item.result.first_frame_source.extraction_error || item.result.first_frame_source.diagnostic_note || ''"
+                    >
+                      {{ formatTransitionFrameSourceChip(item.result.first_frame_source, '前镜') }}
+                    </span>
+                  </div>
                   <img
                     v-if="item.result?.first_frame_source?.extracted_image_url || item.fromShot.image_url"
                     :src="getMediaUrl(item.result?.first_frame_source?.extracted_image_url || item.fromShot.image_url)"
@@ -387,7 +399,16 @@
                   <span class="transition-arrow-text">过渡</span>
                 </div>
                 <div class="transition-frame">
-                  <div class="transition-frame-label">后镜首部</div>
+                  <div class="transition-frame-label">
+                    后镜首部
+                    <span
+                      v-if="item.result?.last_frame_source"
+                      class="transition-frame-origin"
+                      :title="item.result.last_frame_source.extraction_error || item.result.last_frame_source.diagnostic_note || ''"
+                    >
+                      {{ formatTransitionFrameSourceChip(item.result.last_frame_source, '后镜') }}
+                    </span>
+                  </div>
                   <img
                     v-if="item.result?.last_frame_source?.extracted_image_url || item.toShot.image_url"
                     :src="getMediaUrl(item.result?.last_frame_source?.extracted_image_url || item.toShot.image_url)"
@@ -403,15 +424,21 @@
                 class="shot-video"
               ></video>
               <p class="transition-copy">
-                {{ item.result?.video_url
-                  ? '过渡视频已生成。当前会严格使用前镜最后一帧和后镜第一帧，避免主题漂移。'
+                {{ item.result?.diagnostic_summary || (item.result?.video_url
+                  ? '过渡视频已生成。当前会严格使用前镜最后一帧和后镜第一帧，并要求过渡平滑、人物环境稳定、镜头衔接自然。'
                   : item.ready
-                    ? '前后镜头视频已就绪，可以生成过渡片段。后端会只读取这两个相邻视频的对应帧。'
+                    ? '前后镜头视频已就绪，可以生成过渡片段。后端会只读取这两个相邻视频的对应帧，并强调平滑自然的人物、环境与镜头连续性。'
                     : '等待前后镜头视频都准备好后，再进入可生成状态。'
-                }}
+                ) }}
               </p>
               <div class="transition-meta">
                 <span class="transition-chip">建议时长 1-2s</span>
+                <span v-if="item.result?.first_frame_source?.diagnostic_note" class="transition-chip">
+                  {{ item.result.first_frame_source.diagnostic_note }}
+                </span>
+                <span v-if="item.result?.last_frame_source?.diagnostic_note" class="transition-chip">
+                  {{ item.result.last_frame_source.diagnostic_note }}
+                </span>
                 <span class="transition-pill" :class="{ active: !!item.fromShot.video_url }">前镜视频</span>
                 <span class="transition-pill" :class="{ active: !!item.toShot.video_url }">后镜视频</span>
               </div>
@@ -425,7 +452,7 @@
                   {{ item.loading ? '生成中...' : (item.result?.video_url ? '重新生成过渡视频' : (item.ready ? '生成过渡视频' : '过渡视频待就绪')) }}
                 </button>
                 <span class="transition-hint">
-                  {{ item.result?.video_url ? '已接入后端，可重新生成覆盖当前结果' : (item.ready ? '将从两侧视频中抽取对应帧' : '先补齐两侧视频') }}
+                  {{ item.result?.video_url ? '已接入后端，可重新生成覆盖当前结果' : (item.ready ? '将从两侧视频中抽取对应帧，并约束过渡平滑自然' : '先补齐两侧视频') }}
                 </span>
               </div>
             </div>
@@ -448,7 +475,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSettingsStore } from '../stores/settings.js'
 import { useStoryStore } from '../stores/story.js'
-import { generateEpisodeSceneReference, generatePipelineTransition, getHeaders, getPipelineStatus } from '../api/story.js'
+import { buildStoryboardScript, generateEpisodeSceneReference, generatePipelineTransition, getHeaders, getPipelineStatus } from '../api/story.js'
 import StepIndicator from '../components/StepIndicator.vue'
 import ApiKeyModal from '../components/ApiKeyModal.vue'
 import { resolveBackendBaseUrl, resolveBackendMediaUrl } from '../utils/backend.js'
@@ -518,6 +545,14 @@ const transitionTimeline = computed(() => {
 
 function buildTransitionId(fromShotId, toShotId) {
   return `transition_${fromShotId}__${toShotId}`
+}
+
+function formatTransitionFrameSourceChip(frameSource, sideLabel = '') {
+  if (!frameSource || typeof frameSource !== 'object') return ''
+  const prefix = sideLabel ? `${sideLabel}` : ''
+  return frameSource.source_type === 'storyboard_image_fallback'
+    ? `${prefix}回退分镜图`
+    : `${prefix}视频抽帧`
 }
 
 function buildLocalTimeline(shotsList = [], transitionsMap = {}) {
@@ -1106,14 +1141,14 @@ function processFile(file) {
 }
 
 // 获取要解析的剧本
-function getScript() {
+async function getScript(signal) {
   if (manualOverride.value) {
     if (pastedScript.value) return pastedScript.value.trim()
     if (uploadedScript.value) return uploadedScript.value.trim()
     return ''
   }
   if (hasStoryData.value) {
-    return generateScriptFromSelection()
+    return await generateScriptFromSelection(signal)
   } else if (pastedScript.value) {
     return pastedScript.value.trim()
   } else if (uploadedScript.value) {
@@ -1123,33 +1158,12 @@ function getScript() {
 }
 
 // 从选中的场景生成剧本文本
-function generateScriptFromSelection() {
-  const parts = []
+async function generateScriptFromSelection(signal) {
+  const storyId = effectiveStoryId()
+  if (!storyId) return ''
 
-  storyStore.scenes.forEach(episode => {
-    const selectedInEpisode = episode.scenes.filter(scene =>
-      selectedScenes.value[episode.episode]?.[scene.scene_number]
-    )
-
-    if (selectedInEpisode.length > 0) {
-      parts.push(`第 ${episode.episode} 集：${episode.title}\n`)
-
-      selectedInEpisode.forEach(scene => {
-        parts.push(`\n【场景 ${scene.scene_number}】`)
-        parts.push(`环境：${scene.environment}`)
-        parts.push(`画面：${scene.visual}`)
-
-        if (scene.audio && scene.audio.length > 0) {
-          scene.audio.forEach(a => {
-            parts.push(`${a.character}：${a.line}`)
-          })
-        }
-        parts.push('')
-      })
-    }
-  })
-
-  return parts.join('\n')
+  const data = await buildStoryboardScript(storyId, selectedScenes.value, signal)
+  return String(data?.script || '').trim()
 }
 
 function isAuthError(msg) {
@@ -1175,32 +1189,44 @@ async function readApiError(response, fallbackMessage = '请求失败') {
 
 // 解析分镜
 async function parseStoryboard() {
-  const script = getScript()
-
-  if (!script) {
-    error.value = '请先选择场景或输入剧本内容'
-    return
-  }
+  parseAbortController?.abort()
+  const controller = new AbortController()
+  parseAbortController = controller
+  const { signal } = controller
 
   isParsing.value = true
   error.value = ''
   transitionMessage.value = ''
-  episodeReferenceErrors.value = {}
-  storyStore.clearShots()
-  concatVideoUrl.value = ''
-  progress.value = { show: true, label: '正在调用 LLM 解析分镜...', percent: 20 }
+  progress.value = { show: true, label: '正在整理剧本文本...', percent: 10 }
 
-  parseAbortController?.abort()
-  parseAbortController = new AbortController()
-  const { signal } = parseAbortController
+  try {
+    const script = await getScript(signal)
 
-  // Mock 模式
-  if (settings.useMock) {
-    progress.value = { show: true, label: 'Mock 模式：生成模拟分镜...', percent: 50 }
+    if (signal.aborted || parseAbortController !== controller) return
 
-    await new Promise(resolve => setTimeout(resolve, 800))
+    if (!script) {
+      error.value = '请先选择场景或输入剧本内容'
+      progress.value.show = false
+      if (parseAbortController === controller) {
+        isParsing.value = false
+        parseAbortController = null
+      }
+      return
+    }
 
-    const mockShots = [
+    episodeReferenceErrors.value = {}
+    storyStore.clearShots()
+    concatVideoUrl.value = ''
+    progress.value = { show: true, label: '正在调用 LLM 解析分镜...', percent: 20 }
+
+    // Mock 模式
+    if (settings.useMock) {
+      progress.value = { show: true, label: 'Mock 模式：生成模拟分镜...', percent: 50 }
+
+      await new Promise(resolve => setTimeout(resolve, 800))
+      if (signal.aborted || parseAbortController !== controller) return
+
+      const mockShots = [
       {
         shot_id: 'scene1_shot1',
         storyboard_description: '清晨的森林，阳光透过树叶洒下斑驳光影，一只小鹿在溪边饮水',
@@ -1261,20 +1287,19 @@ async function parseStoryboard() {
         imageLoading: false,
         videoLoading: false
       }
-    ]
+      ]
 
-    progress.value = { show: true, label: '解析完成', percent: 100 }
-    storyStore.setShots(mockShots)
+      if (signal.aborted || parseAbortController !== controller) return
+      progress.value = { show: true, label: '解析完成', percent: 100 }
+      storyStore.setShots(mockShots)
 
-    setTimeout(() => {
-      if (isMounted.value) progress.value.show = false
-    }, 500)
+      setTimeout(() => {
+        if (isMounted.value && !isParsing.value) progress.value.show = false
+      }, 500)
 
-    isParsing.value = false
-    return
-  }
+      return
+    }
 
-  try {
     const projectId = resolveManualProjectId()
 
     progress.value = { show: true, label: 'LLM 处理中，请稍候...', percent: 60 }
@@ -1294,12 +1319,14 @@ async function parseStoryboard() {
       })
     })
 
+    if (signal.aborted || parseAbortController !== controller) return
     if (!res.ok) {
       throw await readApiError(res, '请求失败')
     }
 
     progress.value = { show: true, label: '解析完成，渲染卡片...', percent: 90 }
     const data = await res.json()
+    if (signal.aborted || parseAbortController !== controller) return
     rememberManualPipelineContext({
       projectId,
       pipelineId: data.pipeline_id || '',
@@ -1316,12 +1343,12 @@ async function parseStoryboard() {
     if (isMounted.value) {
       progress.value = { show: true, label: '完成', percent: 100 }
       setTimeout(() => {
-        if (isMounted.value) progress.value.show = false
+        if (isMounted.value && !isParsing.value) progress.value.show = false
       }, 800)
     }
   } catch (err) {
     if (err.name === 'AbortError') return
-    if (!isMounted.value) return
+    if (!isMounted.value || parseAbortController !== controller) return
     const msg = err.message || '请求失败'
     if (err.status === 400) {
       keyModalType.value = 'missing'
@@ -1336,7 +1363,10 @@ async function parseStoryboard() {
     }
     progress.value.show = false
   } finally {
-    isParsing.value = false
+    if (parseAbortController === controller) {
+      isParsing.value = false
+      parseAbortController = null
+    }
   }
 }
 
@@ -1371,6 +1401,14 @@ async function loadVoices() {
 
 function hasSpeechAudio(shot) {
   return !!(shot && (shot.audio_reference?.content || shot.dialogue) && shot.audio_reference?.type !== 'sfx')
+}
+
+function formatAudioSpeaker(shot) {
+  const type = shot?.audio_reference?.type || null
+  const speaker = String(shot?.audio_reference?.speaker || '').trim()
+  if (speaker) return speaker
+  if (type === 'narration') return '旁白'
+  return ''
 }
 
 function previewTransitionSlot(item) {

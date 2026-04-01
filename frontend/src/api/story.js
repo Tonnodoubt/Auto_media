@@ -67,6 +67,74 @@ export async function finalizeScript(storyId) {
   return res.json()
 }
 
+function normalizeSelectedScenes(selectedScenes) {
+  if (!selectedScenes || typeof selectedScenes !== 'object') return {}
+
+  const normalized = {}
+  Object.entries(selectedScenes).forEach(([episode, scenes]) => {
+    if (!scenes || typeof scenes !== 'object') return
+    const selectedSceneNumbers = Object.entries(scenes)
+      .filter(([, isSelected]) => Boolean(isSelected))
+      .map(([sceneNumber]) => Number(sceneNumber))
+      .filter(Number.isInteger)
+
+    if (selectedSceneNumbers.length > 0) {
+      normalized[String(episode)] = selectedSceneNumbers
+    }
+  })
+  return normalized
+}
+
+function formatErrorDetail(detail) {
+  if (Array.isArray(detail)) {
+    return detail
+      .map(item => {
+        if (typeof item === 'string') return item.trim()
+        if (!item || typeof item !== 'object') return String(item || '').trim()
+        const location = Array.isArray(item.loc) ? item.loc.join('.') : ''
+        const message = String(item.msg || item.message || '').trim()
+        if (location && message) return `${location}: ${message}`
+        if (message) return message
+        return JSON.stringify(item)
+      })
+      .filter(Boolean)
+      .join('；')
+  }
+  if (detail && typeof detail === 'object') {
+    return String(detail.message || JSON.stringify(detail)).trim()
+  }
+  return String(detail || '').trim()
+}
+
+async function readErrorDetail(res, fallbackMessage) {
+  const text = await res.text().catch(() => '')
+  if (!text.trim()) return fallbackMessage
+
+  try {
+    const data = JSON.parse(text)
+    const detail = formatErrorDetail(data?.detail)
+    if (detail) return detail
+  } catch {
+    return text.trim()
+  }
+
+  if (text.trim()) return text.trim()
+  return fallbackMessage
+}
+
+export async function buildStoryboardScript(storyId, selectedScenes, signal) {
+  const res = await fetch(getUrl(`/${storyId}/storyboard-script`), {
+    method: 'POST',
+    headers: getHeaders(),
+    signal,
+    body: JSON.stringify({ selected_scenes: normalizeSelectedScenes(selectedScenes) }),
+  })
+  if (!res.ok) {
+    throw new Error(await readErrorDetail(res, `请求失败 (${res.status})`))
+  }
+  return res.json()
+}
+
 export async function generateEpisodeSceneReference(storyId, episode, { forceRegenerate = false } = {}) {
   const settings = useSettingsStore()
   const res = await fetch(getUrl(`/${storyId}/scene-reference/generate`), {

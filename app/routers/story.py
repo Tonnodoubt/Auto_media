@@ -2,14 +2,13 @@ import json
 import logging
 from copy import deepcopy
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.story_assets import get_character_visual_dna
-from app.core.story_context import build_character_reference_anchor
+from app.core.story_script import serialize_story_to_script
 from app.schemas.story import AnalyzeIdeaRequest, GenerateOutlineRequest, GenerateScriptRequest, ChatRequest, RefineRequest, WorldBuildingStartRequest, WorldBuildingTurnRequest, PatchStoryRequest, ApplyChatRequest
 from app.services.story_llm import analyze_idea, generate_outline, generate_script, chat, refine, world_building_start, world_building_turn, apply_chat
 from app.services import story_repository as repo
@@ -200,65 +199,40 @@ async def api_wb_turn(req: WorldBuildingTurnRequest, llm: dict = Depends(llm_con
 async def finalize_script(story_id: str, db: AsyncSession = Depends(get_db)):
     """把第一阶段剧本序列化为文本，供第二阶段 pipeline 使用"""
     story = await repo.get_story(db, story_id)
+    if not story:
+        raise HTTPException(status_code=404, detail="剧本不存在")
+
     scenes = story.get("scenes", [])
     if not scenes:
         raise HTTPException(status_code=404, detail="剧本尚未生成，请先调用 generate-script")
 
-    lines = []
+    script_text = serialize_story_to_script(story)
+    return {"story_id": story_id, "script": script_text}
 
-    # 注入角色信息
-    characters = story.get("characters", [])
-    character_images = story.get("character_images", {})
-    if characters:
-        lines.append("# 角色信息")
-        for c in characters:
-            char_id = c.get("id", "")
-            name = c.get("name", "")
-            role = c.get("role", "")
-            desc = c.get("description", "")
-            lines.append(f"- {name}（{role}）：{desc}")
-            visual_dna = get_character_visual_dna(character_images, char_id, name=name)
-            reference_anchor = build_character_reference_anchor(
-                character_images,
-                name,
-                character_id=char_id,
-                description=desc,
-            )
-            if visual_dna:
-                lines.append(f"  Visual DNA: {visual_dna}")
-            elif reference_anchor:
-                lines.append(f"  角色参考锚点: {reference_anchor}")
-        lines.append("")
 
-    for ep in scenes:
-        lines.append(f"# 第{ep['episode']}集 {ep['title']}")
-        for s in ep.get("scenes", []):
-            lines.append(f"\n## 场景{s['scene_number']}")
-            lines.append(f"【环境】{s['environment']}")
-            lighting = s.get("lighting")
-            if lighting:
-                lines.append(f"【光线】{lighting}")
-            mood = s.get("mood")
-            if mood:
-                lines.append(f"【氛围】{mood}")
-            lines.append(f"【画面】{s['visual']}")
-            key_actions = s.get("key_actions")
-            if key_actions:
-                lines.append("【动作拆解】")
-                for action in key_actions:
-                    lines.append(f"- {action}")
-            shot_suggestions = s.get("shot_suggestions")
-            if shot_suggestions:
-                lines.append("【镜头建议】")
-                for suggestion in shot_suggestions:
-                    lines.append(f"- {suggestion}")
-            transition = s.get("transition_from_previous")
-            if transition:
-                lines.append(f"【过渡】{transition}")
-            for a in s.get("audio", []):
-                lines.append(f"【{a['character']}】{a['line']}")
+@router.post("/{story_id}/storyboard-script")
+async def build_storyboard_script(
+    story_id: str,
+    body: dict | None = Body(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    """按选中的场景统一序列化 storyboard 输入文本。"""
+    story = await repo.get_story(db, story_id)
+    if not story:
+        raise HTTPException(status_code=404, detail="剧本不存在")
+    if not story.get("scenes", []):
+        raise HTTPException(status_code=404, detail="剧本尚未生成，请先调用 generate-script")
 
-    script_text = "\n".join(lines)
+    selected_scene_numbers = None
+    if isinstance(body, dict):
+        raw_selected_scenes = body.get("selected_scenes")
+        if isinstance(raw_selected_scenes, dict):
+            selected_scene_numbers = raw_selected_scenes
+
+    script_text = serialize_story_to_script(
+        story,
+        selected_scene_numbers=selected_scene_numbers,
+    )
     return {"story_id": story_id, "script": script_text}
 
 

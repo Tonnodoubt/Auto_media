@@ -24,12 +24,27 @@ if "app.core.config" not in sys.modules:
         gemini_base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         siliconflow_api_key="",
         siliconflow_base_url="https://api.siliconflow.cn/v1",
+        siliconflow_image_base_url="https://api.siliconflow.cn/v1",
+        siliconflow_image_model="black-forest-labs/FLUX.1-schnell",
         dashscope_api_key="",
         dashscope_base_url="https://dashscope.aliyuncs.com/api/v1",
+        dashscope_video_base_url="https://dashscope.aliyuncs.com/api/v1",
+        dashscope_video_model="wan2.6-i2v-flash",
         kling_api_key="",
         kling_base_url="https://api.klingai.com",
+        kling_video_base_url="https://api.klingai.com",
+        kling_video_model="kling-v2-master",
+        minimax_video_api_key="",
+        minimax_video_base_url="https://api.minimaxi.chat/v1",
+        minimax_video_model="video-01",
         doubao_api_key="",
         doubao_base_url="https://ark.cn-beijing.volces.com/api/v3",
+        doubao_image_base_url="https://ark.cn-beijing.volces.com/api/v3",
+        doubao_video_base_url="https://ark.cn-beijing.volces.com/api/v3",
+        doubao_image_model="ep-test-image",
+        doubao_video_model="ep-test-video",
+        default_image_model="black-forest-labs/FLUX.1-schnell",
+        default_video_model="wan2.6-i2v-flash",
         validate_base_url_dns=False,
     )
     sys.modules["app.core.config"] = config_stub
@@ -39,7 +54,7 @@ from app.core.story_context import build_generation_payload
 from app.schemas.storyboard import CameraSetup, Shot, VisualElements
 from app.services.image import generate_images_batch
 from app.services.storyboard_state import serialize_shot_for_storage
-from app.services.video import generate_videos_batch
+from app.services.video import generate_videos_batch, generate_videos_chained
 
 
 def tearDownModule():
@@ -130,6 +145,68 @@ class SingleFrameMainlineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(results[0]["video_url"], "/media/videos/scene1_shot1.mp4")
         self.assertEqual(mock_generate.await_args.kwargs["last_frame_url"], "")
+
+    async def test_generate_videos_chained_reuses_previous_image_within_same_scene_only(self):
+        async def _fake_generate_image(**kwargs):
+            shot_id = kwargs["shot_id"]
+            return {
+                "shot_id": shot_id,
+                "image_path": f"media/images/{shot_id}.png",
+                "image_url": f"/media/images/{shot_id}.png",
+            }
+
+        async def _fake_generate_video(**kwargs):
+            shot_id = kwargs["shot_id"]
+            return {
+                "shot_id": shot_id,
+                "video_path": f"media/videos/{shot_id}.mp4",
+                "video_url": f"/media/videos/{shot_id}.mp4",
+            }
+
+        with (
+            patch("app.services.image.generate_image", new=AsyncMock(side_effect=_fake_generate_image)) as image_mock,
+            patch("app.services.video.generate_video", new=AsyncMock(side_effect=_fake_generate_video)),
+        ):
+            results = await generate_videos_chained(
+                [
+                    {
+                        "shot_id": "scene1_shot1",
+                        "image_prompt": "Shot 1",
+                        "final_video_prompt": "Video 1",
+                    },
+                    {
+                        "shot_id": "scene1_shot2",
+                        "image_prompt": "Shot 2",
+                        "final_video_prompt": "Video 2",
+                    },
+                    {
+                        "shot_id": "scene2_shot1",
+                        "image_prompt": "Shot 3",
+                        "final_video_prompt": "Video 3",
+                    },
+                ],
+                base_url="http://localhost:8000",
+            )
+
+        calls_by_shot_id = {
+            call.kwargs["shot_id"]: call.kwargs
+            for call in image_mock.await_args_list
+        }
+
+        self.assertIsNone(calls_by_shot_id["scene1_shot1"]["reference_images"])
+        self.assertEqual(
+            calls_by_shot_id["scene1_shot2"]["reference_images"],
+            [
+                {
+                    "kind": "previous_shot_image",
+                    "image_url": "/media/images/scene1_shot1.png",
+                    "image_path": "media/images/scene1_shot1.png",
+                    "weight": 0.38,
+                }
+            ],
+        )
+        self.assertIsNone(calls_by_shot_id["scene2_shot1"]["reference_images"])
+        self.assertEqual([result["shot_id"] for result in results], ["scene1_shot1", "scene1_shot2", "scene2_shot1"])
 
 
 if __name__ == "__main__":

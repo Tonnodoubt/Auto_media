@@ -1,5 +1,7 @@
 # AutoMedia 当前功能现状与本周进展总结
 
+> 文档状态：周报/历史记录。交接开发时请优先以 `README.md`、`docs/feature-documentation.md`、`docs/video-pipeline.md`、`docs/prompt-framework.md`、`docs/database-persistence-implementation.md` 为当前实现口径。
+
 > 统计时间：2026-03-27
 >
 > 周报范围：2026-03-23 至 2026-03-27
