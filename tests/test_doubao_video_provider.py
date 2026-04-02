@@ -80,6 +80,26 @@ class DoubaoProviderTests(unittest.IsolatedAsyncioTestCase):
         client_cls.assert_not_called()
         self.assertEqual(result, f"data:image/png;base64,{base64.b64encode(image_bytes).decode()}")
 
+    async def test_to_data_url_rejects_private_host_without_media_mapping(self):
+        with patch("app.services.video_providers.doubao.httpx.AsyncClient") as client_cls:
+            with self.assertRaisesRegex(ValueError, "private/local host"):
+                await _to_data_url("http://localhost:8000/not-media/frame.png")
+
+        client_cls.assert_not_called()
+
+    async def test_to_data_url_rejects_hostname_that_resolves_to_private_ip(self):
+        with (
+            patch("app.services.video_providers.doubao.httpx.AsyncClient") as client_cls,
+            patch(
+                "app.services.video_providers.doubao._resolve_hostname_ips",
+                new=AsyncMock(return_value=["127.0.0.1"]),
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "resolves to a private/local address"):
+                await _to_data_url("https://public.example.com/internal/frame.png")
+
+        client_cls.assert_not_called()
+
     async def test_generate_passes_negative_prompt_into_submit(self):
         provider = DoubaoVideoProvider()
         submit_mock = AsyncMock(return_value="task-1")

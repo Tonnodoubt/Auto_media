@@ -92,6 +92,61 @@ def _resolve_local_media_data_url(path_like: str) -> str:
     return ""
 
 
+def _is_private_or_local_host(host: str) -> bool:
+    normalized = str(host or "").strip().rstrip(".").lower()
+    if not normalized or normalized.endswith(".local"):
+        return True
+    if normalized in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}:
+        return True
+    try:
+        ip = ipaddress.ip_address(normalized)
+    except ValueError:
+        return False
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+async def _resolve_hostname_ips(host: str) -> list[str]:
+    normalized_host = str(host or "").strip().rstrip(".")
+    if not normalized_host:
+        return []
+    try:
+        ipaddress.ip_address(normalized_host)
+        return [normalized_host]
+    except ValueError:
+        pass
+
+    try:
+        loop = asyncio.get_running_loop()
+        addrinfo = await loop.getaddrinfo(
+            normalized_host,
+            None,
+            family=socket.AF_UNSPEC,
+            type=socket.SOCK_STREAM,
+        )
+    except OSError:
+        return []
+
+    resolved_ips: list[str] = []
+    seen: set[str] = set()
+    for entry in addrinfo:
+        sockaddr = entry[4]
+        if not sockaddr:
+            continue
+        ip = str(sockaddr[0]).strip()
+        if not ip or ip in seen:
+            continue
+        seen.add(ip)
+        resolved_ips.append(ip)
+    return resolved_ips
+
+
 def _trim_words(text: str, limit: int) -> str:
     words = text.split()
     if len(words) <= limit:
@@ -236,57 +291,48 @@ def optimize_doubao_prompt(prompt: str, has_last_frame: bool = False, negative_p
 
 
 async def _to_data_url(image_url: str) -> str:
-    """若 image_url 是本地/内网地址，先下载再转为 base64 data URL；否则原样返回。"""
+    """将允许的本地媒体路径转成 data URL，并拒绝未映射的内网地址。"""
     from urllib.parse import urlparse
 
-    direct_local = _resolve_local_media_data_url(image_url)
+    normalized = str(image_url or "").strip()
+    if not normalized:
+        raise ValueError("Doubao frame URL is empty")
+    if normalized.startswith("data:"):
+        return normalized
+
+    direct_local = _resolve_local_media_data_url(normalized)
     if direct_local:
         return direct_local
 
-    parsed = urlparse(image_url)
-    host = (parsed.hostname or "").strip().lower()
-
-    def _is_private_or_local_ip(value: str) -> bool:
-        if value in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}:
-            return True
-        try:
-            ip = ipaddress.ip_address(value)
-        except ValueError:
-            return False
-        return (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_unspecified
+    parsed = urlparse(normalized)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(
+            "Doubao frame URL must be a data URL, an http(s) URL, or a file under MEDIA_DIR"
         )
 
-    is_local = _is_private_or_local_ip(host) or host.endswith(".local")
-    if not is_local and host:
-        try:
-            loop = asyncio.get_running_loop()
-            addrinfo = await loop.getaddrinfo(host, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
-        except OSError:
-            addrinfo = []
-        for entry in addrinfo:
-            sockaddr = entry[4]
-            if sockaddr and _is_private_or_local_ip(str(sockaddr[0]).strip().lower()):
-                is_local = True
-                break
+    host = str(parsed.hostname or "").strip().rstrip(".").lower()
+    if not host:
+        raise ValueError(f"Doubao frame URL must include a hostname: {normalized!r}")
 
-    if not is_local:
-        return image_url
     local_media = _resolve_local_media_data_url(parsed.path)
-    if local_media:
-        return local_media
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(image_url)
-        resp.raise_for_status()
-    return _data_url_from_bytes(
-        resp.content,
-        name=parsed.path,
-        content_type=resp.headers.get("content-type") or "",
-    )
+    if _is_private_or_local_host(host):
+        if local_media:
+            return local_media
+        raise ValueError(
+            f"Doubao frame URL points to a private/local host and must map to MEDIA_DIR: {normalized}"
+        )
+
+    resolved_ips = await _resolve_hostname_ips(host)
+    if not resolved_ips:
+        raise ValueError(f"Doubao frame hostname could not be resolved safely: {host}")
+    if any(_is_private_or_local_host(ip) for ip in resolved_ips):
+        if local_media:
+            return local_media
+        raise ValueError(
+            f"Doubao frame URL resolves to a private/local address and must map to MEDIA_DIR: {normalized}"
+        )
+
+    return normalized
 
 DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 _SUBMIT_PATH = "/contents/generations/tasks"
