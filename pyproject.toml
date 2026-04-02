@@ -18,3 +18,8 @@ dependencies = [
     "uvicorn[standard]==0.29.0",
     "zhipuai==2.1.5.20250801",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]

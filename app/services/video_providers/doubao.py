@@ -4,10 +4,12 @@ import ipaddress
 import mimetypes
 import re
 import socket
+from pathlib import Path
 
 import httpx
 
 from app.core.api_keys import mask_key
+from app.paths import MEDIA_DIR
 from app.services.video_providers.base import BaseVideoProvider
 
 _SHOT_SIZE_TERMS = ("Extreme Close-Up", "Close-Up", "Medium Close-Up", "Medium Shot", "Medium Wide Shot", "Wide Shot", "Extreme Wide Shot", "Over-the-shoulder")
@@ -54,6 +56,40 @@ _NEGATIVE_GUARDRAIL_RULES = (
 
 def _collapse_spaces(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _data_url_from_bytes(content: bytes, name: str = "", content_type: str = "") -> str:
+    mime = (
+        (content_type or "").split(";")[0].strip()
+        or mimetypes.guess_type(name)[0]
+        or "image/png"
+    )
+    encoded = base64.b64encode(content).decode()
+    return f"data:{mime};base64,{encoded}"
+
+
+def _resolve_allowed_media_path(path_like: str | Path) -> Path | None:
+    try:
+        candidate = Path(path_like).expanduser()
+        resolved = candidate.resolve() if candidate.is_absolute() else (MEDIA_DIR.parent / candidate).resolve()
+        media_root = MEDIA_DIR.resolve(strict=False)
+        if resolved.is_file() and resolved.is_relative_to(media_root):
+            return resolved
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return None
+
+
+def _resolve_local_media_data_url(path_like: str) -> str:
+    normalized = str(path_like or "").strip()
+    if not normalized:
+        return ""
+
+    for candidate in (normalized, normalized.lstrip("/")):
+        local_path = _resolve_allowed_media_path(candidate)
+        if local_path:
+            return _data_url_from_bytes(local_path.read_bytes(), name=local_path.name)
+    return ""
 
 
 def _trim_words(text: str, limit: int) -> str:
@@ -202,6 +238,11 @@ def optimize_doubao_prompt(prompt: str, has_last_frame: bool = False, negative_p
 async def _to_data_url(image_url: str) -> str:
     """若 image_url 是本地/内网地址，先下载再转为 base64 data URL；否则原样返回。"""
     from urllib.parse import urlparse
+
+    direct_local = _resolve_local_media_data_url(image_url)
+    if direct_local:
+        return direct_local
+
     parsed = urlparse(image_url)
     host = (parsed.hostname or "").strip().lower()
 
@@ -235,13 +276,17 @@ async def _to_data_url(image_url: str) -> str:
 
     if not is_local:
         return image_url
+    local_media = _resolve_local_media_data_url(parsed.path)
+    if local_media:
+        return local_media
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(image_url)
         resp.raise_for_status()
-    mime = resp.headers.get("content-type") or mimetypes.guess_type(parsed.path)[0] or "image/png"
-    mime = mime.split(";")[0].strip()
-    b64 = base64.b64encode(resp.content).decode()
-    return f"data:{mime};base64,{b64}"
+    return _data_url_from_bytes(
+        resp.content,
+        name=parsed.path,
+        content_type=resp.headers.get("content-type") or "",
+    )
 
 DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 _SUBMIT_PATH = "/contents/generations/tasks"
