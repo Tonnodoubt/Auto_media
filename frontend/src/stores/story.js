@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { findCharacterByRef, getCharacterKey } from '../utils/character.js'
+import { hasCompleteGeneratedScript } from '../utils/scriptValidation.js'
 
 export function getSceneKey(episode, sceneNumber) {
   return `ep${String(episode).padStart(2, '0')}_scene${String(sceneNumber).padStart(2, '0')}`
@@ -632,7 +633,10 @@ export const useStoryStore = defineStore('story', {
       this.setArtStyle(storyData.art_style || '')
       this.wbHistory = storyData.wb_history || []
       this.wbTurn = storyData.wb_turn || 0
-      this.step3Done = (storyData.scenes || []).length > 0
+      this.step3Done = hasCompleteGeneratedScript({
+        outline: this.outline,
+        scenes: this.scenes,
+      })
       this.setManualPipelineContext({
         projectId: storyboardGeneration.projectId || storyData.id || '',
         pipelineId: storyboardGeneration.pipelineId || '',

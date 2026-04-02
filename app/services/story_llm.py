@@ -32,6 +32,7 @@ MODEL_MAP = {
 
 logger = logging.getLogger(__name__)
 _outline_generation_locks: dict[str, asyncio.Lock] = {}
+_SCRIPT_GENERATION_CONCURRENCY = 2
 
 
 def _should_use_dev_mock(api_key: str, feature_name: str) -> bool:
@@ -1215,21 +1216,16 @@ async def chat(
 
 
 async def generate_script(story_id: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "", model: str = ""):
-    if _should_use_dev_mock(api_key, "剧本生成"):
-        async for scene in mock_generate_script(story_id):
-            yield scene
-        return
-
     story = await repo.get_story(db, story_id)
     if not story:
         raise HTTPException(status_code=404, detail="故事不存在")
     outline = story.get("outline", [])
     if not outline:
-        if settings.debug:
-            async for scene in mock_generate_script(story_id):
-                yield scene
-            return
         raise HTTPException(status_code=400, detail="剧本生成失败：当前故事缺少大纲，请先完成世界观与大纲生成")
+    if _should_use_dev_mock(api_key, "剧本生成"):
+        async for scene in mock_generate_script(story_id):
+            yield scene
+        return
     characters = story.get("characters", [])
     characters_text = "\n".join(
         f"- {c['name']}（{c.get('role', '')}）：{c.get('description', '')}"
@@ -1239,7 +1235,7 @@ async def generate_script(story_id: str, db: AsyncSession, api_key: str = "", ba
 
     total_prompt = 0
     total_completion = 0
-    for ep in outline:
+    async def generate_episode_task(ep: dict[str, Any]) -> dict[str, Any]:
         prompt = SCRIPT_PROMPT.format(
             episode=ep["episode"],
             title=ep["title"],
@@ -1305,8 +1301,6 @@ async def generate_script(story_id: str, db: AsyncSession, api_key: str = "", ba
                     completion_tokens = getattr(usage, "completion_tokens", 0) or 0
                     episode_prompt_tokens += prompt_tokens
                     episode_completion_tokens += completion_tokens
-                    total_prompt += prompt_tokens
-                    total_completion += completion_tokens
         except Exception as exc:
             tracker.record_failure(
                 exc,
@@ -1319,28 +1313,73 @@ async def generate_script(story_id: str, db: AsyncSession, api_key: str = "", ba
             raise
 
         content = "".join(chunks)
+        usage = {
+            "prompt_tokens": episode_prompt_tokens,
+            "completion_tokens": episode_completion_tokens,
+        }
         try:
             parsed_episode = _parse_json(content)
         except Exception as exc:
-            tracker.record_failure(
-                exc,
-                usage={
-                    "prompt_tokens": episode_prompt_tokens,
-                    "completion_tokens": episode_completion_tokens,
-                },
-                response_text=content,
-            )
-            yield {"episode": ep["episode"], "title": ep["title"], "scenes": []}
-            continue
+            tracker.record_failure(exc, usage=usage, response_text=content)
+            return {
+                "scene": {"episode": ep["episode"], "title": ep["title"], "scenes": []},
+                "usage": usage,
+            }
 
-        tracker.record_success(
-            usage={
-                "prompt_tokens": episode_prompt_tokens,
-                "completion_tokens": episode_completion_tokens,
-            },
-            response_text=content,
-        )
-        yield parsed_episode
+        tracker.record_success(usage=usage, response_text=content)
+        return {"scene": parsed_episode, "usage": usage}
+
+    running_tasks: dict[int, asyncio.Task] = {}
+    task_to_index: dict[asyncio.Task, int] = {}
+    completed_results: dict[int, dict[str, Any]] = {}
+    next_to_start = 0
+    next_to_emit = 0
+    concurrency = max(1, min(_SCRIPT_GENERATION_CONCURRENCY, len(outline)))
+
+    def start_next_task() -> bool:
+        nonlocal next_to_start
+        if next_to_start >= len(outline):
+            return False
+        task = asyncio.create_task(generate_episode_task(outline[next_to_start]))
+        running_tasks[next_to_start] = task
+        task_to_index[task] = next_to_start
+        next_to_start += 1
+        return True
+
+    try:
+        while len(running_tasks) < concurrency and start_next_task():
+            pass
+
+        while next_to_emit < len(outline):
+            while next_to_emit in completed_results:
+                result = completed_results.pop(next_to_emit)
+                usage = result["usage"]
+                total_prompt += usage["prompt_tokens"]
+                total_completion += usage["completion_tokens"]
+                yield result["scene"]
+                next_to_emit += 1
+                while len(running_tasks) < concurrency and start_next_task():
+                    pass
+
+            if next_to_emit >= len(outline):
+                break
+
+            done_tasks, _ = await asyncio.wait(
+                running_tasks.values(),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for done_task in done_tasks:
+                completed_index = task_to_index.pop(done_task)
+                running_tasks.pop(completed_index, None)
+                completed_results[completed_index] = done_task.result()
+            while len(running_tasks) < concurrency and start_next_task():
+                pass
+    finally:
+        pending_tasks = [task for task in running_tasks.values() if not task.done()]
+        for task in pending_tasks:
+            task.cancel()
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
 
     yield {"__usage__": {"prompt_tokens": total_prompt, "completion_tokens": total_completion}}
 

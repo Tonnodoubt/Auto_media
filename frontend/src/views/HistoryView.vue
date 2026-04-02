@@ -85,6 +85,7 @@ import { useRouter } from 'vue-router'
 import { listStories, getStory, deleteStory } from '../api/story.js'
 import { useStoryStore } from '../stores/story.js'
 import { ART_STYLE_PROMPT_TO_LABEL, ART_STYLE_TRUNCATE_LEN } from '../constants/artStylePresets.js'
+import { hasCompleteGeneratedScript } from '../utils/scriptValidation.js'
 
 const router = useRouter()
 const store = useStoryStore()
@@ -129,7 +130,7 @@ async function loadStory(storyId) {
     const data = await getStory(storyId)
     store.loadStory(data)
     // 根据剧本完整度跳转到合适的步骤
-    if (data.scenes && data.scenes.length > 0) {
+    if (hasCompleteGeneratedScript({ outline: data.outline, scenes: data.scenes })) {
       router.push('/step4')
     } else if (data.characters && data.characters.length > 0) {
       router.push('/step3')

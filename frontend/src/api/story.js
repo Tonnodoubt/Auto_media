@@ -321,7 +321,10 @@ export async function streamScript(storyId, onScene, onDone, onError, signal) {
     if (e.name === 'AbortError') return
     onError?.(e.message); return
   }
-  if (!res.ok) { onError?.(`请求失败 (${res.status})`); return }
+  if (!res.ok) {
+    onError?.(await readErrorDetail(res, `请求失败 (${res.status})`))
+    return
+  }
 
   const reader = res.body.getReader()
   const decoder = new TextDecoder()

@@ -454,6 +454,7 @@ import StepIndicator from '../components/StepIndicator.vue'
 import ApiKeyModal from '../components/ApiKeyModal.vue'
 import { resolveBackendBaseUrl, resolveBackendMediaUrl } from '../utils/backend.js'
 import { canAccessStep, getStepRedirectPath } from '../utils/stepAccess.js'
+import { hasCompleteGeneratedScript } from '../utils/scriptValidation.js'
 
 const router = useRouter()
 const settings = useSettingsStore()
@@ -858,7 +859,10 @@ async function restoreLatestPipelineState() {
 
 // 计算属性
 const hasStoryData = computed(() => {
-  return storyStore.scenes && storyStore.scenes.length > 0
+  return hasCompleteGeneratedScript({
+    outline: storyStore.outline,
+    scenes: storyStore.scenes,
+  })
 })
 const readyEpisodeReferenceCount = computed(() =>
   storyStore.scenes.filter(episode => storyStore.getEpisodeSceneReferenceStatus(episode.episode) === 'ready').length

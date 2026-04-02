@@ -33,17 +33,17 @@
       </div>
 
       <button
-        v-if="!started"
+        v-if="canGenerate"
         class="generate-btn"
         :disabled="!store.meta"
         @click="startGenerate"
       >
-        开始生成剧本 ✨
+        {{ generateButtonLabel }}
       </button>
 
-      <div v-if="error && !started" class="error-tip" role="alert" aria-live="assertive">{{ error }}</div>
+      <div v-if="error && !streaming && !hasSceneOutput" class="error-tip" role="alert" aria-live="assertive">{{ error }}</div>
 
-      <div v-if="started" class="script-section">
+      <div v-if="streaming || hasSceneOutput" class="script-section">
         <h2>剧本</h2>
         <div v-if="episodeCount" class="episode-slider">
           <button
@@ -67,6 +67,14 @@
         </div>
         <SceneStream :scenes="currentEpisodeScenes" :streaming="streaming" />
         <div v-if="error" class="error-tip" role="alert" aria-live="assertive">{{ error }}</div>
+        <div
+          v-else-if="showIncompleteScriptTip"
+          class="error-tip"
+          role="alert"
+          aria-live="assertive"
+        >
+          当前剧本不完整，请重新生成。
+        </div>
       </div>
 
       <div v-if="done" class="btn-row">
@@ -100,6 +108,7 @@ import { useStoryStore } from '../stores/story.js'
 import { useSettingsStore } from '../stores/settings.js'
 import { streamScript } from '../api/story.js'
 import { canAccessStep, getStepRedirectPath } from '../utils/stepAccess.js'
+import { cloneSerializable, formatEpisodeList, getIncompleteScriptEpisodes, hasCompleteGeneratedScript } from '../utils/scriptValidation.js'
 
 const router = useRouter()
 const store = useStoryStore()
@@ -112,8 +121,20 @@ const keyModalType = ref('missing')
 const keyModalMsg = ref('')
 const currentEpisodeIndex = ref(0)
 const userPinnedEpisode = ref(false)
-const done = computed(() => store.step3Done && store.scenes.length > 0)
-const started = computed(() => streaming.value || done.value || store.scenes.length > 0)
+const hasSceneOutput = computed(() => store.scenes.length > 0)
+const hasValidScript = computed(() => hasCompleteGeneratedScript({
+  outline: store.outline,
+  scenes: store.scenes,
+}))
+const done = computed(() => store.step3Done && hasValidScript.value)
+const canGenerate = computed(() => !streaming.value)
+const generateButtonLabel = computed(() => (hasSceneOutput.value ? '重新生成剧本 ✨' : '开始生成剧本 ✨'))
+const showIncompleteScriptTip = computed(() => (
+  !streaming.value
+  && hasSceneOutput.value
+  && !hasValidScript.value
+  && !error.value
+))
 const episodeCount = computed(() => store.scenes.length)
 const currentEpisode = computed(() => store.scenes[currentEpisodeIndex.value] || null)
 const currentEpisodeScenes = computed(() => (currentEpisode.value ? [currentEpisode.value] : []))
@@ -157,10 +178,54 @@ function isAuthError(msg) {
   return /401|403|invalid|incorrect|unauthorized|api.?key/i.test(msg)
 }
 
+function captureScriptSnapshot() {
+  const hasValidScript = hasCompleteGeneratedScript({
+    outline: store.outline,
+    scenes: store.scenes,
+  })
+
+  return {
+    hasValidScript,
+    scenes: cloneSerializable(store.scenes, []),
+    meta: cloneSerializable(store.meta, null),
+    sceneReferenceAssets: cloneSerializable(store.sceneReferenceAssets, {}),
+    shots: cloneSerializable(store.shots, []),
+    storyboardFinalVideoUrl: store.storyboardFinalVideoUrl || '',
+    manualProjectId: store.manualProjectId || '',
+    manualPipelineId: store.manualPipelineId || '',
+    manualStoryId: store.manualStoryId || '',
+  }
+}
+
+function rollbackScriptGeneration(snapshot, message) {
+  if (snapshot?.hasValidScript) {
+    store.meta = cloneSerializable(snapshot.meta, null)
+    store.scenes = cloneSerializable(snapshot.scenes, [])
+    store.sceneReferenceAssets = cloneSerializable(snapshot.sceneReferenceAssets, {})
+    store.setShots(cloneSerializable(snapshot.shots, []))
+    store.setStoryboardFinalVideoUrl(snapshot.storyboardFinalVideoUrl || '')
+    store.setManualPipelineContext({
+      projectId: snapshot.manualProjectId || '',
+      pipelineId: snapshot.manualPipelineId || '',
+      storyId: snapshot.manualStoryId || '',
+    })
+    store.step3Done = true
+    store.ensureSceneReferenceAssets()
+  } else {
+    store.resetScenes()
+    store.step3Done = false
+  }
+
+  store.setStep(3)
+  error.value = message
+}
+
 async function startGenerate() {
   scriptAbortController?.abort()
   const controller = new AbortController()
   scriptAbortController = controller
+  const previousScriptSnapshot = captureScriptSnapshot()
+  const isOverwritingValidScript = previousScriptSnapshot.hasValidScript
   streaming.value = true
   error.value = ''
   currentEpisodeIndex.value = 0
@@ -171,22 +236,40 @@ async function startGenerate() {
       store.storyId,
       (scene) => store.addScene(scene),
       () => {
-      if (!store.scenes.length) {
-        store.step3Done = false
-        error.value = '未生成有效剧本内容，请重试'
+      const isCompleteScript = hasCompleteGeneratedScript({
+        outline: store.outline,
+        scenes: store.scenes,
+      })
+      if (!isCompleteScript) {
+        const incompleteEpisodes = getIncompleteScriptEpisodes({
+          outline: store.outline,
+          scenes: store.scenes,
+        })
+        const suffix = isOverwritingValidScript ? '，已回滚到上一次有效结果' : ''
+        const message = incompleteEpisodes.length > 0
+          ? `剧本生成不完整：${formatEpisodeList(incompleteEpisodes)} 未生成有效场景${suffix}`
+          : `剧本生成失败：当前故事缺少大纲或返回结果结构无效，请重试${suffix}`
+        rollbackScriptGeneration(
+          previousScriptSnapshot,
+          message
+        )
         return
       }
       store.step3Done = true
       store.setStep(4)
-    },
+      },
       (msg) => {
-      store.step3Done = false
+      const normalizedMessage = msg || '生成失败，请重试'
+      rollbackScriptGeneration(
+        previousScriptSnapshot,
+        isOverwritingValidScript
+          ? `${normalizedMessage}，已回滚到上一次有效结果`
+          : normalizedMessage
+      )
       if (isAuthError(msg)) {
         keyModalType.value = 'invalid'
         keyModalMsg.value = 'API Key 无效或已过期，请检查后重新设置。'
         showKeyModal.value = true
-      } else {
-        error.value = msg || '生成失败，请重试'
       }
     },
       controller.signal

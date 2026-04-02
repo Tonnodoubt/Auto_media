@@ -1,3 +1,5 @@
+import { hasCompleteGeneratedScript } from './scriptValidation.js'
+
 function hasStory(store) {
   return !!store?.storyId
 }
@@ -7,7 +9,10 @@ function hasOutline(store) {
 }
 
 function hasScript(store) {
-  return Array.isArray(store?.scenes) && store.scenes.length > 0
+  return hasCompleteGeneratedScript({
+    outline: store?.outline,
+    scenes: store?.scenes,
+  })
 }
 
 function isStep2Complete(store) {
