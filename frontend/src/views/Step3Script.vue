@@ -235,15 +235,22 @@ async function startGenerate() {
       store.storyId,
       (scene) => store.addScene(scene),
       () => {
-      const incompleteEpisodes = getIncompleteScriptEpisodes({
+      const isCompleteScript = hasCompleteGeneratedScript({
         outline: store.outline,
         scenes: store.scenes,
       })
-      if (incompleteEpisodes.length > 0) {
+      if (!isCompleteScript) {
+        const incompleteEpisodes = getIncompleteScriptEpisodes({
+          outline: store.outline,
+          scenes: store.scenes,
+        })
         const suffix = previousScriptSnapshot?.hasValidScript ? '，已回滚到上一次有效结果' : ''
+        const message = incompleteEpisodes.length > 0
+          ? `剧本生成不完整：${formatEpisodeList(incompleteEpisodes)} 未生成有效场景${suffix}`
+          : `剧本生成失败：当前故事缺少大纲或返回结果结构无效，请重试${suffix}`
         rollbackScriptGeneration(
           previousScriptSnapshot,
-          `剧本生成不完整：${formatEpisodeList(incompleteEpisodes)} 未生成有效场景${suffix}`
+          message
         )
         return
       }

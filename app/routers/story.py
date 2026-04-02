@@ -66,6 +66,13 @@ def _format_episode_list(episodes: list[int]) -> str:
     return "、".join(f"第 {episode} 集" for episode in episodes)
 
 
+def _build_incomplete_script_detail(outline: list[dict], scenes: list[dict]) -> str:
+    incomplete_episodes = _get_incomplete_script_episodes(outline, scenes)
+    if incomplete_episodes:
+        return f"剧本生成不完整：{_format_episode_list(incomplete_episodes)} 未生成有效场景，请重试"
+    return "剧本生成失败：当前故事缺少大纲或返回结果结构无效，请重试"
+
+
 class SceneReferenceGenerateRequest(BaseModel):
     episode: int
     force_regenerate: bool = False
@@ -154,13 +161,13 @@ async def api_generate_script(req: GenerateScriptRequest, request: Request, llm:
     story_record = await repo.get_story(db, req.story_id)
     if not story_record:
         raise HTTPException(status_code=404, detail="故事不存在")
+    if not story_record.get("outline", []):
+        raise HTTPException(status_code=400, detail="剧本生成失败：当前故事缺少大纲，请先完成世界观与大纲生成")
     if not script_api_key and not settings.debug:
         raise HTTPException(
             status_code=400,
             detail="剧本生成 需要可用的 LLM API Key，请在前端设置或后端 .env 中完成配置",
         )
-    if script_api_key and not story_record.get("outline", []):
-        raise HTTPException(status_code=400, detail="剧本生成失败：当前故事缺少大纲，请先完成世界观与大纲生成")
 
     async def event_stream():
         scenes = []
@@ -182,15 +189,9 @@ async def api_generate_script(req: GenerateScriptRequest, request: Request, llm:
             )
             yield f"data: [ERROR] {str(e)}\n\n"
         if success:
-            incomplete_episodes = _get_incomplete_script_episodes(
-                story_record.get("outline", []),
-                scenes,
-            )
-            if incomplete_episodes:
-                yield (
-                    "data: [ERROR] "
-                    f"剧本生成不完整：{_format_episode_list(incomplete_episodes)} 未生成有效场景，请重试\n\n"
-                )
+            outline = story_record.get("outline", [])
+            if not _has_complete_script(outline, scenes):
+                yield f"data: [ERROR] {_build_incomplete_script_detail(outline, scenes)}\n\n"
                 return
             await repo.save_story(db, req.story_id, {"scenes": scenes})
             yield "data: [DONE]\n\n"

@@ -1215,21 +1215,16 @@ async def chat(
 
 
 async def generate_script(story_id: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "", model: str = ""):
-    if _should_use_dev_mock(api_key, "剧本生成"):
-        async for scene in mock_generate_script(story_id):
-            yield scene
-        return
-
     story = await repo.get_story(db, story_id)
     if not story:
         raise HTTPException(status_code=404, detail="故事不存在")
     outline = story.get("outline", [])
     if not outline:
-        if settings.debug:
-            async for scene in mock_generate_script(story_id):
-                yield scene
-            return
         raise HTTPException(status_code=400, detail="剧本生成失败：当前故事缺少大纲，请先完成世界观与大纲生成")
+    if _should_use_dev_mock(api_key, "剧本生成"):
+        async for scene in mock_generate_script(story_id):
+            yield scene
+        return
     characters = story.get("characters", [])
     characters_text = "\n".join(
         f"- {c['name']}（{c.get('role', '')}）：{c.get('description', '')}"
