@@ -33,7 +33,6 @@ MODEL_MAP = {
 
 logger = logging.getLogger(__name__)
 _outline_generation_locks: dict[str, asyncio.Lock] = {}
-_SCRIPT_GENERATION_CONCURRENCY = 2
 
 
 def _should_use_dev_mock(api_key: str, feature_name: str) -> bool:
@@ -1358,7 +1357,7 @@ async def generate_script(
     completed_results: dict[int, dict[str, Any]] = {}
     next_to_start = 0
     next_to_emit = 0
-    concurrency = max(1, min(_SCRIPT_GENERATION_CONCURRENCY, len(outline)))
+    concurrency = max(1, min(settings.script_generation_concurrency, len(outline)))
 
     def start_next_task() -> bool:
         nonlocal next_to_start
