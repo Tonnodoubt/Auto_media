@@ -131,6 +131,7 @@ def build_character_asset_record(
     visual_dna: str = "",
     character_id: str = "",
     character_name: str = "",
+    quality: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     record = dict(existing or {})
     record.update(
@@ -152,6 +153,8 @@ def build_character_asset_record(
     normalized_visual_dna = _normalize_text(visual_dna)
     if normalized_visual_dna:
         record["visual_dna"] = normalized_visual_dna
+    if isinstance(quality, Mapping):
+        record["quality"] = dict(quality)
     return record
 
 

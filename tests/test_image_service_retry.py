@@ -114,6 +114,61 @@ class CharacterImageRetryTests(unittest.IsolatedAsyncioTestCase):
                     image_base_url="https://api.example.com",
                 )
 
+    async def test_generate_character_image_returns_quality_guard_metadata(self):
+        fake_client = _FakeAsyncClient(
+            [
+                _FakeResponse(
+                    status_code=200,
+                    json_data={"images": [{"url": "https://files.example.com/generated.png"}]},
+                    content=b'{"images":[{"url":"https://files.example.com/generated.png"}]}',
+                ),
+                _FakeResponse(status_code=200, content=b"png-bytes"),
+            ]
+        )
+        target_dir = TMP_ROOT / "characters_quality"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        quality_payload = {
+            "enabled": True,
+            "family": "character_design_prompt",
+            "final_passed": True,
+        }
+
+        with (
+            patch("app.services.image.httpx.AsyncClient", return_value=fake_client),
+            patch("app.services.image.CHARACTER_DIR", target_dir),
+            patch(
+                "app.services.image.resolve_default_quality_llm_config",
+                return_value=("claude", "demo-model", "quality-key", "https://llm.example.com"),
+            ),
+            patch(
+                "app.services.image.run_quality_guarded_prompt_payload",
+                new=AsyncMock(
+                    return_value=(
+                        {
+                            "prompt": "guarded character sheet prompt",
+                            "negative_prompt": "guarded negative prompt",
+                        },
+                        quality_payload,
+                    )
+                ),
+            ),
+        ):
+            result = await generate_character_image(
+                character_name="hero",
+                role="lead",
+                description="brave",
+                story_id="story_quality_ok",
+                model="test-model",
+                image_api_key="test-key",
+                image_base_url="https://api.example.com",
+            )
+
+        post_calls = [call for call in fake_client.calls if call[0] == "POST"]
+        self.assertEqual(post_calls[0][2]["json"]["prompt"], "guarded character sheet prompt")
+        self.assertEqual(post_calls[0][2]["json"]["negative_prompt"], "guarded negative prompt")
+        self.assertEqual(result["prompt"], "guarded character sheet prompt")
+        self.assertEqual(result["quality"], quality_payload)
+
 
 class ImageReferenceRetryTests(unittest.IsolatedAsyncioTestCase):
     async def test_generate_image_marks_when_reference_images_are_dropped_on_retry(self):

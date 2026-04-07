@@ -15,6 +15,7 @@ from app.services.storyboard_state import (
     persist_generated_files_to_pipeline,
     persist_storyboard_generation_state,
 )
+from app.services.quality import run_quality_guarded_runtime_payload
 from app.services.story_context_service import prepare_story_context
 
 router = APIRouter(prefix="/api/v1/video", tags=["video"])
@@ -48,6 +49,7 @@ async def generate_videos(
     story = None
     story_context = None
     effective_pipeline_id = str(body.pipeline_id or "").strip()
+    generation_payload_quality: dict[str, dict[str, object]] = {}
     try:
         if body.story_id:
             story, story_context = await prepare_story_context(
@@ -63,7 +65,24 @@ async def generate_videos(
                 effective_pipeline_id = str(generation_state.get("pipeline_id", "")).strip()
         prepared_shots = []
         for shot in body.shots:
-            payload = build_generation_payload(shot, story_context, art_style=art_style, story=story)
+            payload, quality = await run_quality_guarded_runtime_payload(
+                provider=llm["provider"],
+                model=llm["model"],
+                api_key=llm["api_key"],
+                base_url=llm["base_url"],
+                base_payload_builder=lambda shot=shot: build_generation_payload(
+                    shot,
+                    story_context,
+                    art_style=art_style,
+                    story=story,
+                ),
+                telemetry_context={
+                    "operation": "router.video.build_generation_payload",
+                    "project_id": project_id,
+                    "story_id": str(body.story_id or "").strip(),
+                    "shot_id": str(shot.get("shot_id", "")).strip(),
+                },
+            )
             prepared_shots.append(
                 {
                     **shot,
@@ -72,6 +91,8 @@ async def generate_videos(
                     "reference_images": payload.get("reference_images", []),
                 }
             )
+            if bool(quality.get("enabled")) or list(quality.get("warnings") or []):
+                generation_payload_quality[str(payload.get("shot_id", "")).strip()] = {"quality": quality}
     except HTTPException:
         raise
     except Exception as e:
@@ -97,6 +118,8 @@ async def generate_videos(
     generated_files = {
         "videos": {result["shot_id"]: result for result in results},
     }
+    if generation_payload_quality:
+        generated_files["generation_payloads"] = generation_payload_quality
     invalidated_shot_ids = [
         str(result.get("shot_id", "")).strip()
         for result in results

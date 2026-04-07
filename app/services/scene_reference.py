@@ -13,6 +13,10 @@ import httpx
 from app.core.api_keys import inject_art_style
 from app.core.story_context import StoryContext
 from app.services.image import DEFAULT_MODEL, EPISODE_DIR, generate_image
+from app.services.quality import (
+    resolve_default_quality_llm_config,
+    run_quality_guarded_prompt_payload,
+)
 
 
 SCENE_REFERENCE_NEGATIVE_PROMPT = (
@@ -781,6 +785,7 @@ async def generate_episode_scene_reference(
     existing_assets: Optional[list[Mapping[str, Any]]] = None,
 ) -> dict[str, Any]:
     effective_model = model or DEFAULT_MODEL
+    quality_provider, quality_model, quality_api_key, quality_base_url = resolve_default_quality_llm_config()
     episode_entry, episode_scenes = _episode_scenes(story, episode)
     scene_groups = group_episode_scenes_by_environment(episode, episode_scenes)
     reusable_assets = [dict(asset) for asset in (existing_assets or []) if _asset_is_reusable(asset)]
@@ -813,17 +818,40 @@ async def generate_episode_scene_reference(
             continue
 
         prompts = build_episode_environment_prompts(group["scenes"], story_context, art_style=art_style)
-        variant_results: dict[str, dict[str, str]] = {}
+        variant_results: dict[str, dict[str, Any]] = {}
         for variant, prompt_payload in prompts.items():
+            guarded_prompt_payload, quality = await run_quality_guarded_prompt_payload(
+                family="scene_reference_prompt",
+                provider=quality_provider,
+                model=quality_model,
+                api_key=quality_api_key,
+                base_url=quality_base_url,
+                base_payload_builder=lambda prompt_payload=prompt_payload: {
+                    **dict(prompt_payload),
+                    "environment_pack_key": group["environment_pack_key"],
+                    "group_label": group["group_label"],
+                    "summary_environment": group["summary_environment"],
+                    "summary_lighting": group["summary_lighting"],
+                    "summary_mood": group["summary_mood"],
+                    "summary_visuals": list(group["summary_visuals"]),
+                },
+                telemetry_context={
+                    "operation": "scene_reference.build_prompt",
+                    "story_id": str(story.get("id", "")).strip(),
+                    "episode": episode,
+                    "environment_pack_key": group["environment_pack_key"],
+                    "variant": variant,
+                },
+            )
             try:
                 result = await generate_image(
-                    prompt_payload["prompt"],
+                    guarded_prompt_payload["prompt"],
                     f"{group['environment_pack_key']}_{variant}",
                     model=effective_model,
                     image_api_key=image_api_key,
                     image_base_url=image_base_url,
                     image_provider=image_provider,
-                    negative_prompt=prompt_payload["negative_prompt"],
+                    negative_prompt=guarded_prompt_payload["negative_prompt"],
                     output_dir=EPISODE_DIR,
                     url_prefix="/media/episodes",
                     timeout_seconds=SCENE_REFERENCE_IMAGE_TIMEOUT_SECONDS,
@@ -846,9 +874,10 @@ async def generate_episode_scene_reference(
                     ) from timeout_exc
                 raise
             variant_results[variant] = {
-                "prompt": prompt_payload["prompt"],
+                "prompt": guarded_prompt_payload["prompt"],
                 "image_url": result["image_url"],
                 "image_path": result["image_path"],
+                "quality": quality,
             }
 
         asset = {

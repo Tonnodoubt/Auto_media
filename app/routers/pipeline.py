@@ -42,6 +42,7 @@ from app.schemas.pipeline import (
 from app.schemas.storyboard import Storyboard
 from app.services import story_repository as repo
 from app.services.pipeline_executor import PipelineExecutor
+from app.services.quality import run_quality_guarded_runtime_payload
 from app.services.storyboard_state import (
     build_storyboard_timeline,
     invalidate_generated_files_for_shots,
@@ -122,6 +123,10 @@ def _build_storyboard_usage(usage: Mapping[str, object] | None) -> dict[str, obj
         if prompt_tokens > 0:
             storyboard_usage["uncached_prompt_tokens"] = max(prompt_tokens - cached_tokens_value, 0)
             storyboard_usage["cache_hit_ratio"] = round(cached_tokens_value / prompt_tokens, 4)
+
+    quality = usage_map.get("quality")
+    if isinstance(quality, Mapping):
+        storyboard_usage["quality"] = dict(quality)
 
     return storyboard_usage
 
@@ -1087,16 +1092,40 @@ async def generate_assets(
                         },
                     },
                 )
+                generation_payload_quality: dict[str, dict[str, object]] = {}
+                prepared_image_shots = []
+                for shot in shots:
+                    payload, quality = await run_quality_guarded_runtime_payload(
+                        provider=llm["provider"],
+                        model=llm["model"],
+                        api_key=llm["api_key"],
+                        base_url=llm["base_url"],
+                        base_payload_builder=lambda shot=shot: build_generation_payload(
+                            shot,
+                            story_context,
+                            art_style=art_style,
+                            story=story,
+                        ),
+                        telemetry_context={
+                            "operation": "router.pipeline.generate_assets.build_generation_payload",
+                            "project_id": project_id,
+                            "story_id": resolved_story_id,
+                            "pipeline_id": resolved_pipeline_id,
+                            "shot_id": str(getattr(shot, "shot_id", "")).strip(),
+                        },
+                    )
+                    prepared_image_shots.append(payload)
+                    if bool(quality.get("enabled")) or list(quality.get("warnings") or []):
+                        generation_payload_quality[str(payload.get("shot_id", "")).strip()] = {"quality": quality}
                 image_results = await image.generate_images_batch(
-                    shots=[
-                        build_generation_payload(shot, story_context, art_style=art_style, story=story)
-                        for shot in shots
-                    ],
+                    shots=prepared_image_shots,
                     model=effective_image_model,
                     art_style=art_style,
                     **image_config,
                 )
                 generated_files["images"] = {result["shot_id"]: result for result in image_results}
+                if generation_payload_quality:
+                    generated_files["generation_payloads"] = generation_payload_quality
 
             completion_parts = []
             if generate_tts:
@@ -1251,8 +1280,27 @@ async def render_video(
             )
 
             prepared_shots = []
+            generation_payload_quality: dict[str, dict[str, object]] = {}
             for shot in shots_data:
-                payload = build_generation_payload(shot, story_context, art_style=art_style, story=story)
+                payload, quality = await run_quality_guarded_runtime_payload(
+                    provider=llm["provider"],
+                    model=llm["model"],
+                    api_key=llm["api_key"],
+                    base_url=llm["base_url"],
+                    base_payload_builder=lambda shot=shot: build_generation_payload(
+                        shot,
+                        story_context,
+                        art_style=art_style,
+                        story=story,
+                    ),
+                    telemetry_context={
+                        "operation": "router.pipeline.render_video.build_generation_payload",
+                        "project_id": project_id,
+                        "story_id": resolved_story_id,
+                        "pipeline_id": resolved_pipeline_id,
+                        "shot_id": str(shot.get("shot_id", "")).strip(),
+                    },
+                )
                 prepared_shots.append(
                     {
                         **shot,
@@ -1261,6 +1309,8 @@ async def render_video(
                         "reference_images": payload.get("reference_images", []),
                     }
                 )
+                if bool(quality.get("enabled")) or list(quality.get("warnings") or []):
+                    generation_payload_quality[str(payload.get("shot_id", "")).strip()] = {"quality": quality}
 
             video_results = await video.generate_videos_batch(
                 shots=prepared_shots,
@@ -1287,6 +1337,7 @@ async def render_video(
                     "error": None,
                     "progress_detail": None,
                     "generated_files": {
+                        **({"generation_payloads": generation_payload_quality} if generation_payload_quality else {}),
                         "videos": {result["shot_id"]: result for result in video_results},
                     },
                 },
@@ -1304,6 +1355,7 @@ async def render_video(
                     shots=shots_data,
                     partial_shots=True,
                     generated_files={
+                        **({"generation_payloads": generation_payload_quality} if generation_payload_quality else {}),
                         "videos": {result["shot_id"]: result for result in video_results},
                     },
                     pipeline_id=resolved_pipeline_id,
@@ -1456,8 +1508,32 @@ async def generate_transition(
         base_url=llm["base_url"],
     )
     art_style = get_art_style(request)
-    from_payload = build_generation_payload(from_shot, story_context, art_style=art_style, story=story)
-    to_payload = build_generation_payload(to_shot, story_context, art_style=art_style, story=story)
+    from_payload, _ = await run_quality_guarded_runtime_payload(
+        provider=llm["provider"],
+        model=llm["model"],
+        api_key=llm["api_key"],
+        base_url=llm["base_url"],
+        base_payload_builder=lambda: build_generation_payload(from_shot, story_context, art_style=art_style, story=story),
+        telemetry_context={
+            "operation": "router.pipeline.transition.from_payload",
+            "project_id": project_id,
+            "story_id": tracking_story_id,
+            "shot_id": req.from_shot_id,
+        },
+    )
+    to_payload, _ = await run_quality_guarded_runtime_payload(
+        provider=llm["provider"],
+        model=llm["model"],
+        api_key=llm["api_key"],
+        base_url=llm["base_url"],
+        base_payload_builder=lambda: build_generation_payload(to_shot, story_context, art_style=art_style, story=story),
+        telemetry_context={
+            "operation": "router.pipeline.transition.to_payload",
+            "project_id": project_id,
+            "story_id": tracking_story_id,
+            "shot_id": req.to_shot_id,
+        },
+    )
     transition_prompt = _build_transition_prompt(
         from_shot=from_shot,
         to_shot=to_shot,

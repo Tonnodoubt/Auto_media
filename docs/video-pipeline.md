@@ -1,6 +1,6 @@
 # Auto_media 视频生成与视觉一致性统一文档
 
-> 更新日期：2026-04-01
+> 更新日期：2026-04-07
 >
 > 文档定位：本文件是视频生成主链路、视觉一致性资产层、场景参考图、首帧生成、历史链式方案的统一入口。
 >
@@ -8,7 +8,7 @@
 >
 > - 当前主链路已落地 `StoryContext`、分字段 prompt 组装、场景参考图资产、`scene reference -> shot first frame -> single-frame I2V`。
 > - 当前已补齐 Phase 3 固定样本、seed 脚本与人工验收 runbook；真实 provider 串行验收仍待执行。
-> - DSPy 提取器、VLM 质检闭环、Prompt Caching 深化、独立数字资产库仍属于后续增强。
+> - DSPy / Judge / Feedback Loop 已有 Phase 4 MVP：当前覆盖 outline、storyboard、character appearance cache、scene style cache、runtime generation payload、scene reference prompt、character design prompt 七个 prompt family，默认开启；VLM 质检闭环、Prompt Caching 深化、独立数字资产库仍属于后续增强。
 > - “链式视频生成”保留为历史/备选方案，不是当前默认实现路径。
 >
 > 提示词模板详见 [prompt-framework.md](prompt-framework.md)。
@@ -536,11 +536,21 @@ payload = {
 
 当前仍未落地：
 
-1. DSPy 提取器
-2. VLM 自动质检与重试闭环
-3. 真正独立的数字资产库
-4. 基于真实 provider 的 Phase 3 人工串行验收闭环
-5. 将链式模式作为正式默认策略
+1. VLM 自动质检与重试闭环
+2. 真正独立的数字资产库
+3. 基于真实 provider 的 Phase 3 人工串行验收闭环
+4. 将链式模式作为正式默认策略
+
+当前已新增的 Phase 4 MVP：
+
+1. Outline prompt family 的离线 DSPy artifact + Judge / Feedback Loop 接线
+2. Storyboard prompt family 的离线 DSPy artifact + Judge / Feedback Loop 接线
+3. Character Appearance Cache prompt family 的离线 DSPy artifact + Judge / Feedback Loop 接线
+4. Scene Style Cache prompt family 的离线 DSPy artifact + Judge / Feedback Loop 接线
+5. Runtime Generation Payload prompt family 已接到 image / video / pipeline 运行期 payload 组装入口
+6. Scene Reference Prompt prompt family 已接到按集共享环境图生成入口，并把质量结果写回对应资产 variant
+7. Character Design Prompt prompt family 已接到角色三视图设定图生成入口，并把质量结果写回 `Story.character_images[*].quality`
+8. 质量层默认开启，仍可按环境变量单独启停与灰度
 
 ---
 

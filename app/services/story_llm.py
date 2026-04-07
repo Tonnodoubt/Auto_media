@@ -20,6 +20,7 @@ from app.prompts.story import (
     build_apply_chat_prompt, build_chat_messages,
 )
 from app.services.llm.telemetry import LLMCallTracker, estimate_request_chars, normalize_usage
+from app.services.quality import run_quality_guarded_generation
 
 MODEL_MAP = {
     "qwen": "qwen-plus",
@@ -888,8 +889,11 @@ async def _generate_outline_blueprint(
     resolved_model: str,
     provider: str,
     story_id: str,
+    prompt_suffix: str = "",
 ) -> tuple[dict[str, Any], dict[str, int] | None]:
     prompt = OUTLINE_BLUEPRINT_PROMPT.format(selected_setting=selected_setting)
+    if str(prompt_suffix or "").strip():
+        prompt = f"{prompt}\n\n{prompt_suffix.strip()}"
     return await _request_outline_json_completion(
         client=client,
         resolved_model=resolved_model,
@@ -909,11 +913,14 @@ async def _generate_outline_batch(
     resolved_model: str,
     provider: str,
     story_id: str,
+    prompt_suffix: str = "",
 ) -> tuple[dict[str, Any], dict[str, int] | None]:
     prompt = OUTLINE_BATCH_PROMPT.format(
         blueprint_json=_json.dumps(blueprint, ensure_ascii=False),
         target_episodes=", ".join(str(episode) for episode in target_episodes),
     )
+    if str(prompt_suffix or "").strip():
+        prompt = f"{prompt}\n\n{prompt_suffix.strip()}"
     return await _request_outline_json_completion(
         client=client,
         resolved_model=resolved_model,
@@ -1085,62 +1092,95 @@ async def generate_outline(story_id: str, selected_setting: str, db: AsyncSessio
 
     client = _make_client(api_key, base_url)
     resolved_model = _get_model(provider, model)
-    usage_parts: list[dict[str, int] | None] = []
     lock = _get_outline_generation_lock(story_id)
 
     async with lock:
         try:
-            blueprint, blueprint_usage = await _generate_outline_blueprint(
-                client=client,
-                selected_setting=selected_setting,
-                resolved_model=resolved_model,
-                provider=provider,
-                story_id=story_id,
-            )
-            usage_parts.append(blueprint_usage)
+            existing_story = await repo.get_story(db, story_id) if hasattr(db, "execute") else {}
 
-            batch_ranges = _build_outline_batch_ranges(settings.outline_generation_concurrency)
-            # 分批并发生成，既降低单次输出长度，也避免把 6 集完全拆散导致风格漂移。
-            tasks = [
-                asyncio.create_task(
-                    _generate_outline_batch(
-                        client=client,
-                        blueprint=blueprint,
-                        target_episodes=target_episodes,
-                        resolved_model=resolved_model,
-                        provider=provider,
-                        story_id=story_id,
-                    )
+            async def _generate_outline_candidate(prompt_suffix: str, _attempt: int) -> tuple[dict[str, Any], dict[str, Any]]:
+                usage_parts: list[dict[str, int] | None] = []
+                blueprint, blueprint_usage = await _generate_outline_blueprint(
+                    client=client,
+                    selected_setting=selected_setting,
+                    resolved_model=resolved_model,
+                    provider=provider,
+                    story_id=story_id,
+                    prompt_suffix=prompt_suffix,
                 )
-                for target_episodes in batch_ranges
-            ]
-            try:
-                batch_results = await asyncio.gather(*tasks)
-            except Exception:
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
-                raise
+                usage_parts.append(blueprint_usage)
 
-            outline_entries: list[dict[str, Any]] = []
-            for batch_payload, batch_usage in batch_results:
-                usage_parts.append(batch_usage)
-                outline_entries.extend(batch_payload.get("outline", []))
+                batch_ranges = _build_outline_batch_ranges(settings.outline_generation_concurrency)
+                # 分批并发生成，既降低单次输出长度，也避免把 6 集完全拆散导致风格漂移。
+                tasks = [
+                    asyncio.create_task(
+                        _generate_outline_batch(
+                            client=client,
+                            blueprint=blueprint,
+                            target_episodes=target_episodes,
+                            resolved_model=resolved_model,
+                            provider=provider,
+                            story_id=story_id,
+                            prompt_suffix=prompt_suffix,
+                        )
+                    )
+                    for target_episodes in batch_ranges
+                ]
+                try:
+                    batch_results = await asyncio.gather(*tasks)
+                except Exception:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    raise
 
-            # 最终统一排序后再做整体验证，保证返回给前端的 outline 永远按 episode 升序。
-            outline_entries.sort(key=lambda entry: entry.get("episode", 0))
-            validated_data = _validate_generated_outline_payload(
-                {
-                    "meta": blueprint.get("meta"),
-                    "characters": blueprint.get("characters", []),
-                    "relationships": blueprint.get("relationships", []),
-                    "outline": outline_entries,
-                }
+                outline_entries: list[dict[str, Any]] = []
+                for batch_payload, batch_usage in batch_results:
+                    usage_parts.append(batch_usage)
+                    outline_entries.extend(batch_payload.get("outline", []))
+
+                # 最终统一排序后再做整体验证，保证返回给前端的 outline 永远按 episode 升序。
+                outline_entries.sort(key=lambda entry: entry.get("episode", 0))
+                validated_data = _validate_generated_outline_payload(
+                    {
+                        "meta": blueprint.get("meta"),
+                        "characters": blueprint.get("characters", []),
+                        "relationships": blueprint.get("relationships", []),
+                        "outline": outline_entries,
+                    }
+                )
+                return validated_data, _merge_usage_totals(usage_parts)
+
+            validated_data, outline_usage, quality_run = await run_quality_guarded_generation(
+                family="story_outline",
+                provider=provider,
+                model=resolved_model,
+                api_key=api_key,
+                base_url=base_url,
+                generate_candidate=_generate_outline_candidate,
+                candidate_payload_builder=lambda candidate: {
+                    "meta": candidate.get("meta"),
+                    "characters": candidate.get("characters", []),
+                    "relationships": candidate.get("relationships", []),
+                    "outline": candidate.get("outline", []),
+                },
+                telemetry_context={"story_id": story_id},
             )
+
+            generated_meta = dict(validated_data.get("meta") or {})
+            existing_meta = dict(existing_story.get("meta") or {})
+            quality_runs = dict(existing_meta.get("quality_runs") or {})
+            quality_runs["story_outline"] = quality_run
+            merged_meta = {
+                **existing_meta,
+                **generated_meta,
+                "quality_runs": quality_runs,
+            }
+
             await repo.save_story(db, story_id, {
                 "selected_setting": selected_setting,
-                "meta": validated_data.get("meta"),
+                "meta": merged_meta,
                 "characters": validated_data.get("characters", []),
                 "relationships": validated_data.get("relationships", []),
                 "outline": validated_data.get("outline", []),
@@ -1160,7 +1200,8 @@ async def generate_outline(story_id: str, selected_setting: str, db: AsyncSessio
         "characters": latest_story.get("characters", []),
         "relationships": latest_story.get("relationships", []),
         "outline": latest_story.get("outline", []),
-        "usage": _merge_usage_totals(usage_parts),
+        "usage": outline_usage,
+        "quality": quality_run,
     }
 
 

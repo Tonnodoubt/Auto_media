@@ -82,6 +82,7 @@ async def generate_single(body: CharacterImageRequest, request: Request, image_c
             existing=get_character_asset_entry(character_images, character_key, name=body.character_name),
             character_id=body.character_id,
             character_name=body.character_name,
+            quality=result.get("quality"),
         )
     })
     if art_style:
@@ -143,6 +144,7 @@ async def generate_all(body: BatchCharacterRequest, request: Request, image_conf
             existing=get_character_asset_entry(character_images, character_key, name=char_name),
             character_id=char_id,
             character_name=char_name,
+            quality=result.get("quality"),
         )
         valid_results.append(CharacterImageResult(
             character_id=char_id or None,

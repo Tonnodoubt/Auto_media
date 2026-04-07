@@ -753,17 +753,22 @@ Story data
 2. 恢复逻辑不再依赖前端临时状态。
 3. 文档与测试都能覆盖这些边界。
 
-### Phase 4：在前三层稳定并经人工检查后，落实 DSPy、Judge 与 Feedback Loop（状态：未开始）
+### Phase 4：在前三层稳定并经人工检查后，落实 DSPy、Judge 与 Feedback Loop（状态：MVP 已落地，范围有限）
 
 #### 当前状态
 
-都未正式开始。
+已落地一个默认开启、可按 prompt family 独立启停的 Phase 4 MVP，但当前覆盖范围仍有限。
 
 当前完成情况：
 
-- `[未开始]` DSPy compile / optimizer
-- `[未开始]` Judge / shadow mode
-- `[未开始]` Feedback Loop 自动闭环
+- `[已完成]` 质量增强层运行时骨架已接入，支持离线 DSPy artifact、Judge、shadow mode、Feedback Loop 与失败回退
+- `[已完成]` `story_outline` prompt family 已接线
+- `[已完成]` `storyboard_parse` prompt family 已接线
+- `[已完成]` `character_appearance_extract` prompt family 已接线
+- `[已完成]` `scene_style_extract` prompt family 已接线
+- `[已完成]` `generation_payload` prompt family 已接线（覆盖 runtime image / video payload 组装）
+- `[未完成]` 尚未扩展到 character design prompt / scene reference prompt 等其他主要 prompt family
+- `[未完成]` 尚未完成基于固定样本的专项人工验收与收益复盘
 
 #### 这不是“可选增强”，而是后置实施
 
@@ -771,7 +776,7 @@ Story data
 
 1. 当前项目先要把运行期主链路、状态真相源与恢复边界收稳。
 2. 质量优化闭环一旦过早接入，容易把问题混入主链路，导致难以定位回归来源。
-3. 当前更稳妥的节奏是：先完成前面三层优化，人工检查通过后，再把 DSPy、Judge、Feedback Loop 作为完整质量层落地。
+3. 当前更稳妥的节奏是：先以可回退的 MVP 方式落地 outline / storyboard 两个 family，待人工检查通过后，再继续扩展到完整质量层。
 
 #### 本阶段目标
 
@@ -786,12 +791,12 @@ Story data
 
 都属于后续要落实的正式能力，不是长期搁置的“以后再说”项。
 
-#### 当前不能误写成已支持的内容
+#### 当前不能误写成“已全面支持”的内容
 
-1. DSPy compile / optimizer 流程
-2. Judge / review_required
-3. shadow mode
-4. 局部自动重试闭环
+1. 覆盖所有主要 prompt family 的 DSPy compile / optimizer 流程
+2. 完整的分层 Judge / review_required 体系
+3. 全链路 shadow mode 观测与评审字段
+4. 覆盖全链路的局部自动重试闭环
 
 #### 推荐方向
 
@@ -825,9 +830,9 @@ Story data
 7. Judge / Feedback Loop 应作为可关闭的质量增强层接入，但它们本身属于后续必须落地的质量能力。
 8. 这部分工作的目标不是“锦上添花”，而是系统性提升故事生成、分镜生成、角色一致性、环境一致性和视频成片质量。
 
-#### 三层 DSPy 方案（方案态，尚未实施）
+#### 三层 DSPy 方案（超出当前 MVP 的扩展设计）
 
-以下内容当前仍是设计提案，不代表仓库已经具备对应模块、编译流程或自动重试闭环。
+当前仓库已经具备 outline / storyboard 的离线 artifact 加载、Judge 与 Feedback Loop 运行时接线；以下内容仍是面向“覆盖所有主要 prompt family”的扩展设计，不代表全量编译流程和全链路闭环已经完成。
 
 ##### 第一层：剧情大纲（Logic Layer）
 
@@ -934,9 +939,9 @@ Judge 重点：
 - `scene_intensity` 是否与 `emotion_tags` 的峰值和可见动作强度一致
 - `image_prompt` / `final_video_prompt` 是否分别承担静态首帧与短时动作指令，而不是互相复制
 
-#### Judge / Feedback Loop 设计（方案态，尚未实施）
+#### Judge / Feedback Loop 设计（超出当前 MVP 的扩展设计）
 
-建议按“分层 judge + 跨层 judge + 局部回写”设计，而不是一次性让一个大 judge 重写全链路。
+当前 MVP 已支持按 family 独立配置 judge、shadow mode 与有限次 feedback retry，但仍建议后续按“分层 judge + 跨层 judge + 局部回写”继续演进，而不是一次性让一个大 judge 重写全链路。
 
 分层 judge：
 
@@ -1344,21 +1349,26 @@ npm --prefix frontend run build
 
 所以 Phase 3 当前更准确的状态是“进行中，最小基线已完成，人工收官已有固定样本与执行方案，但验收结论待补”。
 
-#### 3. DSPy / Judge / Feedback Loop 仍未正式开始
+#### 3. DSPy / Judge / Feedback Loop 已启动并有 MVP
 
-当前仍未落地：
+当前已落地的最小实现：
 
-1. DSPy compile / optimizer
-2. 分层 judge
-3. 自动 feedback retry loop
-4. shadow mode / review_required 真正运行态字段
+1. 离线 DSPy artifact 加载与 family 级开关
+2. outline / storyboard / character appearance / scene style / generation payload / scene reference / character design 七个 family 的 Judge、shadow mode 与反馈重试
+3. 失败回退路径与质量结果写回
 
-因此 Phase 4 仍然是方案态，不应在文档里被误写成“已有基础模块”。
+当前仍未完成的部分：
+
+1. 如需继续扩展，决定下一批 prompt family 与专项验收样本
+2. 做完固定样本专项验收与收益复盘
+3. 沉淀更完整的分层 judge、review_required 与跨层质量指标
+
+因此更准确的表述应是：Phase 4 已有 MVP，不应再被写成“未开始”，但也不能被误写成“全链路已完成”。
 
 ### 当前推荐顺序（按实际修改后重排）
 
 1. 先按 `docs/phase3-manual-acceptance-runbook.md` 执行一轮基于固定样本的人工全入口验收，把当前已落地能力真正钉死。
 2. 再根据人工验收结论，决定 `visual_dna` 兼容层的保留边界与后续退役节奏。
-3. 人工检查通过后，再推进 DSPy / Judge / Feedback Loop。
-4. DSPy 阶段完成后，再做一轮人工检查与专项验收。
+3. 在现有 MVP 基础上，优先决定下一批要扩展的 prompt family，再继续推进 DSPy / Judge / Feedback Loop。
+4. Phase 4 扩展完成后，再做一轮人工检查与专项验收。
 5. 最后再收最危险的 fallback / legacy path，避免过早混入回归来源。

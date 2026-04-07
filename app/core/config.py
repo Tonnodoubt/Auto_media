@@ -24,6 +24,23 @@ class Settings(BaseSettings):
     llm_slow_log_threshold_ms: int = DEFAULT_LLM_SLOW_LOG_THRESHOLD_MS
     outline_generation_concurrency: int = DEFAULT_OUTLINE_GENERATION_CONCURRENCY
     script_generation_concurrency: int = DEFAULT_SCRIPT_GENERATION_CONCURRENCY
+    quality_layer_enabled: bool = True
+    quality_outline_enabled: bool = True
+    quality_storyboard_enabled: bool = True
+    quality_character_appearance_enabled: bool = True
+    quality_scene_style_enabled: bool = True
+    quality_generation_payload_enabled: bool = True
+    quality_scene_reference_enabled: bool = True
+    quality_character_design_enabled: bool = True
+    quality_dspy_enabled: bool = True
+    quality_judge_enabled: bool = True
+    quality_judge_shadow_mode: bool = True
+    quality_feedback_loop_enabled: bool = True
+    quality_feedback_max_retries: int = 1
+    quality_judge_provider: str = ""
+    quality_judge_model: str = ""
+    quality_judge_api_key: str = ""
+    quality_judge_base_url: str = ""
 
     # LLM
     default_llm_provider: str = "claude"
@@ -141,6 +158,20 @@ class Settings(BaseSettings):
             return MAX_OUTLINE_GENERATION_CONCURRENCY
 
         return concurrency
+
+    @field_validator("quality_feedback_max_retries", mode="before")
+    @classmethod
+    def _normalize_quality_feedback_max_retries(cls, value):
+        try:
+            retries = int(value)
+        except (TypeError, ValueError) as exc:
+            logger.error("Invalid quality feedback retry value=%r; expected an integer", value)
+            raise ValueError("quality_feedback_max_retries must be an integer >= 0") from exc
+
+        if retries < 0:
+            logger.warning("Invalid negative quality_feedback_max_retries=%s; falling back to 0", retries)
+            return 0
+        return retries
 
     @field_validator("script_generation_concurrency", mode="before")
     @classmethod

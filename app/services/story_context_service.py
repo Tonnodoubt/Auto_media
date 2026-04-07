@@ -29,6 +29,7 @@ from app.core.story_context import (
     sanitize_body_features,
     sanitize_default_clothing,
 )
+from app.services.quality import run_quality_guarded_generation
 from app.services import story_repository as repo
 from app.services.llm.factory import get_llm_provider
 
@@ -126,6 +127,40 @@ def _attach_cache_metadata(
     if source_model:
         normalized["source_model"] = source_model
     return normalized
+
+
+def _build_skipped_quality_run(family: str, reason: str) -> dict[str, Any]:
+    return {
+        "family": family,
+        "enabled": False,
+        "dspy_enabled": False,
+        "judge_enabled": False,
+        "shadow_mode": False,
+        "feedback_enabled": False,
+        "profile_version": "",
+        "final_passed": True,
+        "final_attempt": 0,
+        "warnings": [reason] if reason else [],
+        "attempts": [],
+    }
+
+
+def _normalize_quality_task_result(result: Any) -> tuple[Any, dict[str, Any] | None]:
+    if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], Mapping):
+        return result[0], dict(result[1])
+    return result, None
+
+
+def _merge_quality_runs(
+    story: Mapping[str, Any],
+    updates: Mapping[str, Mapping[str, Any] | None],
+) -> dict[str, Any]:
+    existing_meta = dict(story.get("meta") or {})
+    quality_runs = dict(existing_meta.get("quality_runs") or {})
+    for family, quality_run in updates.items():
+        if isinstance(quality_run, Mapping):
+            quality_runs[family] = dict(quality_run)
+    return quality_runs
 
 
 _PROVIDER_KEY_ATTRS = {
@@ -246,10 +281,14 @@ async def extract_character_appearance(
     model: str = "",
     api_key: str = "",
     base_url: str = "",
-) -> dict[str, dict[str, Any]]:
+    include_quality: bool = False,
+) -> dict[str, dict[str, Any]] | tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     characters = list(story.get("characters") or [])
     if not characters:
-        return {}
+        empty_output: dict[str, dict[str, Any]] = {}
+        if include_quality:
+            return empty_output, _build_skipped_quality_run("character_appearance_extract", "no characters")
+        return empty_output
 
     llm = get_llm_provider(provider, model=model, api_key=api_key, base_url=base_url)
     updated_at = _utc_timestamp()
@@ -263,29 +302,55 @@ async def extract_character_appearance(
         for character in characters
         if character.get("name")
     ]
-    raw, _ = await llm.complete_messages_with_usage(
-        system=APPEARANCE_SYSTEM_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    "Extract stable appearance anchors for these characters.\n"
-                    f"{json.dumps(character_payload, ensure_ascii=False)}"
-                ),
-                "cacheable": True,
-            }
-        ],
-        temperature=0.1,
-        enable_caching=True,
+    story_id = str(story.get("id", "")).strip()
+
+    async def _generate_candidate(prompt_suffix: str, attempt: int) -> tuple[dict[str, Any], dict[str, Any]]:
+        user_content = (
+            "Extract stable appearance anchors for these characters.\n"
+            f"{json.dumps(character_payload, ensure_ascii=False)}"
+        )
+        if prompt_suffix:
+            user_content = f"{user_content}\n\n{prompt_suffix}"
+        raw, usage = await llm.complete_messages_with_usage(
+            system=APPEARANCE_SYSTEM_PROMPT,
+            messages=[
+                {
+                    "role": "user",
+                    "content": user_content,
+                    "cacheable": True,
+                }
+            ],
+            temperature=0.1,
+            enable_caching=True,
+            telemetry_context={
+                "operation": "story_context.extract_character_appearance",
+                "story_id": story_id,
+                "quality_family": "character_appearance_extract",
+                "quality_attempt": attempt,
+            },
+        )
+        data = _parse_json(raw)
+        if not isinstance(data, Mapping):
+            raise ValueError("character appearance extractor did not return a JSON object")
+        return dict(data), dict(usage or {})
+
+    data, _, quality_run = await run_quality_guarded_generation(
+        family="character_appearance_extract",
+        provider=provider,
+        model=model or None,
+        api_key=api_key,
+        base_url=base_url,
+        generate_candidate=_generate_candidate,
         telemetry_context={
             "operation": "story_context.extract_character_appearance",
-            "story_id": str(story.get("id", "")).strip(),
+            "story_id": story_id,
         },
     )
-    data = _parse_json(raw)
     parsed = data.get("characters") or []
     output: dict[str, dict[str, str]] = {}
     if not isinstance(parsed, list):
+        if include_quality:
+            return output, quality_run
         return output
 
     parsed_by_id: dict[str, Mapping[str, Any]] = {}
@@ -312,7 +377,10 @@ async def extract_character_appearance(
                 model=model,
                 updated_at=updated_at,
             )
-    return {identifier: value for identifier, value in output.items() if any(value.values())}
+    normalized_output = {identifier: value for identifier, value in output.items() if any(value.values())}
+    if include_quality:
+        return normalized_output, quality_run
+    return normalized_output
 
 
 async def extract_scene_style_cache(
@@ -322,36 +390,66 @@ async def extract_scene_style_cache(
     model: str = "",
     api_key: str = "",
     base_url: str = "",
-) -> list[dict[str, Any]]:
+    include_quality: bool = False,
+) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], dict[str, Any]]:
     world_summary = _collapse_spaces(str(story.get("selected_setting", "")))
     if not world_summary:
-        return []
+        empty_output: list[dict[str, Any]] = []
+        if include_quality:
+            return empty_output, _build_skipped_quality_run("scene_style_extract", "no selected_setting")
+        return empty_output
 
     llm = get_llm_provider(provider, model=model, api_key=api_key, base_url=base_url)
     updated_at = _utc_timestamp()
-    raw, _ = await llm.complete_messages_with_usage(
-        system=SCENE_STYLE_SYSTEM_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    "Compress this story setting into reusable scene-style anchors.\n"
-                    f"Genre: {story.get('genre', '')}\n"
-                    f"World Summary: {world_summary}"
-                ),
-                "cacheable": True,
-            }
-        ],
-        temperature=0.1,
-        enable_caching=True,
+    story_id = str(story.get("id", "")).strip()
+
+    async def _generate_candidate(prompt_suffix: str, attempt: int) -> tuple[dict[str, Any], dict[str, Any]]:
+        user_content = (
+            "Compress this story setting into reusable scene-style anchors.\n"
+            f"Genre: {story.get('genre', '')}\n"
+            f"World Summary: {world_summary}"
+        )
+        if prompt_suffix:
+            user_content = f"{user_content}\n\n{prompt_suffix}"
+        raw, usage = await llm.complete_messages_with_usage(
+            system=SCENE_STYLE_SYSTEM_PROMPT,
+            messages=[
+                {
+                    "role": "user",
+                    "content": user_content,
+                    "cacheable": True,
+                }
+            ],
+            temperature=0.1,
+            enable_caching=True,
+            telemetry_context={
+                "operation": "story_context.extract_scene_style_cache",
+                "story_id": story_id,
+                "quality_family": "scene_style_extract",
+                "quality_attempt": attempt,
+            },
+        )
+        data = _parse_json(raw)
+        if not isinstance(data, Mapping):
+            raise ValueError("scene style extractor did not return a JSON object")
+        return dict(data), dict(usage or {})
+
+    data, _, quality_run = await run_quality_guarded_generation(
+        family="scene_style_extract",
+        provider=provider,
+        model=model or None,
+        api_key=api_key,
+        base_url=base_url,
+        generate_candidate=_generate_candidate,
         telemetry_context={
             "operation": "story_context.extract_scene_style_cache",
-            "story_id": str(story.get("id", "")).strip(),
+            "story_id": story_id,
         },
     )
-    data = _parse_json(raw)
     styles = data.get("styles") or []
     if not isinstance(styles, list):
+        if include_quality:
+            return [], quality_run
         return []
 
     output: list[dict[str, Any]] = []
@@ -379,7 +477,10 @@ async def extract_scene_style_cache(
                     updated_at=updated_at,
                 )
             )
-    return output[:3]
+    normalized_output = output[:3]
+    if include_quality:
+        return normalized_output, quality_run
+    return normalized_output
 
 
 async def _project_visual_dna(
@@ -472,6 +573,7 @@ async def prepare_story_context(
                             model=model,
                             api_key=api_key,
                             base_url=base_url,
+                            include_quality=True,
                         ),
                     )
                 )
@@ -485,6 +587,7 @@ async def prepare_story_context(
                             model=model,
                             api_key=api_key,
                             base_url=base_url,
+                            include_quality=True,
                         ),
                     )
                 )
@@ -499,6 +602,7 @@ async def prepare_story_context(
                     task_results[task_name] = task_result
 
             story_updated = False
+            quality_run_updates: dict[str, dict[str, Any] | None] = {}
 
             appearance_result = task_results.get("appearance")
             if isinstance(appearance_result, Exception):
@@ -508,6 +612,8 @@ async def prepare_story_context(
                     exc_info=appearance_result,
                 )
             elif appearance_result is not None:
+                appearance_result, appearance_quality = _normalize_quality_task_result(appearance_result)
+                quality_run_updates["character_appearance_extract"] = appearance_quality
                 appearance_cache = dict((story.get("meta") or {}).get("character_appearance_cache") or {})
                 extracted = {
                     identifier: value
@@ -527,8 +633,20 @@ async def prepare_story_context(
                     story_id,
                     exc_info=scene_style_result,
                 )
-            elif scene_style_result:
-                await repo.upsert_story_meta_cache(db, story_id, "scene_style_cache", scene_style_result)
+            elif scene_style_result is not None:
+                scene_style_result, scene_style_quality = _normalize_quality_task_result(scene_style_result)
+                quality_run_updates["scene_style_extract"] = scene_style_quality
+                if scene_style_result:
+                    await repo.upsert_story_meta_cache(db, story_id, "scene_style_cache", scene_style_result)
+                    story_updated = True
+
+            if quality_run_updates:
+                await repo.upsert_story_meta_cache(
+                    db,
+                    story_id,
+                    "quality_runs",
+                    _merge_quality_runs(story, quality_run_updates),
+                )
                 story_updated = True
 
             if story_updated:

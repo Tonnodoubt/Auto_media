@@ -262,6 +262,66 @@ class SceneReferenceRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(asset["affected_scene_numbers"], [1, 2])
         generate_mock.assert_not_awaited()
 
+    async def test_generate_episode_scene_reference_persists_prompt_quality(self):
+        story = {
+            "id": "story-scene-ref-quality",
+            "meta": {},
+            "scenes": [
+                {
+                    "episode": 1,
+                    "title": "第一集",
+                    "scenes": [
+                        {"scene_number": 1, "environment": "庭院", "visual": "雨夜庭院"},
+                    ],
+                }
+            ],
+        }
+        quality_payload = {
+            "enabled": True,
+            "family": "scene_reference_prompt",
+            "final_passed": True,
+        }
+
+        with (
+            patch(
+                "app.services.scene_reference.resolve_default_quality_llm_config",
+                return_value=("claude", "demo-model", "quality-key", "https://llm.example.com"),
+            ),
+            patch(
+                "app.services.scene_reference.run_quality_guarded_prompt_payload",
+                new=AsyncMock(
+                    return_value=(
+                        {
+                            "prompt": "guarded scene reference prompt",
+                            "negative_prompt": "guarded scene negative",
+                        },
+                        quality_payload,
+                    )
+                ),
+            ),
+            patch(
+                "app.services.scene_reference.generate_image",
+                new=AsyncMock(
+                    return_value={
+                        "shot_id": "ep01_env01_scene",
+                        "image_url": "/media/episodes/scene-quality.png",
+                        "image_path": "media/episodes/scene-quality.png",
+                    }
+                ),
+            ) as generate_mock,
+        ):
+            result = await generate_episode_scene_reference(
+                story,
+                story_context=None,
+                episode=1,
+            )
+
+        variant = result["groups"][0]["asset"]["variants"]["scene"]
+        self.assertEqual(variant["prompt"], "guarded scene reference prompt")
+        self.assertEqual(variant["quality"], quality_payload)
+        self.assertEqual(generate_mock.await_args.args[0], "guarded scene reference prompt")
+        self.assertEqual(generate_mock.await_args.kwargs["negative_prompt"], "guarded scene negative")
+
     async def test_generate_scene_reference_persists_episode_and_scene_assets(self):
         story = {
             "id": "story-scene-ref",

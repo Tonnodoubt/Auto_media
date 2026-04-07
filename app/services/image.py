@@ -25,6 +25,10 @@ from app.core.api_keys import (
 )
 from app.paths import CHARACTER_DIR, EPISODE_DIR, IMAGE_DIR, MEDIA_DIR
 from app.prompts.character import build_character_prompt
+from app.services.quality import (
+    resolve_default_quality_llm_config,
+    run_quality_guarded_prompt_payload,
+)
 
 IMAGE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -588,7 +592,34 @@ async def generate_character_image(
     art_style: str = "",
 ) -> dict:
     """Generate a standard three-view character sheet. Returns { character_name, image_path, image_url, prompt }."""
-    prompt = build_character_prompt(character_name, role, description, art_style=art_style)
+    base_prompt = build_character_prompt(character_name, role, description, art_style=art_style)
+    quality_provider, quality_model, quality_api_key, quality_base_url = resolve_default_quality_llm_config()
+    guarded_prompt_payload, quality = await run_quality_guarded_prompt_payload(
+        family="character_design_prompt",
+        provider=quality_provider,
+        model=quality_model,
+        api_key=quality_api_key,
+        base_url=quality_base_url,
+        base_payload_builder=lambda: {
+            "prompt": base_prompt,
+            "negative_prompt": CHARACTER_NEGATIVE_PROMPT,
+            "story_id": story_id,
+            "character_name": character_name,
+            "role": role,
+            "description": description,
+            "art_style": art_style,
+        },
+        telemetry_context={
+            "operation": "character_design.build_prompt",
+            "story_id": story_id,
+            "character_name": character_name,
+        },
+    )
+    prompt = str(guarded_prompt_payload.get("prompt", "")).strip() or base_prompt
+    negative_prompt = (
+        str(guarded_prompt_payload.get("negative_prompt", "")).strip()
+        or CHARACTER_NEGATIVE_PROMPT
+    )
     resolved_image_provider = (
         str(image_provider or "").strip().lower()
         or infer_image_provider(image_base_url)
@@ -612,7 +643,7 @@ async def generate_character_image(
             "n": 1,
             "size": size,
             "response_format": "url",
-            "negative_prompt": CHARACTER_NEGATIVE_PROMPT,
+            "negative_prompt": negative_prompt,
         }
 
         submit_url = f"{base_url}/images/generations"
@@ -682,6 +713,7 @@ async def generate_character_image(
         "image_path": str(output_path),
         "image_url": f"/media/characters/{filename}",
         "prompt": prompt,
+        "quality": quality,
     }
 
 

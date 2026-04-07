@@ -163,6 +163,21 @@ class PipelineRuntimeHelperTests(unittest.TestCase):
         self.assertEqual(payload["source_scene_key"], "ep01_scene01")
         self.assertTrue(payload["reference_images"])
 
+    def test_generated_files_snapshot_includes_generation_payload_quality(self):
+        executor = PipelineExecutor("project-1", "pipeline-1", None)
+        executor.generation_payload_quality = {
+            "scene1_shot1": {
+                "quality": {"enabled": True, "family": "generation_payload"}
+            }
+        }
+
+        snapshot = executor._build_generated_files_snapshot()
+
+        self.assertEqual(
+            snapshot["generation_payloads"]["scene1_shot1"]["quality"]["family"],
+            "generation_payload",
+        )
+
     def test_trim_words_limits_cjk_without_whitespace(self):
         trimmed = _trim_words("保持同一人物与服装，动作从门口延续到进入房间。", 6)
 

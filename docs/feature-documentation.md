@@ -295,7 +295,7 @@
 | Transition 删除 / 重置接口 | 未落地 |
 | VLM 质检与自动重试闭环 | 未落地 |
 | 独立数字资产库 | 未落地 |
-| DSPy 提取器 | 仅有设计文档 |
+| DSPy / Judge / Feedback Loop | 已有 Phase 4 MVP：覆盖 outline、storyboard、character appearance cache、scene style cache、runtime generation payload、scene reference prompt、character design prompt 七个 prompt family，默认开启 |
 | 遗留 `projects` 文件清理 | 路由已卸载，文件仍在仓库 |
 
 ---

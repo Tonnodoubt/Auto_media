@@ -1,0 +1,33 @@
+{
+  "version": "phase4-mvp-2026-04-07-runtime",
+  "profiles": {
+    "story_outline": {
+      "prompt_suffix": "在输出前请按以下 DSPy 编译约束自检：\n1. logline 必须明确主角、目标、阻碍与冲突。\n2. 6 集 beats 必须体现升级、转折与收束，不要只是换一种说法复述剧情。\n3. scene_list 要尽量使用稳定地点命名，避免同一空间出现多种别称。\n4. 每集 summary、beats、scene_list 必须彼此对齐，不允许 summary 讲的内容在 beats 中缺席。",
+      "feedback_prefix": "请在保持现有人物与总体故事方向不变的前提下，只修复以下大纲问题："
+    },
+    "storyboard_parse": {
+      "prompt_suffix": "在输出前请按以下 DSPy 编译约束自检：\n1. 每个镜头只描述当前镜头可见状态，不要复述整段剧情。\n2. camera_setup 必须可执行，scene_position 要与镜头功能匹配。\n3. image_prompt 负责静态首帧，final_video_prompt 负责短时动作，不要互相复制。\n4. 角色、环境、关键道具与过渡锚点要足够支撑后续 I2V 与 transition。",
+      "feedback_prefix": "请保持已有 shot_id 与总体镜头顺序，只局部修复以下分镜问题："
+    },
+    "character_appearance_extract": {
+      "prompt_suffix": "在输出前请按以下 DSPy 编译约束自检：\n1. 每个角色必须保留输入里的稳定 id。\n2. body 只保留稳定物理外观锚点，不要写性格、剧情、镜头、光影或艺术风格词。\n3. clothing 只保留默认服装与常驻配饰，不要写动作、表情、姿势或场景状态。\n4. 所有字段保持简洁英文短语，直接服务后续 image / video prompt。",
+      "feedback_prefix": "请保持已有角色 id 不变，只局部修复以下外观提取问题："
+    },
+    "scene_style_extract": {
+      "prompt_suffix": "在输出前请按以下 DSPy 编译约束自检：\n1. styles 只提炼可复用的环境、美术与时代锚点，不要复述剧情事件。\n2. image_extra 与 video_extra 要同源但不机械重复，分别服务静帧和视频。\n3. 不要混入镜头语言、对白、角色动作或纯艺术风格标签。\n4. 如有必要，negative_prompt 只写简洁污染排除项。",
+      "feedback_prefix": "请保持整体世界观不变，只局部修复以下场景风格提取问题："
+    },
+    "generation_payload": {
+      "prompt_suffix": "Continuity lock: keep the same character identity, outfit silhouette, environment layout, prop state, and opening-frame composition. The image prompt must describe one clear opening frame. The video prompt must start from that exact frame and only add short, smooth, readable motion.",
+      "feedback_prefix": "Quality fix overlay: "
+    },
+    "scene_reference_prompt": {
+      "prompt_suffix": "Environment lock: keep this as a pure environment reference plate. Preserve the exact location identity, major architecture, stable prop layout, entry points, and readable light direction. Do not introduce characters, dramatic acting, prop close-ups, or generic replacement scenery.",
+      "feedback_prefix": "Environment prompt fix: "
+    },
+    "character_design_prompt": {
+      "prompt_suffix": "Character sheet lock: preserve the same exact person across front, side, and back views. Keep face, hair, body build, costume silhouette, costume colors, materials, and signature accessories identical across the sheet. Do not redesign into a generic beauty look or add extra costume layers, props, text, or decorative framing.",
+      "feedback_prefix": "Character prompt fix: "
+    }
+  }
+}

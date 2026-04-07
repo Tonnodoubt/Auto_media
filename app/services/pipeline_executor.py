@@ -27,6 +27,7 @@ from app.services.storyboard_state import (
     persist_storyboard_generation_state,
     serialize_shot_for_storage,
 )
+from app.services.quality import run_quality_guarded_runtime_payload
 from app.services.story_context_service import prepare_story_context
 
 logger = logging.getLogger(__name__)
@@ -59,7 +60,14 @@ class PipelineExecutor:
         self.tts_results: dict[str, dict[str, Any]] = {}
         self.image_results: dict[str, dict[str, Any]] = {}
         self.video_results: dict[str, dict[str, Any]] = {}
+        self.storyboard_usage: dict[str, Any] = {}
+        self.generation_payload_quality: dict[str, Any] = {}
+        self._generation_payload_cache: dict[str, dict[str, Any]] = {}
         self._latest_generated_files: dict[str, Any] | None = None
+        self.llm_provider: str = ""
+        self.llm_model: str = ""
+        self.llm_api_key: str = ""
+        self.llm_base_url: str = ""
 
     def _serialize_storyboard_shots(self) -> list[dict[str, Any]]:
         return [serialize_shot_for_storage(shot) for shot in self.shots]
@@ -71,6 +79,8 @@ class PipelineExecutor:
         storyboard_shots = self._serialize_storyboard_shots()
         if storyboard_shots:
             snapshot["storyboard"] = {"shots": storyboard_shots}
+            if self.storyboard_usage:
+                snapshot["storyboard"]["usage"] = deepcopy(self.storyboard_usage)
         if self.tts_results:
             snapshot["tts"] = deepcopy(self.tts_results)
         if self.image_results:
@@ -79,6 +89,8 @@ class PipelineExecutor:
             snapshot["videos"] = deepcopy(self.video_results)
         if self.results:
             snapshot["shots"] = [deepcopy(result) for result in self.results]
+        if self.generation_payload_quality:
+            snapshot["generation_payloads"] = deepcopy(self.generation_payload_quality)
         return snapshot
 
     def _refresh_video_results_from_stitched_outputs(self) -> None:
@@ -168,6 +180,12 @@ class PipelineExecutor:
         self.tts_results = {}
         self.image_results = {}
         self.video_results = {}
+        self.generation_payload_quality = {}
+        self._generation_payload_cache = {}
+        self.llm_provider = provider or ""
+        self.llm_model = model or ""
+        self.llm_api_key = llm_api_key or ""
+        self.llm_base_url = llm_base_url or ""
         effective_story_id = (story_id or self.story_id or "").strip()
         if effective_story_id:
             self.story_id = effective_story_id
@@ -189,10 +207,11 @@ class PipelineExecutor:
                 "解析分镜中",
                 {"step": "storyboard", "current": 0, "total": 100, "message": "正在解析剧本..."},
             )
-            self.shots, _ = await parse_script_to_storyboard(
+            self.shots, storyboard_usage = await parse_script_to_storyboard(
                 script, provider, model, api_key=llm_api_key, base_url=llm_base_url,
                 character_info=character_info,
             )
+            self.storyboard_usage = dict(storyboard_usage or {})
 
             if not self.shots:
                 raise ValueError("分镜解析失败：没有生成任何镜头")
@@ -318,7 +337,7 @@ class PipelineExecutor:
         )
 
         image_results = await image.generate_images_batch(
-            shots=[self._build_generation_payload(s) for s in self.shots],
+            shots=[await self._build_generation_payload_with_quality(s) for s in self.shots],
             model=image_model,
             image_api_key=image_api_key,
             image_base_url=image_base_url,
@@ -353,7 +372,7 @@ class PipelineExecutor:
         for shot in self.shots:
             if shot.shot_id not in image_map:
                 continue
-            payload = self._build_generation_payload(shot)
+            payload = await self._build_generation_payload_with_quality(shot)
             video_shots.append(
                 {
                     "shot_id": shot.shot_id,
@@ -530,6 +549,28 @@ class PipelineExecutor:
         )
         return legacy_payload
 
+    async def _build_generation_payload_with_quality(self, shot: Shot) -> dict:
+        cached = self._generation_payload_cache.get(shot.shot_id)
+        if cached is not None:
+            return dict(cached)
+        payload, quality = await run_quality_guarded_runtime_payload(
+            provider=self.llm_provider,
+            model=self.llm_model or None,
+            api_key=self.llm_api_key,
+            base_url=self.llm_base_url,
+            base_payload_builder=lambda: self._build_generation_payload(shot),
+            telemetry_context={
+                "operation": "pipeline.build_generation_payload",
+                "pipeline_id": self.pipeline_id,
+                "story_id": self.story_id,
+                "shot_id": shot.shot_id,
+            },
+        )
+        if bool(quality.get("enabled")) or list(quality.get("warnings") or []):
+            self.generation_payload_quality[shot.shot_id] = {"quality": quality}
+        self._generation_payload_cache[shot.shot_id] = dict(payload)
+        return payload
+
     async def _run_chained_strategy(
         self,
         voice: str,
@@ -590,7 +631,7 @@ class PipelineExecutor:
         # 构建 shots 数据并增强 prompt
         shots_data = []
         for s in self.shots:
-            shots_data.append(self._build_generation_payload(s))
+            shots_data.append(await self._build_generation_payload_with_quality(s))
 
         scene_groups = video.group_shots_by_scene(shots_data)
         scene_names = list(scene_groups.keys())
@@ -687,7 +728,7 @@ class PipelineExecutor:
         )
 
         image_results = await image.generate_images_batch(
-            shots=[self._build_generation_payload(s) for s in self.shots],
+            shots=[await self._build_generation_payload_with_quality(s) for s in self.shots],
             model=image_model,
             image_api_key=image_api_key,
             image_base_url=image_base_url,
@@ -729,7 +770,7 @@ class PipelineExecutor:
         for shot in self.shots:
             if shot.shot_id not in image_map:
                 continue
-            payload = self._build_generation_payload(shot)
+            payload = await self._build_generation_payload_with_quality(shot)
             video_shots.append(
                 {
                     "shot_id": shot.shot_id,

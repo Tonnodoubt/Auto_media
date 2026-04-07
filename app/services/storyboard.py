@@ -6,6 +6,7 @@ from typing import Any, List, Optional
 
 from pydantic import ValidationError
 from app.services.llm.factory import get_llm_provider
+from app.services.quality import run_quality_guarded_generation
 from app.schemas.storyboard import Shot
 from app.prompts.storyboard import SYSTEM_PROMPT, USER_TEMPLATE
 from app.prompts.character import build_character_section
@@ -256,6 +257,14 @@ _SCRIPT_METADATA_LABELS = {
 
 def _strip_terminal_punctuation(text: str) -> str:
     return (text or "").strip(" ,.;:!?，。；：！？、")
+
+
+def _serialize_storyboard_candidate_shot(shot: Shot | Mapping[str, Any]) -> dict[str, Any]:
+    if hasattr(shot, "model_dump"):
+        return shot.model_dump(mode="json")
+    if hasattr(shot, "dict"):
+        return shot.dict()
+    return dict(shot)
 
 
 def _collapse_spaces(text: str) -> str:
@@ -1667,43 +1676,68 @@ async def parse_script_to_storyboard(
     scene_mapping_section = _build_scene_mapping_section(script)
     script_audio_lookup = _build_script_audio_lookup(script, scene_mapping=scene_mapping)
     llm = get_llm_provider(provider, model=model, api_key=api_key, base_url=base_url)
-    try:
-        raw, usage = await llm.complete_messages_with_usage(
-            system=SYSTEM_PROMPT,
-            messages=[
-                {
-                    "role": "user",
-                    "content": USER_TEMPLATE.format(
-                        character_section=character_section,
-                        scene_mapping_section=scene_mapping_section,
-                        script="[SCRIPT PROVIDED IN THE NEXT MESSAGE]",
-                    ),
-                    "cacheable": True,
-                },
-                {
-                    "role": "user",
-                    "content": f"Audio-Visual Script:\n---\n{script}\n---\n\nReturn a JSON array of shots only.",
-                },
-            ],
-            temperature=0.2,
-            enable_caching=True,
-            telemetry_context={
-                **dict(telemetry_context or {}),
-                "operation": "storyboard.parse",
+    async def _generate_storyboard_candidate(prompt_suffix: str, _attempt: int) -> tuple[list[Shot], dict[str, Any]]:
+        request_messages = [
+            {
+                "role": "user",
+                "content": USER_TEMPLATE.format(
+                    character_section=character_section,
+                    scene_mapping_section=scene_mapping_section,
+                    script="[SCRIPT PROVIDED IN THE NEXT MESSAGE]",
+                ),
+                "cacheable": True,
             },
-        )
-    except Exception as exc:
-        resolved_base_url = base_url or "(default)"
-        logger.exception(
-            "Storyboard LLM request failed provider=%s model=%s base_url=%s script_chars=%s",
-            provider,
-            model or "(default)",
-            resolved_base_url,
-            len(script or ""),
-        )
-        raise RuntimeError(
-            f"Storyboard LLM request failed (provider={provider}, model={model or '(default)'}, "
-            f"base_url={resolved_base_url}): {exc}"
-        ) from exc
-    shots = _parse_shots(raw, scene_mapping=scene_mapping, allowed_audio_lookup=script_audio_lookup)
-    return shots, usage
+            {
+                "role": "user",
+                "content": f"Audio-Visual Script:\n---\n{script}\n---\n\nReturn a JSON array of shots only.",
+            },
+        ]
+        if str(prompt_suffix or "").strip():
+            request_messages.append(
+                {
+                    "role": "user",
+                    "content": f"Additional quality constraints:\n{prompt_suffix.strip()}",
+                }
+            )
+
+        try:
+            raw, usage = await llm.complete_messages_with_usage(
+                system=SYSTEM_PROMPT,
+                messages=request_messages,
+                temperature=0.2,
+                enable_caching=True,
+                telemetry_context={
+                    **dict(telemetry_context or {}),
+                    "operation": "storyboard.parse",
+                },
+            )
+        except Exception as exc:
+            resolved_base_url = base_url or "(default)"
+            logger.exception(
+                "Storyboard LLM request failed provider=%s model=%s base_url=%s script_chars=%s",
+                provider,
+                model or "(default)",
+                resolved_base_url,
+                len(script or ""),
+            )
+            raise RuntimeError(
+                f"Storyboard LLM request failed (provider={provider}, model={model or '(default)'}, "
+                f"base_url={resolved_base_url}): {exc}"
+            ) from exc
+
+        shots = _parse_shots(raw, scene_mapping=scene_mapping, allowed_audio_lookup=script_audio_lookup)
+        return shots, usage
+
+    shots, usage, quality_run = await run_quality_guarded_generation(
+        family="storyboard_parse",
+        provider=provider,
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        generate_candidate=_generate_storyboard_candidate,
+        candidate_payload_builder=lambda candidate: [_serialize_storyboard_candidate_shot(shot) for shot in candidate],
+        telemetry_context=telemetry_context,
+    )
+    merged_usage = dict(usage or {})
+    merged_usage["quality"] = quality_run
+    return shots, merged_usage
