@@ -767,7 +767,8 @@ Story data
 - `[已完成]` `character_appearance_extract` prompt family 已接线
 - `[已完成]` `scene_style_extract` prompt family 已接线
 - `[已完成]` `generation_payload` prompt family 已接线（覆盖 runtime image / video payload 组装）
-- `[未完成]` 尚未扩展到 character design prompt / scene reference prompt 等其他主要 prompt family
+- `[已完成]` `scene_reference_prompt` prompt family 已接线
+- `[已完成]` `character_design_prompt` prompt family 已接线
 - `[未完成]` 尚未完成基于固定样本的专项人工验收与收益复盘
 
 #### 这不是“可选增强”，而是后置实施
@@ -776,7 +777,7 @@ Story data
 
 1. 当前项目先要把运行期主链路、状态真相源与恢复边界收稳。
 2. 质量优化闭环一旦过早接入，容易把问题混入主链路，导致难以定位回归来源。
-3. 当前更稳妥的节奏是：先以可回退的 MVP 方式落地 outline / storyboard 两个 family，待人工检查通过后，再继续扩展到完整质量层。
+3. 当前更稳妥的节奏是：先以可回退的 MVP 方式从 outline / storyboard 两个 family 起步，再逐步扩展到 character appearance / scene style / generation payload / scene reference / character design 七个 family；后续仍需在人工检查通过后再继续扩大覆盖范围。
 
 #### 本阶段目标
 
@@ -832,7 +833,7 @@ Story data
 
 #### 三层 DSPy 方案（超出当前 MVP 的扩展设计）
 
-当前仓库已经具备 outline / storyboard 的离线 artifact 加载、Judge 与 Feedback Loop 运行时接线；以下内容仍是面向“覆盖所有主要 prompt family”的扩展设计，不代表全量编译流程和全链路闭环已经完成。
+当前仓库已经具备 outline / storyboard / character appearance / scene style / generation payload / scene reference / character design 七个 family 的离线 artifact 加载、Judge 与 Feedback Loop 运行时接线；以下内容仍是面向“覆盖所有主要 prompt family”的扩展设计，不代表全量编译流程和全链路闭环已经完成。
 
 ##### 第一层：剧情大纲（Logic Layer）
 

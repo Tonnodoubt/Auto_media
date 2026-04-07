@@ -91,7 +91,7 @@ async def generate_videos(
                     "reference_images": payload.get("reference_images", []),
                 }
             )
-            if bool(quality.get("enabled")) or list(quality.get("warnings") or []):
+            if quality.get("enabled") or quality.get("warnings"):
                 generation_payload_quality[str(payload.get("shot_id", "")).strip()] = {"quality": quality}
     except HTTPException:
         raise

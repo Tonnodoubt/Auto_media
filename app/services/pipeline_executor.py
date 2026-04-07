@@ -566,7 +566,7 @@ class PipelineExecutor:
                 "shot_id": shot.shot_id,
             },
         )
-        if bool(quality.get("enabled")) or list(quality.get("warnings") or []):
+        if quality.get("enabled") or quality.get("warnings"):
             self.generation_payload_quality[shot.shot_id] = {"quality": quality}
         self._generation_payload_cache[shot.shot_id] = dict(payload)
         return payload

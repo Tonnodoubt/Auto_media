@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from app.core.config import (
     DEFAULT_LLM_SLOW_LOG_THRESHOLD_MS,
+    MAX_QUALITY_FEEDBACK_MAX_RETRIES,
     MAX_OUTLINE_GENERATION_CONCURRENCY,
     MAX_SCRIPT_GENERATION_CONCURRENCY,
     Settings,
@@ -35,6 +36,14 @@ class SettingsValidationTests(unittest.TestCase):
             settings = Settings(_env_file=None, script_generation_concurrency=99)
 
         self.assertEqual(settings.script_generation_concurrency, MAX_SCRIPT_GENERATION_CONCURRENCY)
+        warning_mock.assert_called_once()
+        self.assertIn("exceeds max", warning_mock.call_args.args[0])
+
+    def test_quality_feedback_max_retries_is_clamped_to_supported_max(self):
+        with patch("app.core.config.logger.warning") as warning_mock:
+            settings = Settings(_env_file=None, quality_feedback_max_retries=99)
+
+        self.assertEqual(settings.quality_feedback_max_retries, MAX_QUALITY_FEEDBACK_MAX_RETRIES)
         warning_mock.assert_called_once()
         self.assertIn("exceeds max", warning_mock.call_args.args[0])
 

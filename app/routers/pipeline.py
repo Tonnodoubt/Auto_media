@@ -1115,7 +1115,7 @@ async def generate_assets(
                         },
                     )
                     prepared_image_shots.append(payload)
-                    if bool(quality.get("enabled")) or list(quality.get("warnings") or []):
+                    if quality.get("enabled") or quality.get("warnings"):
                         generation_payload_quality[str(payload.get("shot_id", "")).strip()] = {"quality": quality}
                 image_results = await image.generate_images_batch(
                     shots=prepared_image_shots,
@@ -1309,7 +1309,7 @@ async def render_video(
                         "reference_images": payload.get("reference_images", []),
                     }
                 )
-                if bool(quality.get("enabled")) or list(quality.get("warnings") or []):
+                if quality.get("enabled") or quality.get("warnings"):
                     generation_payload_quality[str(payload.get("shot_id", "")).strip()] = {"quality": quality}
 
             video_results = await video.generate_videos_batch(

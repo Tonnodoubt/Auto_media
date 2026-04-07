@@ -1,8 +1,13 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
 
 from app.services.quality import (
+    DSPyCompiledProfile,
     JudgeResult,
+    load_compiled_dspy_profiles,
+    run_quality_judge,
     run_quality_guarded_generation,
     run_quality_guarded_prompt_payload,
     run_quality_guarded_runtime_payload,
@@ -14,6 +19,20 @@ from app.services.story_context_service import (
 )
 from app.services.storyboard import parse_script_to_storyboard
 from app.services.story_llm import generate_outline
+
+
+def _test_dspy_profile(
+    family: str,
+    *,
+    prompt_suffix: str,
+    feedback_prefix: str = "TEST_FEEDBACK_PREFIX:",
+) -> DSPyCompiledProfile:
+    return DSPyCompiledProfile(
+        family=family,  # type: ignore[arg-type]
+        version="test-version",
+        prompt_suffix=prompt_suffix,
+        feedback_prefix=feedback_prefix,
+    )
 
 
 class QualityRuntimeTests(unittest.IsolatedAsyncioTestCase):
@@ -42,6 +61,11 @@ class QualityRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_quality_guarded_generation_retries_with_feedback_when_live_judge_fails(self):
         calls: list[tuple[str, int]] = []
+        profile = _test_dspy_profile(
+            "story_outline",
+            prompt_suffix="TEST_OUTLINE_DSPY_SUFFIX",
+            feedback_prefix="TEST_OUTLINE_FEEDBACK_PREFIX:",
+        )
 
         async def generate_candidate(prompt_suffix: str, attempt: int):
             calls.append((prompt_suffix, attempt))
@@ -79,6 +103,7 @@ class QualityRuntimeTests(unittest.IsolatedAsyncioTestCase):
             patch("app.services.quality.settings.quality_judge_shadow_mode", False),
             patch("app.services.quality.settings.quality_feedback_loop_enabled", True),
             patch("app.services.quality.settings.quality_feedback_max_retries", 1),
+            patch("app.services.quality.get_compiled_dspy_profile", return_value=profile),
             patch("app.services.quality.run_quality_judge", new=AsyncMock(side_effect=judge_results)),
         ):
             candidate, usage, quality = await run_quality_guarded_generation(
@@ -93,7 +118,8 @@ class QualityRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(candidate["attempt"], 2)
         self.assertEqual(usage["prompt_tokens"], 20)
         self.assertEqual(len(calls), 2)
-        self.assertIn("DSPy 编译约束", calls[0][0])
+        self.assertIn("TEST_OUTLINE_DSPY_SUFFIX", calls[0][0])
+        self.assertIn("TEST_OUTLINE_FEEDBACK_PREFIX:", calls[1][0])
         self.assertIn("强化每集 beats 的升级与转折", calls[1][0])
         self.assertTrue(quality["enabled"])
         self.assertTrue(quality["feedback_enabled"])
@@ -101,6 +127,8 @@ class QualityRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(quality["final_passed"])
 
     async def test_quality_guarded_generation_falls_back_to_previous_candidate_when_retry_generation_fails(self):
+        profile = _test_dspy_profile("story_outline", prompt_suffix="TEST_OUTLINE_DSPY_SUFFIX")
+
         async def generate_candidate(prompt_suffix: str, attempt: int):
             if attempt == 2:
                 raise RuntimeError("retry failed")
@@ -126,6 +154,7 @@ class QualityRuntimeTests(unittest.IsolatedAsyncioTestCase):
             patch("app.services.quality.settings.quality_judge_shadow_mode", False),
             patch("app.services.quality.settings.quality_feedback_loop_enabled", True),
             patch("app.services.quality.settings.quality_feedback_max_retries", 1),
+            patch("app.services.quality.get_compiled_dspy_profile", return_value=profile),
             patch("app.services.quality.run_quality_judge", new=AsyncMock(return_value=judge_result)),
         ):
             candidate, _, quality = await run_quality_guarded_generation(
@@ -142,6 +171,11 @@ class QualityRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(quality["final_passed"])
 
     async def test_runtime_generation_payload_retries_with_overlay_feedback(self):
+        profile = _test_dspy_profile(
+            "generation_payload",
+            prompt_suffix="TEST_CONTINUITY_DSPY_SUFFIX",
+            feedback_prefix="TEST_RUNTIME_FEEDBACK_PREFIX:",
+        )
         base_payload = {
             "shot_id": "scene1_shot1",
             "image_prompt": "Medium shot. Li Ming pauses at the doorway.",
@@ -181,6 +215,7 @@ class QualityRuntimeTests(unittest.IsolatedAsyncioTestCase):
             patch("app.services.quality.settings.quality_judge_shadow_mode", False),
             patch("app.services.quality.settings.quality_feedback_loop_enabled", True),
             patch("app.services.quality.settings.quality_feedback_max_retries", 1),
+            patch("app.services.quality.get_compiled_dspy_profile", return_value=profile),
             patch("app.services.quality.run_quality_judge", new=AsyncMock(side_effect=judge_results)),
         ):
             payload, quality = await run_quality_guarded_runtime_payload(
@@ -193,7 +228,7 @@ class QualityRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertIn(
-            "Continuity lock:",
+            "TEST_CONTINUITY_DSPY_SUFFIX",
             quality["attempts"][0]["generation_usage"]["overlay_text"],
         )
         self.assertIn("Keep the opening frame fixed", payload["image_prompt"])
@@ -202,6 +237,11 @@ class QualityRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(quality["final_passed"])
 
     async def test_prompt_payload_retries_with_overlay_feedback(self):
+        profile = _test_dspy_profile(
+            "scene_reference_prompt",
+            prompt_suffix="TEST_ENVIRONMENT_DSPY_SUFFIX",
+            feedback_prefix="TEST_PROMPT_FEEDBACK_PREFIX:",
+        )
         base_payload = {
             "prompt": "Environment reference plate for a rainy courtyard.",
             "negative_prompt": "people, text, watermark",
@@ -239,6 +279,7 @@ class QualityRuntimeTests(unittest.IsolatedAsyncioTestCase):
             patch("app.services.quality.settings.quality_judge_shadow_mode", False),
             patch("app.services.quality.settings.quality_feedback_loop_enabled", True),
             patch("app.services.quality.settings.quality_feedback_max_retries", 1),
+            patch("app.services.quality.get_compiled_dspy_profile", return_value=profile),
             patch("app.services.quality.run_quality_judge", new=AsyncMock(side_effect=judge_results)),
         ):
             payload, quality = await run_quality_guarded_prompt_payload(
@@ -251,11 +292,144 @@ class QualityRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 telemetry_context={"environment_pack_key": "ep01_env01"},
             )
 
-        self.assertIn("Environment lock:", quality["attempts"][0]["generation_usage"]["overlay_text"])
+        self.assertIn("TEST_ENVIRONMENT_DSPY_SUFFIX", quality["attempts"][0]["generation_usage"]["overlay_text"])
         self.assertIn("Preserve the doorway layout", payload["prompt"])
         self.assertEqual(payload["negative_prompt"], "people, text, watermark")
         self.assertEqual(len(quality["attempts"]), 2)
         self.assertTrue(quality["final_passed"])
+
+    async def test_quality_judge_does_not_inherit_primary_config_when_provider_changes(self):
+        class FakeJudgeLLM:
+            async def complete_with_usage(self, *_args, **_kwargs):
+                return (
+                    '{"passed": true, "overall_score": 4.2, "summary": "通过", '
+                    '"issues": [], "feedback_instructions": [], "criteria": ['
+                    '{"name": "logline_and_conflict", "score": 4, "passed": true, "reason": ""}, '
+                    '{"name": "beat_progression", "score": 4, "passed": true, "reason": ""}, '
+                    '{"name": "scene_stability", "score": 4, "passed": true, "reason": ""}, '
+                    '{"name": "cross_episode_cohesion", "score": 4, "passed": true, "reason": ""}'
+                    "]}",
+                    {"prompt_tokens": 7, "completion_tokens": 3},
+                )
+
+        with (
+            patch("app.services.quality.settings.quality_judge_enabled", True),
+            patch("app.services.quality.settings.quality_judge_shadow_mode", False),
+            patch("app.services.quality.settings.quality_judge_provider", "  openai  "),
+            patch("app.services.quality.settings.quality_judge_model", "   "),
+            patch("app.services.quality.settings.quality_judge_api_key", "   "),
+            patch("app.services.quality.settings.quality_judge_base_url", "   "),
+            patch("app.services.quality.settings.openai_api_key", "openai-judge-key"),
+            patch("app.services.quality.settings.openai_base_url", "https://openai.example.com/v1"),
+            patch("app.services.quality.get_llm_provider", return_value=FakeJudgeLLM()) as provider_mock,
+        ):
+            result = await run_quality_judge(
+                family="story_outline",
+                candidate_payload={"episodes": []},
+                provider="claude",
+                model="claude-sonnet-4-6",
+                api_key="claude-primary-key",
+                base_url="https://anthropic.example.com",
+            )
+
+        self.assertFalse(result.skipped)
+        self.assertTrue(result.passed)
+        provider_mock.assert_called_once_with(
+            "openai",
+            model=None,
+            api_key="openai-judge-key",
+            base_url="https://openai.example.com/v1",
+        )
+
+    async def test_quality_judge_whitespace_config_falls_back_to_primary_request_config(self):
+        class FakeJudgeLLM:
+            async def complete_with_usage(self, *_args, **_kwargs):
+                return (
+                    '{"passed": true, "overall_score": 4.1, "summary": "通过", '
+                    '"issues": [], "feedback_instructions": [], "criteria": ['
+                    '{"name": "logline_and_conflict", "score": 4, "passed": true, "reason": ""}, '
+                    '{"name": "beat_progression", "score": 4, "passed": true, "reason": ""}, '
+                    '{"name": "scene_stability", "score": 4, "passed": true, "reason": ""}, '
+                    '{"name": "cross_episode_cohesion", "score": 4, "passed": true, "reason": ""}'
+                    "]}",
+                    {"prompt_tokens": 6, "completion_tokens": 2},
+                )
+
+        with (
+            patch("app.services.quality.settings.quality_judge_enabled", True),
+            patch("app.services.quality.settings.quality_judge_shadow_mode", False),
+            patch("app.services.quality.settings.quality_judge_provider", "   "),
+            patch("app.services.quality.settings.quality_judge_model", "   "),
+            patch("app.services.quality.settings.quality_judge_api_key", "   "),
+            patch("app.services.quality.settings.quality_judge_base_url", "   "),
+            patch("app.services.quality.get_llm_provider", return_value=FakeJudgeLLM()) as provider_mock,
+        ):
+            result = await run_quality_judge(
+                family="story_outline",
+                candidate_payload={"episodes": []},
+                provider="claude",
+                model="claude-sonnet-4-6",
+                api_key="claude-primary-key",
+                base_url="https://anthropic.example.com",
+            )
+
+        self.assertFalse(result.skipped)
+        self.assertTrue(result.passed)
+        provider_mock.assert_called_once_with(
+            "claude",
+            model="claude-sonnet-4-6",
+            api_key="claude-primary-key",
+            base_url="https://anthropic.example.com",
+        )
+
+
+class QualityArtifactLoadingTests(unittest.TestCase):
+    def test_load_compiled_dspy_profiles_fails_open_when_artifact_json_is_corrupted(self):
+        with TemporaryDirectory() as tmpdir:
+            artifact_path = Path(tmpdir) / "quality_artifacts.json"
+            artifact_path.write_text('{"version": "broken",', encoding="utf-8")
+
+            with patch("app.services.quality._QUALITY_ARTIFACT_PATH", artifact_path), patch(
+                "app.services.quality.logger.warning"
+            ) as warning_mock:
+                load_compiled_dspy_profiles.cache_clear()
+                try:
+                    profiles = load_compiled_dspy_profiles()
+                finally:
+                    load_compiled_dspy_profiles.cache_clear()
+
+        self.assertEqual(profiles, {})
+        warning_mock.assert_called_once()
+        self.assertIn("continuing without compiled DSPy profiles", warning_mock.call_args.args[0])
+
+    def test_load_compiled_dspy_profiles_recovers_after_artifact_is_fixed_without_manual_cache_clear(self):
+        with TemporaryDirectory() as tmpdir:
+            artifact_path = Path(tmpdir) / "quality_artifacts.json"
+            artifact_path.write_text('{"version": "broken",', encoding="utf-8")
+
+            with patch("app.services.quality._QUALITY_ARTIFACT_PATH", artifact_path), patch(
+                "app.services.quality.logger.warning"
+            ) as warning_mock:
+                load_compiled_dspy_profiles.cache_clear()
+                try:
+                    first_profiles = load_compiled_dspy_profiles()
+
+                    artifact_path.write_text(
+                        (
+                            '{"version":"test-v1","profiles":'
+                            '{"story_outline":{"prompt_suffix":"TEST_SUFFIX","feedback_prefix":"TEST_PREFIX"}}}'
+                        ),
+                        encoding="utf-8",
+                    )
+
+                    second_profiles = load_compiled_dspy_profiles()
+                finally:
+                    load_compiled_dspy_profiles.cache_clear()
+
+        self.assertEqual(first_profiles, {})
+        self.assertEqual(second_profiles["story_outline"].version, "test-v1")
+        self.assertEqual(second_profiles["story_outline"].prompt_suffix, "TEST_SUFFIX")
+        warning_mock.assert_called_once()
 
 
 class QualityIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -489,3 +663,50 @@ class QualityIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["quality"]["family"], "story_outline")
         self.assertEqual(saved_payloads[-1]["meta"]["quality_runs"]["story_outline"]["enabled"], True)
+
+    async def test_generate_outline_skips_persistence_when_db_is_none(self):
+        validated_outline = {
+            "meta": {"title": "标题", "genre": "类型", "episodes": 6},
+            "characters": [{"id": "char_1", "name": "李明", "role": "主角", "description": "青年"}],
+            "relationships": [],
+            "outline": [
+                {
+                    "episode": 1,
+                    "title": "第一集",
+                    "summary": "摘要",
+                    "beats": ["冲突建立"],
+                    "scene_list": ["夜 外 茶馆门口"],
+                }
+            ],
+        }
+
+        with (
+            patch("app.services.story_llm._make_client", return_value=object()),
+            patch("app.services.story_llm.repo.get_story", new=AsyncMock()) as get_story_mock,
+            patch("app.services.story_llm.repo.save_story", new=AsyncMock()) as save_story_mock,
+            patch("app.services.story_llm.repo.invalidate_story_consistency_cache", new=AsyncMock()) as invalidate_mock,
+            patch(
+                "app.services.story_llm.run_quality_guarded_generation",
+                new=AsyncMock(
+                    return_value=(
+                        validated_outline,
+                        {"prompt_tokens": 12, "completion_tokens": 3},
+                        {"enabled": True, "family": "story_outline"},
+                    )
+                ),
+            ),
+        ):
+            result = await generate_outline(
+                "story-quality-no-db",
+                "世界观设定",
+                db=None,
+                api_key="test-key",
+                provider="claude",
+                model="claude-sonnet-4-6",
+            )
+
+        get_story_mock.assert_not_awaited()
+        save_story_mock.assert_not_awaited()
+        invalidate_mock.assert_not_awaited()
+        self.assertEqual(result["outline"], validated_outline["outline"])
+        self.assertEqual(result["meta"]["quality_runs"]["story_outline"]["family"], "story_outline")

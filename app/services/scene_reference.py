@@ -818,6 +818,14 @@ async def generate_episode_scene_reference(
             continue
 
         prompts = build_episode_environment_prompts(group["scenes"], story_context, art_style=art_style)
+        group_prompt_context = {
+            "environment_pack_key": group["environment_pack_key"],
+            "group_label": group["group_label"],
+            "summary_environment": group["summary_environment"],
+            "summary_lighting": group["summary_lighting"],
+            "summary_mood": group["summary_mood"],
+            "summary_visuals": list(group["summary_visuals"]),
+        }
         variant_results: dict[str, dict[str, Any]] = {}
         for variant, prompt_payload in prompts.items():
             guarded_prompt_payload, quality = await run_quality_guarded_prompt_payload(
@@ -826,14 +834,10 @@ async def generate_episode_scene_reference(
                 model=quality_model,
                 api_key=quality_api_key,
                 base_url=quality_base_url,
-                base_payload_builder=lambda prompt_payload=prompt_payload: {
+                base_payload_builder=lambda prompt_payload=prompt_payload, group_prompt_context=group_prompt_context: {
                     **dict(prompt_payload),
-                    "environment_pack_key": group["environment_pack_key"],
-                    "group_label": group["group_label"],
-                    "summary_environment": group["summary_environment"],
-                    "summary_lighting": group["summary_lighting"],
-                    "summary_mood": group["summary_mood"],
-                    "summary_visuals": list(group["summary_visuals"]),
+                    **dict(group_prompt_context),
+                    "summary_visuals": list(group_prompt_context["summary_visuals"]),
                 },
                 telemetry_context={
                     "operation": "scene_reference.build_prompt",

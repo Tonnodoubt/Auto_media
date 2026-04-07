@@ -322,6 +322,68 @@ class SceneReferenceRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(generate_mock.await_args.args[0], "guarded scene reference prompt")
         self.assertEqual(generate_mock.await_args.kwargs["negative_prompt"], "guarded scene negative")
 
+    async def test_generate_episode_scene_reference_binds_group_context_for_prompt_builders(self):
+        story = {
+            "id": "story-scene-ref-builder-binding",
+            "meta": {},
+            "scenes": [
+                {
+                    "episode": 1,
+                    "title": "第一集",
+                    "scenes": [
+                        {"scene_number": 1, "environment": "庭院", "visual": "雨夜庭院，青石地面与廊灯"},
+                        {"scene_number": 2, "environment": "书房", "visual": "烛火书房，书架与木桌"},
+                    ],
+                }
+            ],
+        }
+        captured_builders = []
+
+        async def fake_run_quality_guarded_prompt_payload(*, base_payload_builder, **_kwargs):
+            captured_builders.append(base_payload_builder)
+            return (
+                {
+                    "prompt": "guarded scene reference prompt",
+                    "negative_prompt": "guarded scene negative",
+                },
+                {"enabled": True, "family": "scene_reference_prompt"},
+            )
+
+        with (
+            patch(
+                "app.services.scene_reference.resolve_default_quality_llm_config",
+                return_value=("claude", "demo-model", "quality-key", "https://llm.example.com"),
+            ),
+            patch(
+                "app.services.scene_reference.run_quality_guarded_prompt_payload",
+                new=AsyncMock(side_effect=fake_run_quality_guarded_prompt_payload),
+            ),
+            patch(
+                "app.services.scene_reference.generate_image",
+                new=AsyncMock(
+                    return_value={
+                        "shot_id": "ep01_env_scene",
+                        "image_url": "/media/episodes/scene-quality.png",
+                        "image_path": "media/episodes/scene-quality.png",
+                    }
+                ),
+            ),
+        ):
+            await generate_episode_scene_reference(
+                story,
+                story_context=None,
+                episode=1,
+            )
+
+        self.assertEqual(len(captured_builders), 2)
+        built_payloads = [builder() for builder in captured_builders]
+        self.assertEqual(built_payloads[0]["environment_pack_key"], "ep01_env01")
+        self.assertEqual(built_payloads[1]["environment_pack_key"], "ep01_env02")
+        self.assertEqual(built_payloads[0]["group_label"], "环境组 1")
+        self.assertEqual(built_payloads[1]["group_label"], "环境组 2")
+        self.assertEqual(built_payloads[0]["summary_environment"], "庭院")
+        self.assertEqual(built_payloads[1]["summary_environment"], "书房")
+
     async def test_generate_scene_reference_persists_episode_and_scene_assets(self):
         story = {
             "id": "story-scene-ref",

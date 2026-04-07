@@ -13,6 +13,7 @@ MAX_OUTLINE_GENERATION_CONCURRENCY = 3
 DEFAULT_SCRIPT_GENERATION_CONCURRENCY = 3
 #最大并发数
 MAX_SCRIPT_GENERATION_CONCURRENCY = 6
+MAX_QUALITY_FEEDBACK_MAX_RETRIES = 3
 
 
 class Settings(BaseSettings):
@@ -171,6 +172,13 @@ class Settings(BaseSettings):
         if retries < 0:
             logger.warning("Invalid negative quality_feedback_max_retries=%s; falling back to 0", retries)
             return 0
+        if retries > MAX_QUALITY_FEEDBACK_MAX_RETRIES:
+            logger.warning(
+                "quality_feedback_max_retries=%s exceeds max=%s; falling back to max",
+                retries,
+                MAX_QUALITY_FEEDBACK_MAX_RETRIES,
+            )
+            return MAX_QUALITY_FEEDBACK_MAX_RETRIES
         return retries
 
     @field_validator("script_generation_concurrency", mode="before")
