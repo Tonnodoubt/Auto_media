@@ -10,6 +10,10 @@ function normalizeEpisodeNumber(value) {
   return Number.isInteger(parsed) ? parsed : null
 }
 
+function normalizeOptionalText(value) {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
 export function getSceneKey(episode, sceneNumber) {
   return `ep${String(episode).padStart(2, '0')}_scene${String(sceneNumber).padStart(2, '0')}`
 }
@@ -212,9 +216,11 @@ export const useStoryStore = defineStore('story', {
     totalTokens: (state) => state.usage.prompt_tokens + state.usage.completion_tokens,
   },
   actions: {
-    startNewStory(idea = '') {
+    startNewStory(idea = '', genre = '', tone = '') {
       this.$reset()
-      this.input.idea = idea
+      this.input.idea = normalizeOptionalText(idea)
+      this.input.genre = normalizeOptionalText(genre)
+      this.input.tone = normalizeOptionalText(tone)
       this.currentStep = 1
     },
     setManualPipelineContext({ projectId = '', pipelineId = '', storyId = '' } = {}) {
@@ -237,7 +243,9 @@ export const useStoryStore = defineStore('story', {
         storyId: this.manualStoryId,
       })
     },
-    setSelectedSetting(val) { this.selectedSetting = val },
+    setSelectedSetting(val) {
+      this.selectedSetting = normalizeOptionalText(val)
+    },
     setArtStyle(val) {
       if (typeof val !== 'string') {
         this.artStyle = ''
@@ -664,7 +672,7 @@ export const useStoryStore = defineStore('story', {
         genre: storyData.genre || '',
         tone: storyData.tone || '',
       }
-      this.selectedSetting = storyData.selected_setting || ''
+      this.setSelectedSetting(storyData.selected_setting)
       this.meta = storyData.meta || null
       this.characters = storyData.characters || []
       this.relationships = storyData.relationships || []
@@ -733,7 +741,7 @@ export const useStoryStore = defineStore('story', {
       this.wbHistory = newHistory
       this.wbCurrentQuestion = question || null
       if (status === 'complete' && world_summary) {
-        this.selectedSetting = world_summary
+        this.setSelectedSetting(world_summary)
       }
       if (usage) {
         this.usage.prompt_tokens += usage.prompt_tokens

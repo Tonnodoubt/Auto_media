@@ -8,6 +8,12 @@
   gap: 14px;
 }
 .gen-title { font-size: 13px; font-weight: 600; color: #6c63ff; }
+.gen-note {
+  margin-top: -4px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #7c7698;
+}
 
 .dimensions { display: flex; flex-direction: column; gap: 12px; }
 
@@ -43,12 +49,41 @@
   color: #6c63ff;
   font-weight: 600;
 }
+.dim-input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 2px solid #e0e0e0;
+  font-size: 13px;
+  line-height: 1.5;
+  font-family: inherit;
+  transition: border-color 0.2s;
+}
+.dim-input:focus {
+  border-color: #6c63ff;
+}
+.dim-input:focus-visible {
+  outline: 2px solid #6c63ff;
+  outline-offset: 2px;
+}
+.dim-input:focus:not(:focus-visible) {
+  outline: none;
+}
+.dim-note {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #7c7698;
+}
+.dim-note.warn {
+  color: #c27a00;
+}
 
 .gen-actions { display: flex; gap: 8px; }
 .random-all-btn {
   padding: 9px 14px;
   background: #f0eeff;
   color: #6c63ff;
+  border: none;
   border-radius: 10px;
   font-size: 13px;
   font-weight: 600;
@@ -56,11 +91,16 @@
   transition: background 0.2s;
 }
 .random-all-btn:hover { background: #e0d9ff; }
+.random-all-btn:focus-visible {
+  outline: 2px solid #6c63ff;
+  outline-offset: 2px;
+}
 .gen-btn {
   flex: 1;
   padding: 9px;
   background: #6c63ff;
   color: #fff;
+  border: none;
   border-radius: 10px;
   font-size: 13px;
   font-weight: 600;
@@ -69,6 +109,10 @@
 }
 .gen-btn:hover:not(:disabled) { background: #5a52e0; }
 .gen-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.gen-btn:focus-visible {
+  outline: 2px solid #6c63ff;
+  outline-offset: 2px;
+}
 
 .preview {
   padding: 10px 14px;

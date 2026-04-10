@@ -5,11 +5,11 @@
       <div class="title-row">
         <div>
           <h1>剧本生成</h1>
-          <p class="subtitle">确认大纲后开始生成完整剧本</p>
+          <p class="subtitle">先确认集数，再开始生成完整剧本</p>
         </div>
       </div>
 
-      <div class="top-row">
+      <div v-if="showPostGenerationPanels" class="top-row">
         <div class="outline-col">
           <OutlinePreview
             v-if="store.meta"
@@ -32,11 +32,46 @@
         </div>
       </div>
 
+      <div class="episode-count-card">
+        <div class="episode-count-copy">
+          <div class="episode-count-title">剧本集数</div>
+          <div class="episode-count-subtitle">支持自定义集数。修改后，点击生成剧本会先按新集数重建大纲。</div>
+        </div>
+        <label class="episode-count-field">
+          <span>集数</span>
+          <input
+            v-model="episodeCountInput"
+            type="text"
+            inputmode="numeric"
+            class="episode-count-input"
+            placeholder="请输入集数"
+            :disabled="streaming"
+          />
+        </label>
+      </div>
+
+      <div
+        v-if="episodeCountInputInvalid"
+        class="error-tip episode-count-tip"
+        role="alert"
+        aria-live="assertive"
+      >
+        请输入大于 0 的整数集数。
+      </div>
+      <div
+        v-else-if="episodeCountChanged && !streaming"
+        class="resume-hint episode-count-tip"
+        role="status"
+        aria-live="polite"
+      >
+        {{ episodeCountHint }}
+      </div>
+
       <div v-if="showResumeActionRow" class="generate-action-row">
         <button
           class="continue-btn"
           type="button"
-          :disabled="!store.meta || nextIncompleteEpisode == null"
+          :disabled="nextIncompleteEpisode == null || !canSubmitEpisodeCount || episodeCountChanged"
           :title="resumeButtonHint"
           @click="startContinueGenerate"
         >
@@ -44,10 +79,10 @@
         </button>
         <button
           class="generate-btn generate-btn-secondary"
-          :disabled="!store.meta"
+          :disabled="!store.selectedSetting || !canSubmitEpisodeCount"
           @click="startGenerate"
         >
-          重新生成全部 ✨
+          {{ generateButtonLabel }}
         </button>
       </div>
 
@@ -57,7 +92,7 @@
       >
         <button
           class="generate-btn"
-          :disabled="!store.meta"
+          :disabled="!store.selectedSetting || !canSubmitEpisodeCount"
           @click="startGenerate"
         >
           {{ generateButtonLabel }}
@@ -137,9 +172,20 @@ import ApiKeyModal from '../components/ApiKeyModal.vue'
 import OutlineChatPanel from '../components/OutlineChatPanel.vue'
 import ArtStyleSelector from '../components/ArtStyleSelector.vue'
 import { useStoryStore } from '../stores/story.js'
-import { streamScript } from '../api/story.js'
+import { generateOutline, streamScript } from '../api/story.js'
 import { canAccessStep, getStepRedirectPath } from '../utils/stepAccess.js'
 import { formatEpisodeList, getIncompleteScriptEpisodes, hasCompleteGeneratedScript } from '../utils/scriptValidation.js'
+
+function parsePositiveInteger(value) {
+  const text = String(value ?? '').trim()
+  if (!/^\d+$/.test(text)) return null
+  const parsed = Number.parseInt(text, 10)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null
+}
+
+function parseEpisodeCountInput(value) {
+  return parsePositiveInteger(value)
+}
 
 const router = useRouter()
 const store = useStoryStore()
@@ -151,7 +197,22 @@ const keyModalType = ref('missing')
 const keyModalMsg = ref('')
 const currentEpisodeIndex = ref(0)
 const userPinnedEpisode = ref(false)
+const episodeCountInput = ref('')
 const hasSceneOutput = computed(() => store.scenes.length > 0)
+const showPostGenerationPanels = computed(() => !streaming.value && hasSceneOutput.value)
+const currentOutlineEpisodeCount = computed(() => (
+  parsePositiveInteger(store.meta?.episodes) || parsePositiveInteger(store.outline.length) || null
+))
+const requestedEpisodeCount = computed(() => parseEpisodeCountInput(episodeCountInput.value))
+const canSubmitEpisodeCount = computed(() => requestedEpisodeCount.value != null)
+const episodeCountInputInvalid = computed(() => (
+  episodeCountInput.value.trim().length > 0 && requestedEpisodeCount.value == null
+))
+const episodeCountChanged = computed(() => (
+  currentOutlineEpisodeCount.value != null
+  && requestedEpisodeCount.value != null
+  && requestedEpisodeCount.value !== currentOutlineEpisodeCount.value
+))
 const generatedEpisodeNumbers = computed(() => store.scenes
   .filter(episode => Array.isArray(episode?.scenes) && episode.scenes.length > 0)
   .map(episode => {
@@ -176,12 +237,26 @@ const incompleteEpisodes = computed(() => getIncompleteScriptEpisodes({
 const nextIncompleteEpisode = computed(() => incompleteEpisodes.value[0] ?? null)
 const done = computed(() => store.step3Done && hasValidScript.value)
 const canGenerate = computed(() => !streaming.value)
-const generateButtonLabel = computed(() => (hasSceneOutput.value ? '重新生成剧本 ✨' : '开始生成剧本 ✨'))
+const episodeCountHint = computed(() => {
+  if (!episodeCountChanged.value || requestedEpisodeCount.value == null) return ''
+  if (hasSceneOutput.value) {
+    return `当前大纲是 ${currentOutlineEpisodeCount.value} 集，生成时会先更新为 ${requestedEpisodeCount.value} 集，并清空已生成剧本。`
+  }
+  return `当前大纲是 ${currentOutlineEpisodeCount.value} 集，生成时会先更新为 ${requestedEpisodeCount.value} 集并重新生成大纲。`
+})
+const generateButtonLabel = computed(() => {
+  if (episodeCountChanged.value) {
+    return hasSceneOutput.value ? '更新集数并重新生成剧本 ✨' : '按新集数生成剧本 ✨'
+  }
+  return hasSceneOutput.value ? '重新生成剧本 ✨' : '开始生成剧本 ✨'
+})
 const showResumeActionRow = computed(() => (
   canGenerate.value
   && hasSceneOutput.value
   && !hasValidScript.value
   && nextIncompleteEpisode.value != null
+  && !episodeCountChanged.value
+  && !episodeCountInputInvalid.value
 ))
 const continueButtonLabel = computed(() => (
   nextIncompleteEpisode.value != null
@@ -215,6 +290,14 @@ onMounted(() => {
     return
   }
 })
+
+watch(
+  currentOutlineEpisodeCount,
+  (nextValue) => {
+    episodeCountInput.value = nextValue == null ? '' : String(nextValue)
+  },
+  { immediate: true }
+)
 
 watch(
   () => store.scenes.length,
@@ -260,23 +343,50 @@ function setScriptGenerationError(message) {
   error.value = resumeHint ? `${normalizedMessage}，${resumeHint}` : normalizedMessage
 }
 
+async function syncOutlineEpisodeCount() {
+  const targetEpisodeCount = requestedEpisodeCount.value
+  if (targetEpisodeCount == null) {
+    throw new Error('请输入大于 0 的整数集数')
+  }
+  if (!store.storyId || !store.selectedSetting) {
+    throw new Error('当前缺少世界观总结，请返回上一步确认后再生成剧本。')
+  }
+  if (targetEpisodeCount === currentOutlineEpisodeCount.value && store.outline.length === targetEpisodeCount) {
+    return false
+  }
+
+  const outline = await generateOutline(store.storyId, store.selectedSetting, targetEpisodeCount)
+  store.setOutlineResult(outline)
+  store.setStep(3)
+  currentEpisodeIndex.value = 0
+  userPinnedEpisode.value = false
+  return true
+}
+
 async function runGenerate({ resumeFromEpisode = null } = {}) {
   scriptAbortController?.abort()
   const controller = new AbortController()
   scriptAbortController = controller
-  const isResumeGeneration = Number.isInteger(resumeFromEpisode)
+  let isResumeGeneration = Number.isInteger(resumeFromEpisode)
   streaming.value = true
   error.value = ''
   userPinnedEpisode.value = false
   store.setStep(3)
-  if (isResumeGeneration) {
-    store.retainScenesBeforeEpisode(resumeFromEpisode)
-    currentEpisodeIndex.value = Math.max(store.scenes.length - 1, 0)
-  } else {
-    currentEpisodeIndex.value = 0
-    store.resetScenes()
-  }
   try {
+    const outlineUpdated = await syncOutlineEpisodeCount()
+    if (outlineUpdated) {
+      isResumeGeneration = false
+      resumeFromEpisode = null
+    }
+
+    if (isResumeGeneration) {
+      store.retainScenesBeforeEpisode(resumeFromEpisode)
+      currentEpisodeIndex.value = Math.max(store.scenes.length - 1, 0)
+    } else {
+      currentEpisodeIndex.value = 0
+      store.resetScenes()
+    }
+
     await streamScript(
       store.storyId,
       (scene) => store.addScene(scene),
@@ -312,6 +422,16 @@ async function runGenerate({ resumeFromEpisode = null } = {}) {
       controller.signal,
       isResumeGeneration ? { resumeFromEpisode } : {}
     )
+  } catch (e) {
+    const msg = e.message || '生成失败，请重试'
+    store.setStep(3)
+    store.step3Done = false
+    error.value = msg
+    if (isAuthError(msg)) {
+      keyModalType.value = 'invalid'
+      keyModalMsg.value = 'API Key 无效或已过期，请检查后重新设置。'
+      showKeyModal.value = true
+    }
   } finally {
     streaming.value = false
     if (scriptAbortController === controller) {
@@ -325,6 +445,7 @@ async function startGenerate() {
 }
 
 async function startContinueGenerate() {
+  if (episodeCountChanged.value || !canSubmitEpisodeCount.value) return
   if (nextIncompleteEpisode.value == null) return
   await runGenerate({ resumeFromEpisode: nextIncompleteEpisode.value })
 }

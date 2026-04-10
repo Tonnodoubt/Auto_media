@@ -9,8 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.story_script import serialize_story_to_script
-from app.schemas.story import AnalyzeIdeaRequest, GenerateOutlineRequest, GenerateScriptRequest, ChatRequest, RefineRequest, WorldBuildingStartRequest, WorldBuildingTurnRequest, PatchStoryRequest, ApplyChatRequest
-from app.services.story_llm import analyze_idea, generate_outline, generate_script, chat, refine, world_building_start, world_building_turn, apply_chat
+from app.schemas.story import AnalyzeIdeaRequest, ApplyChatRequest, ChatRequest, GenerateOutlineRequest, GenerateScriptRequest, PatchStoryRequest, PolishVisualStyleRequest, RefineRequest, RewriteIdeaRequest, WorldBuildingStartRequest, WorldBuildingTurnRequest
+from app.services.story_llm import analyze_idea, apply_chat, chat, generate_outline, generate_script, polish_visual_style, refine, rewrite_idea, world_building_start, world_building_turn
 from app.services import story_repository as repo
 from app.core.api_keys import get_art_style, image_config_dep, llm_config_dep, resolve_llm_config
 from app.core.model_defaults import resolve_image_model
@@ -170,9 +170,30 @@ async def api_analyze_idea(req: AnalyzeIdeaRequest, llm: dict = Depends(llm_conf
     return await analyze_idea(req.idea, req.genre, req.tone, db=db, **llm)
 
 
+@router.post("/rewrite-idea")
+async def api_rewrite_idea(req: RewriteIdeaRequest, llm: dict = Depends(llm_config_dep)):
+    return await rewrite_idea(
+        req.original_idea,
+        req.current_idea,
+        req.instruction,
+        rewrite_round=req.round,
+        genre=req.genre,
+        **llm,
+    )
+
+
+@router.post("/polish-visual-style")
+async def api_polish_visual_style(req: PolishVisualStyleRequest, llm: dict = Depends(llm_config_dep)):
+    return await polish_visual_style(
+        req.description,
+        current_style=req.current_style,
+        **llm,
+    )
+
+
 @router.post("/generate-outline")
 async def api_generate_outline(req: GenerateOutlineRequest, llm: dict = Depends(llm_config_dep), db: AsyncSession = Depends(get_db)):
-    return await generate_outline(req.story_id, req.selected_setting, db=db, **llm)
+    return await generate_outline(req.story_id, req.selected_setting, req.episode_count, db=db, **llm)
 
 
 @router.post("/chat")
@@ -331,7 +352,7 @@ async def api_apply_chat(req: ApplyChatRequest, llm: dict = Depends(llm_config_d
 
 @router.post("/world-building/start")
 async def api_wb_start(req: WorldBuildingStartRequest, llm: dict = Depends(llm_config_dep), db: AsyncSession = Depends(get_db)):
-    return await world_building_start(req.idea, db=db, **llm)
+    return await world_building_start(req.idea, genre=req.genre, db=db, **llm)
 
 
 @router.post("/world-building/turn")

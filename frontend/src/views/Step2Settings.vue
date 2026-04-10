@@ -8,7 +8,10 @@
       <!-- 种子想法折叠卡片 -->
       <div class="idea-recap" @click="ideaExpanded = !ideaExpanded">
         <div class="recap-header">
-          <span class="recap-label">你的灵感</span>
+          <div class="recap-meta">
+            <span class="recap-label">你的灵感</span>
+            <span v-if="store.input.genre" class="recap-tag">{{ store.input.genre }}</span>
+          </div>
           <span class="recap-toggle">{{ ideaExpanded ? '▼' : '▲' }}</span>
         </div>
         <div v-if="ideaExpanded" class="recap-body">{{ store.input.idea }}</div>
@@ -74,11 +77,38 @@
       </div>
 
       <!-- 完成状态 -->
-      <div v-if="complete || (!store.wbCurrentQuestion && store.wbTurn > 0)" class="complete-area">
-        <div class="complete-msg">{{ store.meta ? '世界观构建完成！' : '世界观构建完成，正在生成大纲...' }}</div>
-        <button v-if="store.meta && !submitting" class="submit-btn complete-action-btn" @click="router.push('/step3')">前往剧本生成 →</button>
-        <button v-if="error && !submitting && !store.meta" class="submit-btn complete-action-btn" @click="retryOutline">重试生成大纲</button>
-        <div v-if="error" class="error-tip complete-error-tip">{{ error }}</div>
+      <div v-if="worldBuildingComplete" class="complete-area">
+        <div class="complete-msg">{{ completeMessage }}</div>
+        <div class="btn-row complete-btn-row">
+          <button
+            class="back-btn complete-secondary-btn"
+            :disabled="submitting || !store.selectedSetting"
+            @click="goToScriptStep"
+          >
+            前往剧本生成 →
+          </button>
+          <button
+            class="submit-btn complete-action-btn"
+            :disabled="submitting || !store.input.idea"
+            @click="requestRestartWorldBuilding"
+          >
+            {{ restartWorldBuildingButtonLabel }}
+          </button>
+        </div>
+        <div v-if="!store.selectedSetting" class="error-tip complete-error-tip">当前缺少世界观总结，暂时无法生成剧本。</div>
+        <div v-else-if="error" class="error-tip complete-error-tip">{{ error }}</div>
+      </div>
+    </div>
+  </div>
+  <div v-if="showRestartConfirm" class="overlay" @click.self="closeRestartConfirm">
+    <div class="confirm-box">
+      <div class="confirm-title">确认重新构建世界观</div>
+      <div class="confirm-msg">{{ restartConfirmMessage }}</div>
+      <div class="confirm-actions">
+        <button class="confirm-cancel" :disabled="submitting" @click="closeRestartConfirm">取消</button>
+        <button class="confirm-ok" :disabled="submitting" @click="restartWorldBuilding">
+          {{ activeAction === 'restart' ? '重新构建中...' : '确认重新构建' }}
+        </button>
       </div>
     </div>
   </div>
@@ -92,28 +122,40 @@
 </template>
 
 <script setup>
-import { ref, watch, nextTick, onMounted } from 'vue'
+import { computed, ref, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import StepIndicator from '../components/StepIndicator.vue'
 import ApiKeyModal from '../components/ApiKeyModal.vue'
 import { useStoryStore } from '../stores/story.js'
-import { useSettingsStore } from '../stores/settings.js'
-import { worldBuildingTurn, generateOutline } from '../api/story.js'
+import { worldBuildingStart, worldBuildingTurn } from '../api/story.js'
 
 const router = useRouter()
 const store = useStoryStore()
-const settings = useSettingsStore()
 
 const answer = ref('')
 const customAnswer = ref('')
 const submitting = ref(false)
-const complete = ref(false)
 const error = ref('')
 const ideaExpanded = ref(true)
 const historyEl = ref(null)
 const showKeyModal = ref(false)
 const keyModalType = ref('missing')
 const keyModalMsg = ref('')
+const showRestartConfirm = ref(false)
+const activeAction = ref('')
+const worldBuildingComplete = computed(() => !store.wbCurrentQuestion && store.wbTurn > 0)
+const completeMessage = computed(() => (
+  '世界观构建完成，可前往剧本生成或重新构建世界观。'
+))
+const restartWorldBuildingButtonLabel = computed(() => (
+  activeAction.value === 'restart' ? '重新构建中...' : '重新构建世界观'
+))
+const restartConfirmMessage = computed(() => {
+  const parts = ['当前世界观问答']
+  if (store.meta) parts.push('已生成的大纲')
+  if (store.scenes?.length) parts.push('已生成的剧本')
+  return `继续后将从第 1 轮重新开始，并清空${parts.join('、')}。此操作不可撤销，确定继续吗？`
+})
 
 function isAuthError(msg) {
   return /401|403|invalid|incorrect|unauthorized|api.?key/i.test(msg)
@@ -126,40 +168,48 @@ async function scrollToBottom() {
 
 watch(() => store.wbHistory.length, scrollToBottom)
 
-onMounted(async () => {
-  // World building completed but outline generation was interrupted (e.g., user opened settings mid-flight)
-  // wbCurrentQuestion is null (no more questions) and meta not yet set → retry generateOutline
-  if (!store.wbCurrentQuestion && store.wbTurn > 0 && store.selectedSetting && !store.meta) {
-    complete.value = true
-    submitting.value = true
-    try {
-      const outline = await generateOutline(store.storyId, store.selectedSetting)
-      store.setOutlineResult(outline)
-      store.setStep(3)
-      router.push('/step3')
-    } catch (e) {
-      const msg = e.message || '请求失败'
-      if (isAuthError(msg)) {
-        keyModalType.value = 'invalid'
-        keyModalMsg.value = 'API Key 无效或已过期，请检查后重新设置。'
-        showKeyModal.value = true
-      } else {
-        error.value = msg
-      }
-    } finally {
-      submitting.value = false
-    }
+function goToScriptStep() {
+  if (!store.storyId || !store.selectedSetting) {
+    error.value = '当前缺少世界观总结，暂时无法生成剧本。'
+    return
   }
-})
+  error.value = ''
+  store.setStep(3)
+  router.push('/step3')
+}
 
-async function retryOutline() {
+function closeRestartConfirm() {
+  if (submitting.value) return
+  showRestartConfirm.value = false
+}
+
+function requestRestartWorldBuilding() {
+  if (!store.input.idea || submitting.value) return
+  showRestartConfirm.value = true
+}
+
+async function restartWorldBuilding() {
+  const inputIdea = String(store.input.idea || '').trim()
+  const inputGenre = String(store.input.genre || '').trim()
+  const inputTone = String(store.input.tone || '').trim()
+  if (!inputIdea) {
+    error.value = '当前缺少灵感内容，暂时无法重新构建世界观。'
+    return
+  }
+
   submitting.value = true
+  activeAction.value = 'restart'
   error.value = ''
   try {
-    const outline = await generateOutline(store.storyId, store.selectedSetting)
-    store.setOutlineResult(outline)
-    store.setStep(3)
-    router.push('/step3')
+    showRestartConfirm.value = false
+    const result = await worldBuildingStart(inputIdea, inputGenre)
+    answer.value = ''
+    customAnswer.value = ''
+    store.startNewStory(inputIdea, inputGenre, inputTone)
+    store.setWorldBuildingStart(result)
+    store.setStep(2)
+    ideaExpanded.value = true
+    await scrollToBottom()
   } catch (e) {
     const msg = e.message || '请求失败'
     if (isAuthError(msg)) {
@@ -171,6 +221,7 @@ async function retryOutline() {
     }
   } finally {
     submitting.value = false
+    activeAction.value = ''
   }
 }
 
@@ -178,19 +229,13 @@ async function submitTurn() {
   const userAnswer = answer.value.trim()
   if (!userAnswer) return
   submitting.value = true
+  activeAction.value = 'turn'
   error.value = ''
   try {
     const result = await worldBuildingTurn(store.storyId, userAnswer)
     answer.value = ''
     customAnswer.value = ''
     store.appendWbTurn({ ...result, answer: userAnswer })
-    if (result.status === 'complete') {
-      complete.value = true
-      const outline = await generateOutline(store.storyId, result.world_summary)
-      store.setOutlineResult(outline)
-      store.setStep(3)
-      router.push('/step3')
-    }
   } catch (e) {
     const msg = e.message || '请求失败'
     if (isAuthError(msg)) {
@@ -202,6 +247,7 @@ async function submitTurn() {
     }
   } finally {
     submitting.value = false
+    activeAction.value = ''
   }
 }
 </script>

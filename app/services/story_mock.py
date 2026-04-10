@@ -1,7 +1,9 @@
 # ruff: noqa: RUF001
 
 import asyncio
+import json as _json
 import uuid
+from copy import deepcopy
 from typing import AsyncGenerator, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.services import story_repository as repo
@@ -256,15 +258,157 @@ async def mock_analyze_idea(idea: str, genre: str, tone: str, db: AsyncSession =
     return {"story_id": story_id, **MOCK_ANALYZE}
 
 
-async def mock_generate_outline(story_id: str, selected_setting: str, db: AsyncSession = None) -> dict:
+async def mock_rewrite_idea(original_idea: str, current_idea: str, instruction: str, rewrite_round: int = 1, genre: str = "") -> dict:
+    await asyncio.sleep(0.4)
+    base_idea = str(current_idea or original_idea or "").strip()
+    original = str(original_idea or base_idea).strip()
+    request = str(instruction or "").strip()
+    normalized_genre = str(genre or "").strip()
+    normalized_base = base_idea.rstrip("。！？!?；;，, ")
+    if not normalized_base:
+        normalized_base = "这个故事灵感"
+
+    notice = ""
+    risky_keywords = ("改成", "换成", "不要这个", "完全重写", "另一个故事", "彻底改")
+    if any(keyword in request for keyword in risky_keywords):
+        notice = "已尽量按你的要求调整表达，但本轮仍优先保留原始灵感的核心设定和冲突方向。"
+
+    rewritten_idea = (
+        f"{normalized_base}，开场就抛出足以改变人物命运的强冲突，并把故事收束在{normalized_genre}题材方向，让观众更快被吸进去。"
+        if normalized_genre
+        else f"{normalized_base}，开场就抛出足以改变人物命运的强冲突，让观众更快被吸进去。"
+    )
+
+    return {
+        "original_idea": original,
+        "current_idea": base_idea,
+        "instruction": request,
+        "round": max(1, int(rewrite_round or 1)),
+        "guardrail_notice": notice,
+        "rewritten_idea": rewritten_idea,
+        "rewrite_reason": (
+            f"已按{normalized_genre}题材方向生成短剧感增强版，并尽量保留原始灵感核心。"
+            if normalized_genre
+            else "已按短剧感增强版方向直接改写，并尽量保留原始灵感核心。"
+        ),
+        "usage": None,
+    }
+
+
+async def mock_polish_visual_style(description: str, current_style: str = "") -> dict:
+    await asyncio.sleep(0.3)
+    normalized_description = str(description or "").strip()
+    normalized_current = str(current_style or "").strip()
+
+    polished_style = normalized_description
+    if normalized_current and any(keyword in normalized_description for keyword in ("更", "再", "保留", "延续", "基础上")):
+        polished_style = f"{normalized_current}，并整体往{normalized_description}收束"
+
+    polished_style = polished_style or normalized_current or "写实影视感，色调克制统一，光影自然，细节不过度堆砌"
+
+    return {
+        "description": normalized_description,
+        "current_style": normalized_current,
+        "polished_style": polished_style,
+        "usage": None,
+    }
+
+
+def _build_mock_outline_payload(episode_count: int) -> dict:
+    normalized_count = max(1, int(episode_count or 6))
+    outline: list[dict] = []
+    base_outline = MOCK_OUTLINE["outline"]
+
+    for index in range(normalized_count):
+        episode_number = index + 1
+        if index < len(base_outline):
+            episode_entry = deepcopy(base_outline[index])
+            episode_entry["episode"] = episode_number
+        else:
+            episode_entry = {
+                "episode": episode_number,
+                "title": f"局势再升级 {episode_number}",
+                "summary": f"第 {episode_number} 集中，主角关系与外部阻碍同步升级，新的真相和压力迫使双方做出更危险的选择。",
+                "beats": [
+                    f"第 {episode_number} 集开场抛出新的阻碍与压力。",
+                    "人物关系在误解或利益冲突中继续收紧。",
+                    "本集结尾留下更强的下一集钩子。",
+                ],
+                "scene_list": [
+                    f"Scene 1: [夜] [室内] [关键对峙现场] - 第 {episode_number} 集的核心冲突爆发，人物被迫做出选择。"
+                ],
+            }
+        outline.append(episode_entry)
+
+    if outline:
+        last_episode = outline[-1]
+        last_episode["title"] = "终局抉择"
+        last_episode["summary"] = f"第 {normalized_count} 集完成主要矛盾收束，主角面对最终选择并给出情感与命运上的回应。"
+        last_episode["beats"] = [
+            "前面积累的冲突在本集集中爆发。",
+            "人物直面核心误解或最终阻碍。",
+            "主线关系与命运走向在本集完成收束。",
+        ]
+        last_episode["scene_list"] = [
+            f"Scene 1: [夜] [室外] [最终对决地点] - 第 {normalized_count} 集完成核心冲突与情感收束。"
+        ]
+
+    return {
+        "meta": {
+            **deepcopy(MOCK_OUTLINE["meta"]),
+            "episodes": normalized_count,
+        },
+        "characters": deepcopy(MOCK_OUTLINE["characters"]),
+        "relationships": deepcopy(MOCK_OUTLINE["relationships"]),
+        "outline": outline,
+    }
+
+
+def _build_mock_script_scene(episode_entry: dict) -> dict:
+    episode_number = int(episode_entry.get("episode", 1) or 1)
+    title = str(episode_entry.get("title") or f"第 {episode_number} 集").strip()
+    summary = str(episode_entry.get("summary") or "").strip()
+    scene_heading = f"[夜] [室内] [第 {episode_number} 集主场景]"
+    return {
+        "episode": episode_number,
+        "title": title,
+        "scenes": [
+            {
+                "scene_number": 1,
+                "scene_heading": scene_heading,
+                "environment_anchor": f"第 {episode_number} 集主场景",
+                "environment": f"围绕《{title}》展开的核心场景，环境明确承载本集主冲突与情绪推进。",
+                "lighting": "冷暖对比的戏剧化主光",
+                "mood": "高压推进中的情绪爆点",
+                "emotion_tags": [
+                    {"target": "主角", "emotion": "紧张", "intensity": 0.8},
+                ],
+                "key_props": ["关键证据", "情绪触发物"],
+                "visual": summary or f"第 {episode_number} 集围绕新的冲突升级展开，人物在主场景中正面碰撞。",
+                "key_actions": [
+                    "人物进入冲突现场",
+                    "关键对话或对抗爆发",
+                    "结尾留下新的悬念或抉择",
+                ],
+                "audio": [
+                    {"character": "主角", "line": "这一次，我不会再退了。"},
+                    {"character": "对手", "line": "你终于肯面对真相了。"},
+                ],
+            }
+        ],
+    }
+
+
+async def mock_generate_outline(story_id: str, selected_setting: str, episode_count: int = 6, db: AsyncSession = None) -> dict:
     await asyncio.sleep(0.5)
+    outline_payload = _build_mock_outline_payload(episode_count)
     if db:
         await repo.save_story(db, story_id, {
             "selected_setting": selected_setting,
-            "meta": MOCK_OUTLINE["meta"],
-            "characters": MOCK_OUTLINE["characters"],
-            "relationships": MOCK_OUTLINE["relationships"],
-            "outline": MOCK_OUTLINE["outline"],
+            "meta": outline_payload["meta"],
+            "characters": outline_payload["characters"],
+            "relationships": outline_payload["relationships"],
+            "outline": outline_payload["outline"],
             "scenes": [],
         })
         latest_story = await repo.get_story(db, story_id)
@@ -275,7 +419,7 @@ async def mock_generate_outline(story_id: str, selected_setting: str, db: AsyncS
             "relationships": latest_story.get("relationships", []),
             "outline": latest_story.get("outline", []),
         }
-    return {"story_id": story_id, **MOCK_OUTLINE}
+    return {"story_id": story_id, **outline_payload}
 
 
 async def mock_chat(
@@ -315,10 +459,15 @@ async def mock_chat(
         yield char
 
 
-async def mock_generate_script(story_id: str) -> AsyncGenerator[dict, None]:
-    for scene in MOCK_SCENES:
+async def mock_generate_script(story_id: str, db: AsyncSession = None) -> AsyncGenerator[dict, None]:
+    story = await repo.get_story(db, story_id) if db else {}
+    outline = story.get("outline") or MOCK_OUTLINE["outline"]
+
+    for episode_entry in outline:
         await asyncio.sleep(0.3)
-        yield scene
+        episode_number = int(episode_entry.get("episode", 1) or 1)
+        matched_scene = next((scene for scene in MOCK_SCENES if scene.get("episode") == episode_number), None)
+        yield deepcopy(matched_scene) if matched_scene is not None else _build_mock_script_scene(episode_entry)
 
 
 MOCK_WB_QUESTIONS = [
@@ -331,17 +480,29 @@ MOCK_WB_QUESTIONS = [
 ]
 
 
-async def mock_world_building_start(idea: str, db: AsyncSession = None) -> dict:
+async def mock_world_building_start(idea: str, genre: str = "", db: AsyncSession = None) -> dict:
     await asyncio.sleep(0.3)
     story_id = str(uuid.uuid4())
     q = MOCK_WB_QUESTIONS[0]
-    question = {"type": "options", "text": q["text"], "options": q["options"], "dimension": q["dimension"]}
+    normalized_genre = str(genre or "").strip()
+    question_text = f"如果按“{normalized_genre}”题材推进，故事更想落在哪个舞台？" if normalized_genre else q["text"]
+    question = {"type": "options", "text": question_text, "options": q["options"], "dimension": q["dimension"]}
+    assistant_payload = {
+        "status": "questioning",
+        "question": {
+            "type": "options",
+            "text": question_text,
+            "options": q["options"],
+            "dimension": q["dimension"],
+        },
+        "world_summary": None,
+    }
     history = [
-        {"role": "user", "content": f"种子想法：{idea}，请提出第一个世界观问题"},
-        {"role": "assistant", "content": f'{{"status":"questioning","question":{{"type":"options","text":"{q["text"]}","options":{q["options"]},"dimension":"{q["dimension"]}"}},"world_summary":null}}'},
+        {"role": "user", "content": f"种子想法：{idea}\n用户指定题材：{normalized_genre or '未指定'}\n\n请提出第一个世界观问题"},
+        {"role": "assistant", "content": _json.dumps(assistant_payload, ensure_ascii=False)},
     ]
     if db:
-        await repo.save_story(db, story_id, {"idea": idea, "wb_history": history, "wb_turn": 1})
+        await repo.save_story(db, story_id, {"idea": idea, "genre": normalized_genre, "wb_history": history, "wb_turn": 1})
     return {"story_id": story_id, "status": "questioning", "turn": 1, "question": question, "world_summary": None, "usage": None}
 
 
@@ -355,7 +516,9 @@ async def mock_world_building_turn(story_id: str, answer: str, db: AsyncSession 
     new_turn = turn + 1
 
     if turn >= 6:
-        world_summary = f"一个充满张力的短剧世界：{story.get('idea', '')}。世界观完整，人物鲜明，冲突激烈，情感基调深沉热血。"
+        genre = str(story.get("genre", "") or "").strip()
+        genre_text = f"整体沿着{genre}题材展开，" if genre else ""
+        world_summary = f"一个充满张力的短剧世界：{story.get('idea', '')}。{genre_text}世界观完整，人物鲜明，冲突激烈，情感基调深沉热血。"
         if db:
             await repo.save_story(db, story_id, {"wb_turn": new_turn, "selected_setting": world_summary})
         return {"story_id": story_id, "status": "complete", "turn": new_turn, "question": None, "world_summary": world_summary, "usage": None}

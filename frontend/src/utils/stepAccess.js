@@ -8,6 +8,10 @@ function hasOutline(store) {
   return !!store?.meta
 }
 
+function hasWorldSummary(store) {
+  return typeof store?.selectedSetting === 'string' && store.selectedSetting.trim().length > 0
+}
+
 function hasScript(store) {
   return hasCompleteGeneratedScript({
     outline: store?.outline,
@@ -26,7 +30,7 @@ export function canAccessStep(store, step) {
     case 2:
       return hasStory(store)
     case 3:
-      return isStep2Complete(store) && hasOutline(store)
+      return isStep2Complete(store) && hasWorldSummary(store)
     case 4:
     case 5:
       return hasScript(store)
@@ -55,7 +59,7 @@ export function getStepRedirectPath(store, step) {
 
   if (!hasStory(store)) return '/step1'
   if (!isStep2Complete(store)) return '/step2'
-  if (!hasOutline(store)) return '/step2'
+  if (!hasWorldSummary(store)) return '/step2'
   if (!hasScript(store)) return '/step3'
   return '/step1'
 }

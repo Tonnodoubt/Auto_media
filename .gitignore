@@ -5,14 +5,20 @@ build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
 
 # Virtual environments
 .venv
 venv/
+.uv-python/
 
 # Environment variables
 .env
 *.db
+*.db-*
 *.sqlite
 *.sqlite3
 
@@ -30,22 +36,21 @@ Thumbs.db
 node_modules/
 frontend/dist/
 frontend/.vite/
+.ffmpeg-tools/
+.npm-cache/
 
-# Media files (generated)
-media/audio/*.mp3
-media/audio/*.wav
-media/images/*.png
-media/images/*.jpg
-media/videos/*.mp4
-media/videos/*.txt
-media/characters/*.png
-media/characters/*.jpg
-media/episodes/*.png
-media/episodes/*.jpg
+# Local runtime files
+media/**
 
 # Keep directory structure
+!media/
+!media/audio/
 !media/audio/.gitkeep
-!media/images/.gitkeep
-!media/videos/.gitkeep
+!media/characters/
 !media/characters/.gitkeep
+!media/episodes/
 !media/episodes/.gitkeep
+!media/images/
+!media/images/.gitkeep
+!media/videos/
+!media/videos/.gitkeep

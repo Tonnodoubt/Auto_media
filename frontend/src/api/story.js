@@ -196,13 +196,46 @@ export async function analyzeIdea(idea, genre, tone) {
   return res.json()
 }
 
-export async function worldBuildingStart(idea) {
+export async function rewriteIdea(originalIdea, currentIdea, instruction, round = 1, genre = '') {
+  const res = await fetch(getUrl('/rewrite-idea'), {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({
+      original_idea: originalIdea,
+      current_idea: currentIdea,
+      instruction,
+      round,
+      genre,
+    }),
+  })
+  if (!res.ok) {
+    throw new Error(await readErrorDetail(res, `请求失败 (${res.status})`))
+  }
+  return res.json()
+}
+
+export async function polishVisualStyle(description, currentStyle = '') {
+  const res = await fetch(getUrl('/polish-visual-style'), {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({
+      description,
+      current_style: currentStyle,
+    }),
+  })
+  if (!res.ok) {
+    throw new Error(await readErrorDetail(res, `请求失败 (${res.status})`))
+  }
+  return res.json()
+}
+
+export async function worldBuildingStart(idea, genre = '') {
   const res = await fetch(getUrl('/world-building/start'), {
     method: 'POST',
     headers: getHeaders(),
-    body: JSON.stringify({ idea }),
+    body: JSON.stringify({ idea, genre }),
   })
-  if (!res.ok) throw new Error(`请求失败 (${res.status})`)
+  if (!res.ok) throw new Error(await readErrorDetail(res, `请求失败 (${res.status})`))
   return res.json()
 }
 
@@ -216,13 +249,13 @@ export async function worldBuildingTurn(storyId, answer) {
   return res.json()
 }
 
-export async function generateOutline(storyId, selectedSetting) {
+export async function generateOutline(storyId, selectedSetting, episodeCount = 6) {
   const res = await fetch(getUrl('/generate-outline'), {
     method: 'POST',
     headers: getHeaders(),
-    body: JSON.stringify({ story_id: storyId, selected_setting: selectedSetting }),
+    body: JSON.stringify({ story_id: storyId, selected_setting: selectedSetting, episode_count: episodeCount }),
   })
-  if (!res.ok) throw new Error(`请求失败 (${res.status})`)
+  if (!res.ok) throw new Error(await readErrorDetail(res, `请求失败 (${res.status})`))
   return res.json()
 }
 

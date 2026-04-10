@@ -2,7 +2,7 @@
   "version": "phase4-mvp-2026-04-07-runtime",
   "profiles": {
     "story_outline": {
-      "prompt_suffix": "在输出前请按以下 DSPy 编译约束自检：\n1. logline 必须明确主角、目标、阻碍与冲突。\n2. 6 集 beats 必须体现升级、转折与收束，不要只是换一种说法复述剧情。\n3. scene_list 要尽量使用稳定地点命名，避免同一空间出现多种别称。\n4. 每集 summary、beats、scene_list 必须彼此对齐，不允许 summary 讲的内容在 beats 中缺席。",
+      "prompt_suffix": "在输出前请按以下 DSPy 编译约束自检：\n1. logline 必须明确主角、目标、阻碍与冲突。\n2. 整季 beats 必须体现起势、升级、转折与收束，不要只是换一种说法复述剧情。\n3. scene_list 要尽量使用稳定地点命名，避免同一空间出现多种别称。\n4. 每集 summary、beats、scene_list 必须彼此对齐，不允许 summary 讲的内容在 beats 中缺席。",
       "feedback_prefix": "请在保持现有人物与总体故事方向不变的前提下，只修复以下大纲问题："
     },
     "storyboard_parse": {

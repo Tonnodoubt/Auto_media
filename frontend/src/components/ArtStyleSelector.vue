@@ -1,18 +1,17 @@
 <template>
   <div class="art-style-selector">
-    <!-- 折叠头 -->
     <button class="collapse-header" @click="expanded = !expanded">
       <span class="header-left">
         <span class="icon">🎨</span>
-        <span class="label">画风设定</span>
-        <span class="style-badge" :class="{ empty: !store.artStyle }">{{ confirmedPresetName || '写实摄影（默认）' }}</span>
+        <span class="label">视觉风格</span>
+        <span class="style-badge" :class="{ empty: !store.artStyle }">{{ headerBadgeText }}</span>
       </span>
       <span class="chevron" :class="{ open: expanded }">›</span>
     </button>
 
-    <!-- 展开内容 -->
     <div v-if="expanded" class="collapse-body">
-      <!-- 预设 chips -->
+      <p class="style-note">会影响角色图、场景图和视频画面风格，不影响剧情内容。</p>
+
       <div class="chips-row">
         <button
           v-for="preset in PRESETS"
@@ -22,23 +21,39 @@
           @click="selectPreset(preset)"
         >{{ preset.icon }} {{ preset.name }}</button>
       </div>
-      <!-- 输入框 -->
+
       <div class="input-row">
-        <input
+        <textarea
           v-model="localStyle"
           class="style-input"
-          placeholder="或直接输入画风描述…"
+          rows="3"
+          placeholder="先写你想要的画面感觉，例如：像韩剧，高级感一点，冷白色调，夜景霓虹不要太夸张"
           @input="onTextInput"
         />
-        <button v-if="localStyle" class="clear-btn" @click="clearStyle">✕</button>
       </div>
-      <!-- 确认行 -->
+
+      <div class="assist-row">
+        <button
+          class="assist-btn"
+          :disabled="!canPolishStyle"
+          @click="handlePolishStyle"
+        >{{ polishing ? '整理中…' : 'AI 帮我整理风格描述' }}</button>
+        <button
+          v-if="showResetButton"
+          class="clear-btn"
+          @click="restoreDefaultStyle"
+        >恢复默认</button>
+      </div>
+
+      <div v-if="polishHint" class="polish-hint">{{ polishHint }}</div>
+      <div v-if="polishError" class="error-hint">{{ polishError }}</div>
+
       <div class="confirm-row">
         <span v-if="saved" class="saved-hint">✓ 已保存</span>
         <span v-if="saveError" class="error-hint">{{ saveError }}</span>
         <button
           class="confirm-btn"
-          :disabled="localStyle === (store.artStyle || DEFAULT_ART_STYLE_PROMPT)"
+          :disabled="confirmDisabled"
           @click="confirmStyle"
         >确认</button>
       </div>
@@ -49,8 +64,8 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
 import { useStoryStore } from '../stores/story.js'
-import { patchStory } from '../api/story.js'
-import { ART_STYLE_PRESETS, DEFAULT_ART_STYLE_PRESET, DEFAULT_ART_STYLE_PROMPT } from '../constants/artStylePresets.js'
+import { patchStory, polishVisualStyle } from '../api/story.js'
+import { ART_STYLE_PRESETS, ART_STYLE_PROMPT_TO_LABEL, ART_STYLE_TRUNCATE_LEN, DEFAULT_ART_STYLE_PRESET, DEFAULT_ART_STYLE_PROMPT } from '../constants/artStylePresets.js'
 
 const store = useStoryStore()
 const PRESETS = ART_STYLE_PRESETS
@@ -60,11 +75,31 @@ const selectedPresetId = ref(null)
 const localStyle = ref('')
 const saved = ref(false)
 const saveError = ref('')
+const polishing = ref(false)
+const polishHint = ref('')
+const polishError = ref('')
 
-/** 已确认保存的 preset 名（根据 store 中的值） */
+const normalizedLocalStyle = computed(() => String(localStyle.value || '').trim())
+const confirmedEffectiveStyle = computed(() => String(store.artStyle || DEFAULT_ART_STYLE_PROMPT).trim())
+const localEffectiveStyle = computed(() => normalizedLocalStyle.value || DEFAULT_ART_STYLE_PROMPT)
+const confirmDisabled = computed(() => localEffectiveStyle.value === confirmedEffectiveStyle.value)
+const canPolishStyle = computed(() => Boolean(normalizedLocalStyle.value) && !polishing.value)
+const showResetButton = computed(() => localEffectiveStyle.value !== DEFAULT_ART_STYLE_PROMPT)
+
 const confirmedPresetName = computed(() => {
-  const foundPreset = PRESETS.find(preset => preset.prompt === (store.artStyle || DEFAULT_ART_STYLE_PROMPT))
-  return foundPreset ? foundPreset.name : null
+  return ART_STYLE_PROMPT_TO_LABEL.get(confirmedEffectiveStyle.value) || null
+})
+
+const headerBadgeText = computed(() => {
+  if (!String(store.artStyle || '').trim()) {
+    return `${DEFAULT_ART_STYLE_PRESET?.name || '写实摄影'}（默认）`
+  }
+  if (confirmedPresetName.value) {
+    return confirmedPresetName.value
+  }
+  return confirmedEffectiveStyle.value.length > ART_STYLE_TRUNCATE_LEN
+    ? `${confirmedEffectiveStyle.value.slice(0, ART_STYLE_TRUNCATE_LEN)}...`
+    : confirmedEffectiveStyle.value
 })
 
 onMounted(() => {
@@ -73,8 +108,15 @@ onMounted(() => {
   selectedPresetId.value = match ? match.id : DEFAULT_ART_STYLE_PRESET?.id || null
 })
 
-/** 点击预设：只更新本地状态，不写入 store */
+function resetTransientState() {
+  saved.value = false
+  saveError.value = ''
+  polishHint.value = ''
+  polishError.value = ''
+}
+
 function selectPreset(preset) {
+  resetTransientState()
   if (selectedPresetId.value === preset.id) {
     selectedPresetId.value = DEFAULT_ART_STYLE_PRESET?.id || null
     localStyle.value = DEFAULT_ART_STYLE_PROMPT
@@ -84,42 +126,49 @@ function selectPreset(preset) {
   }
 }
 
-/** 输入框输入：只更新本地状态 */
 function onTextInput() {
+  resetTransientState()
   const match = PRESETS.find(p => p.prompt === localStyle.value)
   selectedPresetId.value = match ? match.id : null
 }
 
-/** 清除：立即清空并持久化 */
-async function clearStyle() {
-  const previousState = {
-    localStyle: localStyle.value,
-    selectedPresetId: selectedPresetId.value,
-    artStyle: store.artStyle,
-    saved: saved.value,
-    expanded: expanded.value,
-  }
-  saveError.value = ''
+function restoreDefaultStyle() {
+  resetTransientState()
   localStyle.value = DEFAULT_ART_STYLE_PROMPT
   selectedPresetId.value = DEFAULT_ART_STYLE_PRESET?.id || null
-  store.setArtStyle('')
-  if (store.storyId) {
-    try {
-      const result = await patchStory(store.storyId, { art_style: '' })
-      if (!result) throw new Error('patchStory returned no result')
-    } catch (error) {
-      console.error('Failed to clear art style:', error)
-      localStyle.value = previousState.localStyle
-      selectedPresetId.value = previousState.selectedPresetId
-      store.setArtStyle(previousState.artStyle)
-      saved.value = previousState.saved
-      expanded.value = previousState.expanded
-      saveError.value = '清除失败，请重试'
+}
+
+async function handlePolishStyle() {
+  const description = normalizedLocalStyle.value
+  const confirmedStyleAtRequest = String(store.artStyle || '').trim()
+  if (!description || polishing.value) return
+
+  resetTransientState()
+  polishing.value = true
+  try {
+    const result = await polishVisualStyle(description, confirmedStyleAtRequest)
+    const polished = String(result?.polished_style || '').trim()
+    if (!polished) {
+      throw new Error('整理结果为空，请重试')
     }
+    if (
+      normalizedLocalStyle.value !== description
+      || String(store.artStyle || '').trim() !== confirmedStyleAtRequest
+    ) {
+      polishHint.value = '整理结果已返回，但你期间已经更新了风格输入，当前保留的是你的最新编辑。'
+      return
+    }
+    localStyle.value = polished
+    onTextInput()
+    polishHint.value = '已整理为更稳定的视觉风格描述，确认后才会生效。'
+  } catch (error) {
+    console.error('Failed to polish visual style:', error)
+    polishError.value = error?.message || '整理失败，请重试'
+  } finally {
+    polishing.value = false
   }
 }
 
-/** 确认：写入 store（localStorage）并持久化到后端 */
 async function confirmStyle() {
   const previousState = {
     localStyle: localStyle.value,
@@ -128,9 +177,11 @@ async function confirmStyle() {
     saved: saved.value,
     expanded: expanded.value,
   }
-  saveError.value = ''
-  store.setArtStyle(localStyle.value)
-  localStyle.value = store.artStyle
+
+  resetTransientState()
+  const nextStyle = normalizedLocalStyle.value
+  store.setArtStyle(nextStyle)
+  localStyle.value = nextStyle || DEFAULT_ART_STYLE_PROMPT
   const match = PRESETS.find(preset => preset.prompt === localStyle.value)
   selectedPresetId.value = match ? match.id : null
   try {

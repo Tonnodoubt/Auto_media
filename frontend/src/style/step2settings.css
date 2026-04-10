@@ -12,7 +12,21 @@ h1 { font-size: 26px; font-weight: 700; margin-bottom: 6px; }
   user-select: none;
 }
 .recap-header { display: flex; justify-content: space-between; align-items: center; }
+.recap-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 .recap-label { font-size: 13px; font-weight: 600; color: #6c63ff; }
+.recap-tag {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #f0eeff;
+  color: #5d56d6;
+  font-size: 12px;
+  font-weight: 700;
+}
 .recap-toggle { font-size: 11px; color: #aaa; }
 .recap-body { margin-top: 8px; font-size: 14px; color: #555; line-height: 1.6; }
 
@@ -98,6 +112,74 @@ h1 { font-size: 26px; font-weight: 700; margin-bottom: 6px; }
 
 .complete-area { text-align: center; padding: 24px; }
 .complete-msg { color: #6c63ff; font-size: 15px; font-weight: 600; }
-.complete-action-btn { margin-top: 12px; }
+.complete-action-btn { margin-top: 0; }
+.complete-btn-row {
+  margin-top: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.complete-btn-row .back-btn,
+.complete-btn-row .submit-btn {
+  flex: 0 0 auto;
+  min-width: 180px;
+}
+.complete-secondary-btn { background: #fff; }
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  z-index: 30;
+}
+.confirm-box {
+  width: min(100%, 360px);
+  background: #fff;
+  border-radius: 18px;
+  padding: 24px 24px 18px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.16);
+}
+.confirm-title {
+  color: #1f1b38;
+  font-size: 18px;
+  font-weight: 700;
+}
+.confirm-msg {
+  margin-top: 10px;
+  color: #5c5877;
+  font-size: 14px;
+  line-height: 1.7;
+}
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+.confirm-cancel,
+.confirm-ok {
+  padding: 10px 18px;
+  border-radius: 10px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.confirm-cancel {
+  background: #fff;
+  color: #555;
+  border: 1.5px solid #e0e0e0;
+}
+.confirm-cancel:hover:not(:disabled) { border-color: #aaa; }
+.confirm-ok {
+  border: none;
+  background: #e24c4b;
+  color: #fff;
+}
+.confirm-ok:hover:not(:disabled) { background: #c93f3e; }
+.confirm-cancel:disabled,
+.confirm-ok:disabled { opacity: 0.6; cursor: not-allowed; }
 .error-tip { color: #e53935; font-size: 13px; text-align: center; }
 .complete-error-tip { margin-top: 8px; }

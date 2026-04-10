@@ -20,9 +20,76 @@ class AnalyzeIdeaResponse(BaseModel):
     placeholder: str
 
 
+class RewriteIdeaRequest(BaseModel):
+    original_idea: str = ""
+    current_idea: str
+    instruction: str
+    round: int = Field(default=1, ge=1)
+    genre: str = ""
+
+    @model_validator(mode="after")
+    def normalize_fields(self) -> "RewriteIdeaRequest":
+        self.current_idea = str(self.current_idea or "").strip()
+        self.original_idea = str(self.original_idea or "").strip()
+        self.instruction = str(self.instruction or "").strip()
+        self.genre = str(self.genre or "").strip()
+
+        if not self.current_idea:
+            raise ValueError("current_idea 不能为空")
+        if not self.instruction:
+            raise ValueError("instruction 不能为空")
+        if not self.original_idea:
+            self.original_idea = self.current_idea
+        return self
+
+
+class RewriteIdeaResponse(BaseModel):
+    original_idea: str
+    current_idea: str
+    instruction: str
+    round: int
+    guardrail_notice: str
+    rewritten_idea: str
+    rewrite_reason: str
+    usage: Optional[dict] = None
+
+
+class PolishVisualStyleRequest(BaseModel):
+    description: str
+    current_style: str = ""
+
+    @model_validator(mode="after")
+    def normalize_fields(self) -> "PolishVisualStyleRequest":
+        self.description = str(self.description or "").strip()
+        self.current_style = str(self.current_style or "").strip()
+        if not self.description:
+            raise ValueError("description 不能为空")
+        return self
+
+
+class PolishVisualStyleResponse(BaseModel):
+    description: str
+    current_style: str
+    polished_style: str
+    usage: Optional[dict] = None
+
+
 class GenerateOutlineRequest(BaseModel):
     story_id: str
     selected_setting: str
+    episode_count: int = Field(default=6)
+
+    @model_validator(mode="after")
+    def normalize_fields(self) -> "GenerateOutlineRequest":
+        self.story_id = str(self.story_id or "").strip()
+        self.selected_setting = str(self.selected_setting or "").strip()
+        if not self.story_id:
+            raise ValueError("story_id 不能为空")
+        if not self.selected_setting:
+            raise ValueError("selected_setting 不能为空")
+        if int(self.episode_count) <= 0:
+            raise ValueError("episode_count 必须大于 0")
+        return self
 
 
 class Character(BaseModel):
@@ -151,6 +218,15 @@ class RefineResponse(BaseModel):
 
 class WorldBuildingStartRequest(BaseModel):
     idea: str
+    genre: str = ""
+
+    @model_validator(mode="after")
+    def normalize_fields(self) -> "WorldBuildingStartRequest":
+        self.idea = str(self.idea or "").strip()
+        self.genre = str(self.genre or "").strip()
+        if not self.idea:
+            raise ValueError("idea 不能为空")
+        return self
 
 
 class WorldBuildingTurnRequest(BaseModel):

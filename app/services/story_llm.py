@@ -12,10 +12,12 @@ from app.services import story_repository as repo
 from app.services.story_mock import (
     MOCK_WB_QUESTIONS,
     mock_analyze_idea, mock_generate_outline, mock_generate_script, mock_chat,
+    mock_polish_visual_style, mock_rewrite_idea,
     mock_world_building_start, mock_world_building_turn,
 )
 from app.prompts.story import (
-    ANALYZE_PROMPT, WB_SYSTEM_PROMPT, WB_USER_TEMPLATE,
+    ANALYZE_PROMPT, POLISH_VISUAL_STYLE_PROMPT, REWRITE_IDEA_PROMPT,
+    WB_SYSTEM_PROMPT, WB_USER_TEMPLATE,
     OUTLINE_BATCH_PROMPT, OUTLINE_BLUEPRINT_PROMPT, SCRIPT_PROMPT, REFINE_PROMPT,
     build_apply_chat_prompt, build_chat_messages,
 )
@@ -229,6 +231,55 @@ def _normalize_world_building_question(question: Any) -> dict[str, Any] | None:
     if dimension:
         payload["dimension"] = dimension
     return payload
+
+
+def _normalize_rewrite_text(value: Any) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return ""
+    return " ".join(normalized.split())
+
+
+def _build_fallback_visual_style_result(*, description: str, current_style: str = "") -> str:
+    normalized_description = _normalize_rewrite_text(description)
+    normalized_current = _normalize_rewrite_text(current_style)
+    if not normalized_description:
+        return normalized_current or "写实影视感，色调统一克制，光影自然，细节不过度堆砌"
+    if normalized_current and any(keyword in normalized_description for keyword in ("更", "再", "保留", "延续", "基础上")):
+        return f"{normalized_current}，并整体往{normalized_description}收束"
+    return normalized_description
+
+
+def _build_fallback_rewrite_result(
+    *,
+    original_idea: str,
+    current_idea: str,
+    instruction: str,
+    genre: str = "",
+) -> tuple[str, str]:
+    base_text = _normalize_rewrite_text(current_idea or original_idea)
+    if not base_text:
+        base_text = "这个故事灵感需要进一步优化"
+
+    trimmed = base_text.rstrip("。！？!?；;，, ")
+    instruction_focus = str(instruction or "").strip().rstrip("。！？!?")
+    normalized_genre = str(genre or "").strip()
+    if instruction_focus:
+        if normalized_genre:
+            reason = f"已按“{instruction_focus}”生成短剧感增强版，并尽量收束在{normalized_genre}题材方向，同时保持故事核心不跑偏。"
+        else:
+            reason = f"已按“{instruction_focus}”生成短剧感增强版，同时保持故事核心不跑偏。"
+    else:
+        if normalized_genre:
+            reason = f"已按{normalized_genre}题材方向增强开场吸引力和冲突张力。"
+        else:
+            reason = "已按短剧感增强版方向增强开场吸引力和冲突张力。"
+    rewritten = (
+        f"{trimmed}，开场就抛出足以改变人物命运的强冲突，并把故事收束在{normalized_genre}题材方向，让观众更快被吸进去。"
+        if normalized_genre
+        else f"{trimmed}，开场就抛出足以改变人物命运的强冲突，让观众更快被吸进去。"
+    )
+    return (rewritten, reason)
 
 
 def _world_building_history_question_entry(question: dict[str, Any]) -> dict[str, Any]:
@@ -574,7 +625,20 @@ def _usage_dict(usage: Any) -> dict[str, int] | None:
     }
 
 
-EXPECTED_OUTLINE_EPISODES = (1, 2, 3, 4, 5, 6)
+DEFAULT_OUTLINE_EPISODE_COUNT = 6
+
+
+def _build_expected_outline_episodes(episode_count: Any) -> list[int]:
+    normalized_count = _normalize_episode_number(episode_count)
+    if normalized_count is None:
+        raise ValueError("episode_count 必须是整数")
+    if normalized_count <= 0:
+        raise ValueError("episode_count 必须大于 0")
+    return list(range(1, normalized_count + 1))
+
+
+def _format_expected_episode_numbers(expected_episodes: list[int]) -> str:
+    return ", ".join(str(episode) for episode in expected_episodes)
 
 
 def _get_outline_generation_lock(story_id: str) -> asyncio.Lock:
@@ -633,7 +697,7 @@ def _normalize_required_outline_text_list(value: Any, *, field_name: str, episod
     return normalized_items
 
 
-def _validate_generated_outline_payload(payload: Any) -> dict[str, Any]:
+def _validate_generated_outline_payload(payload: Any, *, expected_episodes: list[int]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("返回结果必须是 JSON 对象")
 
@@ -641,14 +705,14 @@ def _validate_generated_outline_payload(payload: Any) -> dict[str, Any]:
     if not isinstance(meta, dict):
         raise ValueError("meta 必须存在且为对象")
 
-    if _normalize_episode_number(meta.get("episodes")) != len(EXPECTED_OUTLINE_EPISODES):
-        raise ValueError("meta.episodes 必须等于 6")
+    if _normalize_episode_number(meta.get("episodes")) != len(expected_episodes):
+        raise ValueError(f"meta.episodes 必须等于 {len(expected_episodes)}")
 
     outline = payload.get("outline")
     if not isinstance(outline, list):
         raise ValueError("outline 必须存在且为数组")
-    if len(outline) != len(EXPECTED_OUTLINE_EPISODES):
-        raise ValueError("outline 必须完整包含 6 集")
+    if len(outline) != len(expected_episodes):
+        raise ValueError(f"outline 必须完整包含 {len(expected_episodes)} 集")
 
     normalized_outline: list[dict[str, Any]] = []
     returned_episodes: list[int] = []
@@ -687,18 +751,17 @@ def _validate_generated_outline_payload(payload: Any) -> dict[str, Any]:
         normalized_outline.append(normalized_entry)
         returned_episodes.append(episode_number)
 
-    expected_episodes = list(EXPECTED_OUTLINE_EPISODES)
     if returned_episodes != expected_episodes:
-        raise ValueError("outline.episode 必须按 1, 2, 3, 4, 5, 6 连续返回")
+        raise ValueError(f"outline.episode 必须按 {_format_expected_episode_numbers(expected_episodes)} 连续返回")
 
     return {
         **payload,
-        "meta": {**meta, "episodes": len(EXPECTED_OUTLINE_EPISODES)},
+        "meta": {**meta, "episodes": len(expected_episodes)},
         "outline": normalized_outline,
     }
 
 
-def _validate_outline_blueprint_payload(payload: Any) -> dict[str, Any]:
+def _validate_outline_blueprint_payload(payload: Any, *, expected_episodes: list[int]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("blueprint 返回结果必须是 JSON 对象")
 
@@ -706,8 +769,8 @@ def _validate_outline_blueprint_payload(payload: Any) -> dict[str, Any]:
     if not isinstance(meta, dict):
         raise ValueError("blueprint.meta 必须存在且为对象")
 
-    if _normalize_episode_number(meta.get("episodes")) != len(EXPECTED_OUTLINE_EPISODES):
-        raise ValueError("blueprint.meta.episodes 必须等于 6")
+    if _normalize_episode_number(meta.get("episodes")) != len(expected_episodes):
+        raise ValueError(f"blueprint.meta.episodes 必须等于 {len(expected_episodes)}")
 
     season_plan = payload.get("season_plan")
     if not isinstance(season_plan, dict):
@@ -716,8 +779,8 @@ def _validate_outline_blueprint_payload(payload: Any) -> dict[str, Any]:
     episode_arcs = season_plan.get("episode_arcs")
     if not isinstance(episode_arcs, list):
         raise ValueError("blueprint.season_plan.episode_arcs 必须存在且为数组")
-    if len(episode_arcs) != len(EXPECTED_OUTLINE_EPISODES):
-        raise ValueError("blueprint.season_plan.episode_arcs 必须完整包含 6 集")
+    if len(episode_arcs) != len(expected_episodes):
+        raise ValueError(f"blueprint.season_plan.episode_arcs 必须完整包含 {len(expected_episodes)} 集")
 
     normalized_episode_arcs: list[dict[str, Any]] = []
     returned_episodes: list[int] = []
@@ -737,12 +800,14 @@ def _validate_outline_blueprint_payload(payload: Any) -> dict[str, Any]:
         })
         returned_episodes.append(episode_number)
 
-    if returned_episodes != list(EXPECTED_OUTLINE_EPISODES):
-        raise ValueError("blueprint.season_plan.episode_arcs 必须按 1, 2, 3, 4, 5, 6 连续返回")
+    if returned_episodes != expected_episodes:
+        raise ValueError(
+            f"blueprint.season_plan.episode_arcs 必须按 {_format_expected_episode_numbers(expected_episodes)} 连续返回"
+        )
 
     return {
         **payload,
-        "meta": {**meta, "episodes": len(EXPECTED_OUTLINE_EPISODES)},
+        "meta": {**meta, "episodes": len(expected_episodes)},
         "characters": _normalize_dict_list(payload.get("characters"), field_name="blueprint.characters"),
         "relationships": _normalize_dict_list(payload.get("relationships"), field_name="blueprint.relationships"),
         "season_plan": {
@@ -818,13 +883,19 @@ def _validate_outline_batch_payload(payload: Any, *, expected_episodes: list[int
     }
 
 
-def _build_outline_batch_ranges(concurrency: int) -> list[list[int]]:
-    episodes = list(EXPECTED_OUTLINE_EPISODES)
-    if concurrency <= 1:
-        return [episodes]
-    if concurrency == 2:
-        return [episodes[:3], episodes[3:]]
-    return [episodes[:2], episodes[2:4], episodes[4:]]
+def _build_outline_batch_ranges(concurrency: int, expected_episodes: list[int]) -> list[list[int]]:
+    if not expected_episodes:
+        return []
+
+    group_count = max(1, min(int(concurrency or 1), len(expected_episodes)))
+    if group_count == 1:
+        return [list(expected_episodes)]
+
+    chunk_size = (len(expected_episodes) + group_count - 1) // group_count
+    return [
+        expected_episodes[index:index + chunk_size]
+        for index in range(0, len(expected_episodes), chunk_size)
+    ]
 
 
 def _merge_usage_totals(usages: list[dict[str, int] | None]) -> dict[str, int] | None:
@@ -886,12 +957,18 @@ async def _generate_outline_blueprint(
     *,
     client: AsyncOpenAI,
     selected_setting: str,
+    expected_episodes: list[int],
     resolved_model: str,
     provider: str,
     story_id: str,
     prompt_suffix: str = "",
 ) -> tuple[dict[str, Any], dict[str, int] | None]:
-    prompt = OUTLINE_BLUEPRINT_PROMPT.format(selected_setting=selected_setting)
+    prompt = OUTLINE_BLUEPRINT_PROMPT.format(
+        selected_setting=selected_setting,
+        episode_count=len(expected_episodes),
+        episode_numbers=_format_expected_episode_numbers(expected_episodes),
+        final_episode=expected_episodes[-1],
+    )
     if str(prompt_suffix or "").strip():
         prompt = f"{prompt}\n\n{prompt_suffix.strip()}"
     return await _request_outline_json_completion(
@@ -901,7 +978,7 @@ async def _generate_outline_blueprint(
         story_id=story_id,
         prompt=prompt,
         operation="story.generate_outline.blueprint",
-        validator=_validate_outline_blueprint_payload,
+        validator=lambda payload: _validate_outline_blueprint_payload(payload, expected_episodes=expected_episodes),
     )
 
 
@@ -1086,9 +1163,221 @@ async def analyze_idea(idea: str, genre: str, tone: str, db: AsyncSession, api_k
     }
 
 
-async def generate_outline(story_id: str, selected_setting: str, db: AsyncSession | None, api_key: str = "", base_url: str = "", provider: str = "", model: str = "") -> dict:
+async def rewrite_idea(
+    original_idea: str,
+    current_idea: str,
+    instruction: str,
+    rewrite_round: int = 1,
+    genre: str = "",
+    api_key: str = "",
+    base_url: str = "",
+    provider: str = "",
+    model: str = "",
+) -> dict:
+    normalized_current = str(current_idea or "").strip()
+    normalized_original = str(original_idea or normalized_current).strip() or normalized_current
+    normalized_instruction = str(instruction or "").strip()
+    normalized_genre = str(genre or "").strip()
+    round_number = max(1, int(rewrite_round or 1))
+
+    if not normalized_current:
+        raise HTTPException(status_code=400, detail="当前灵感不能为空")
+    if not normalized_instruction:
+        raise HTTPException(status_code=400, detail="请先描述你想怎么修改灵感")
+
+    if _should_use_dev_mock(api_key, "灵感改写"):
+        return await mock_rewrite_idea(
+            normalized_original,
+            normalized_current,
+            normalized_instruction,
+            rewrite_round=round_number,
+            genre=normalized_genre,
+        )
+
+    client = _make_client(api_key, base_url)
+    prompt = REWRITE_IDEA_PROMPT.format(
+        original_idea=normalized_original,
+        current_idea=normalized_current,
+        genre=normalized_genre or "未指定",
+        instruction=normalized_instruction,
+    )
+    resolved_model = _get_model(provider, model)
+    messages = [{"role": "user", "content": prompt}]
+    tracker = _build_llm_tracker(
+        operation="story.rewrite_idea",
+        provider=provider,
+        model=resolved_model,
+        messages=messages,
+        extra={"round": round_number},
+    )
+    try:
+        resp = await client.chat.completions.create(
+            model=resolved_model,
+            messages=messages,
+        )
+    except Exception as exc:
+        tracker.record_failure(exc)
+        raise
+
+    response_text = resp.choices[0].message.content
+    usage = getattr(resp, "usage", None)
+    data: dict[str, Any] = {}
+    guardrail_notice = ""
+    parsed_successfully = False
+    try:
+        parsed = _parse_json(response_text)
+        if not isinstance(parsed, dict):
+            raise ValueError("灵感改写响应不是 JSON 对象")
+        data = parsed
+        rewritten_idea = _normalize_rewrite_text(data.get("rewritten_idea"))
+        rewrite_reason = str(data.get("rewrite_reason") or "").strip()
+        guardrail_notice = str(data.get("guardrail_notice") or "").strip()
+        parsed_successfully = True
+    except Exception as exc:
+        tracker.record_failure(exc, usage=usage, response_text=response_text)
+        rewritten_idea, rewrite_reason = _build_fallback_rewrite_result(
+            original_idea=normalized_original,
+            current_idea=normalized_current,
+            instruction=normalized_instruction,
+            genre=normalized_genre,
+        )
+
+    try:
+        if not rewritten_idea:
+            rewritten_idea, fallback_reason = _build_fallback_rewrite_result(
+                original_idea=normalized_original,
+                current_idea=normalized_current,
+                instruction=normalized_instruction,
+                genre=normalized_genre,
+            )
+            if not rewrite_reason:
+                rewrite_reason = fallback_reason
+        if not rewrite_reason:
+            _, rewrite_reason = _build_fallback_rewrite_result(
+                original_idea=normalized_original,
+                current_idea=normalized_current,
+                instruction=normalized_instruction,
+                genre=normalized_genre,
+            )
+        if not rewritten_idea:
+            raise ValueError("灵感改写结果为空")
+        if rewritten_idea == normalized_current:
+            rewritten_idea, rewrite_reason = _build_fallback_rewrite_result(
+                original_idea=normalized_original,
+                current_idea=normalized_current,
+                instruction=normalized_instruction,
+                genre=normalized_genre,
+            )
+        if not rewritten_idea:
+            raise ValueError("灵感改写结果为空")
+    except Exception as exc:
+        if parsed_successfully:
+            tracker.record_failure(exc, usage=usage, response_text=response_text)
+        raise
+
+    if parsed_successfully:
+        tracker.record_success(usage=usage, response_text=response_text)
+    return {
+        "original_idea": normalized_original,
+        "current_idea": normalized_current,
+        "instruction": normalized_instruction,
+        "round": round_number,
+        "guardrail_notice": guardrail_notice,
+        "rewritten_idea": rewritten_idea,
+        "rewrite_reason": rewrite_reason,
+        "usage": _usage_dict(usage),
+    }
+
+
+async def polish_visual_style(
+    description: str,
+    current_style: str = "",
+    api_key: str = "",
+    base_url: str = "",
+    provider: str = "",
+    model: str = "",
+) -> dict:
+    normalized_description = _normalize_rewrite_text(description)
+    normalized_current = _normalize_rewrite_text(current_style)
+
+    if not normalized_description:
+        raise HTTPException(status_code=400, detail="请先输入你想要的视觉风格描述")
+
+    if _should_use_dev_mock(api_key, "视觉风格整理"):
+        return await mock_polish_visual_style(
+            normalized_description,
+            current_style=normalized_current,
+        )
+
+    client = _make_client(api_key, base_url)
+    prompt = POLISH_VISUAL_STYLE_PROMPT.format(
+        description=normalized_description,
+        current_style=normalized_current or "未提供",
+    )
+    resolved_model = _get_model(provider, model)
+    messages = [{"role": "user", "content": prompt}]
+    tracker = _build_llm_tracker(
+        operation="story.polish_visual_style",
+        provider=provider,
+        model=resolved_model,
+        messages=messages,
+        extra={"has_current_style": bool(normalized_current)},
+    )
+    try:
+        resp = await client.chat.completions.create(
+            model=resolved_model,
+            messages=messages,
+        )
+    except Exception as exc:
+        tracker.record_failure(exc)
+        raise
+
+    response_text = resp.choices[0].message.content
+    usage = getattr(resp, "usage", None)
+    polished_style = ""
+    parsed_successfully = False
+    try:
+        data = _parse_json(response_text)
+        if not isinstance(data, dict):
+            raise ValueError("视觉风格整理响应不是 JSON 对象")
+        polished_style = _normalize_rewrite_text(data.get("polished_style"))
+        if not polished_style:
+            polished_style = _build_fallback_visual_style_result(
+                description=normalized_description,
+                current_style=normalized_current,
+            )
+        parsed_successfully = True
+    except Exception as exc:
+        logger.exception("Failed to parse visual style response, falling back to synthesized style")
+        tracker.record_failure(exc, usage=usage, response_text=response_text)
+        polished_style = _build_fallback_visual_style_result(
+            description=normalized_description,
+            current_style=normalized_current,
+        )
+
+    if parsed_successfully:
+        tracker.record_success(usage=usage, response_text=response_text)
+    return {
+        "description": normalized_description,
+        "current_style": normalized_current,
+        "polished_style": polished_style,
+        "usage": _usage_dict(usage),
+    }
+
+
+async def generate_outline(
+    story_id: str,
+    selected_setting: str,
+    episode_count: int = DEFAULT_OUTLINE_EPISODE_COUNT,
+    db: AsyncSession | None = None,
+    api_key: str = "",
+    base_url: str = "",
+    provider: str = "",
+    model: str = "",
+) -> dict:
+    expected_episodes = _build_expected_outline_episodes(episode_count)
     if _should_use_dev_mock(api_key, "大纲生成"):
-        return await mock_generate_outline(story_id, selected_setting, db=db)
+        return await mock_generate_outline(story_id, selected_setting, episode_count=len(expected_episodes), db=db)
 
     client = _make_client(api_key, base_url)
     resolved_model = _get_model(provider, model)
@@ -1103,6 +1392,7 @@ async def generate_outline(story_id: str, selected_setting: str, db: AsyncSessio
                 blueprint, blueprint_usage = await _generate_outline_blueprint(
                     client=client,
                     selected_setting=selected_setting,
+                    expected_episodes=expected_episodes,
                     resolved_model=resolved_model,
                     provider=provider,
                     story_id=story_id,
@@ -1110,8 +1400,8 @@ async def generate_outline(story_id: str, selected_setting: str, db: AsyncSessio
                 )
                 usage_parts.append(blueprint_usage)
 
-                batch_ranges = _build_outline_batch_ranges(settings.outline_generation_concurrency)
-                # 分批并发生成，既降低单次输出长度，也避免把 6 集完全拆散导致风格漂移。
+                batch_ranges = _build_outline_batch_ranges(settings.outline_generation_concurrency, expected_episodes)
+                # 分批并发生成，既降低单次输出长度，也避免把整季完全拆散导致风格漂移。
                 tasks = [
                     asyncio.create_task(
                         _generate_outline_batch(
@@ -1148,7 +1438,8 @@ async def generate_outline(story_id: str, selected_setting: str, db: AsyncSessio
                         "characters": blueprint.get("characters", []),
                         "relationships": blueprint.get("relationships", []),
                         "outline": outline_entries,
-                    }
+                    },
+                    expected_episodes=expected_episodes,
                 )
                 return validated_data, _merge_usage_totals(usage_parts)
 
@@ -1287,7 +1578,7 @@ async def generate_script(
         if not outline:
             raise HTTPException(status_code=400, detail="续生成失败：指定的起始集数不在当前大纲范围内")
     if _should_use_dev_mock(api_key, "剧本生成"):
-        async for scene in mock_generate_script(story_id):
+        async for scene in mock_generate_script(story_id, db=db):
             if resume_from_episode is not None:
                 episode_number = _normalize_episode_number(scene.get("episode"))
                 if episode_number is None or episode_number < resume_from_episode:
@@ -1455,16 +1746,17 @@ async def generate_script(
     yield {"__usage__": {"prompt_tokens": total_prompt, "completion_tokens": total_completion}}
 
 
-async def world_building_start(idea: str, db: AsyncSession, api_key: str = "", base_url: str = "", provider: str = "", model: str = "") -> dict:
+async def world_building_start(idea: str, db: AsyncSession, genre: str = "", api_key: str = "", base_url: str = "", provider: str = "", model: str = "") -> dict:
     import uuid
+    normalized_genre = str(genre or "").strip()
     if _should_use_dev_mock(api_key, "世界观生成"):
-        return await mock_world_building_start(idea, db=db)
+        return await mock_world_building_start(idea, genre=normalized_genre, db=db)
 
     story_id = str(uuid.uuid4())
     client = _make_client(api_key, base_url)
     messages = [
         {"role": "system", "content": WB_SYSTEM_PROMPT},
-        {"role": "user", "content": WB_USER_TEMPLATE.format(idea=idea)},
+        {"role": "user", "content": WB_USER_TEMPLATE.format(idea=idea, genre=normalized_genre or "未指定")},
     ]
     resolved_model = _get_model(provider, model)
     tracker = _build_llm_tracker(
@@ -1487,7 +1779,7 @@ async def world_building_start(idea: str, db: AsyncSession, api_key: str = "", b
     try:
         data = _parse_json(response_text)
         messages.append({"role": "assistant", "content": response_text})
-        await repo.save_story(db, story_id, {"idea": idea, "wb_history": messages, "wb_turn": 1})
+        await repo.save_story(db, story_id, {"idea": idea, "genre": normalized_genre, "wb_history": messages, "wb_turn": 1})
     except Exception as exc:
         tracker.record_failure(exc, usage=usage, response_text=response_text)
         raise

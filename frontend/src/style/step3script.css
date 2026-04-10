@@ -6,6 +6,65 @@ h1 { font-size: 26px; font-weight: 700; margin-bottom: 6px; }
 .top-row { display: flex; gap: 16px; align-items: flex-start; }
 .outline-col { flex: 1; min-width: 0; }
 .graph-col { width: 380px; flex-shrink: 0; position: sticky; top: 24px; }
+.episode-count-card {
+  margin-top: 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 20px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, #ffffff, #f3f1ff);
+  border: 1px solid #e6e1ff;
+}
+
+.episode-count-copy { min-width: 0; }
+.episode-count-title {
+  color: #2f2858;
+  font-size: 16px;
+  font-weight: 700;
+}
+.episode-count-subtitle {
+  margin-top: 6px;
+  color: #6f6896;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.episode-count-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #6c63ff;
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.episode-count-input {
+  width: 108px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid #d7cffd;
+  background: #fff;
+  color: #2d2d38;
+  font-size: 16px;
+  font-weight: 600;
+  text-align: center;
+}
+.episode-count-input:focus {
+  outline: none;
+  border-color: #6c63ff;
+  box-shadow: 0 0 0 3px rgba(108, 99, 255, 0.12);
+}
+.episode-count-input:focus-visible {
+  outline: 2px solid #6c63ff;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 3px rgba(108, 99, 255, 0.16);
+}
+.episode-count-input:disabled {
+  background: #f5f5f9;
+  color: #9a96b3;
+}
+.episode-count-tip { margin-top: 10px; }
 .generate-btn-wrapper {
   margin-top: 24px;
 }
@@ -138,6 +197,19 @@ h1 { font-size: 26px; font-weight: 700; margin-bottom: 6px; }
   .graph-col {
     width: 100%;
     position: static;
+  }
+
+  .episode-count-card {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .episode-count-field {
+    width: 100%;
+  }
+
+  .episode-count-input {
+    width: 100%;
   }
 
   .generate-action-row {
